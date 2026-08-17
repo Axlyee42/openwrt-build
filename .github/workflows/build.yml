@@ -5,13 +5,13 @@ on:
     inputs:
 
       openwrt_version:
-        description: "OpenWrt 25.12.x 版本，留空自动使用最新版本"
+        description: "OpenWrt 25.12.x，留空自动使用最新版本"
         required: false
         default: ""
         type: string
 
       rootfs_size:
-        description: "RootFS 大小"
+        description: "固件 RootFS 大小"
         required: true
         default: "4G"
         type: choice
@@ -22,7 +22,7 @@ on:
           - "4G"
 
       lan_ip:
-        description: "LAN 管理 IP"
+        description: "LAN IP"
         required: true
         default: "192.168.1.2"
         type: string
@@ -40,19 +40,19 @@ on:
         type: boolean
 
       qcow2:
-        description: "生成 QCOW2"
+        description: "生成 QCOW2 虚拟机镜像"
         required: true
         default: true
         type: boolean
 
       vmdk:
-        description: "生成 VMDK"
+        description: "生成 VMDK 虚拟机镜像"
         required: true
         default: false
         type: boolean
 
       raw:
-        description: "生成 RAW"
+        description: "生成 RAW 镜像"
         required: true
         default: false
         type: boolean
@@ -75,7 +75,7 @@ jobs:
     steps:
 
       # ==========================================================
-      # Checkout
+      # 1. Checkout
       # ==========================================================
 
       - name: Checkout
@@ -83,7 +83,7 @@ jobs:
 
 
       # ==========================================================
-      # 确定 OpenWrt 版本
+      # 2. 获取 OpenWrt 版本
       # ==========================================================
 
       - name: Resolve OpenWrt version
@@ -101,17 +101,16 @@ jobs:
 
           if [ -z "${VERSION}" ]; then
 
-            echo "Finding latest OpenWrt 25.12.x release..."
-
             VERSION="$(
-              git ls-remote --tags \
+              git ls-remote \
+                --tags \
                 https://github.com/openwrt/openwrt.git \
                 'refs/tags/v25.12.*' |
               sed 's#.*refs/tags/v##' |
               grep -E '^25\.12\.[0-9]+$' |
               sort -V |
               tail -1
-            )"
+            )
 
           fi
 
@@ -147,24 +146,19 @@ jobs:
           echo "=========================================="
           echo "OpenWrt : ${VERSION}"
           echo "Commit  : ${COMMIT}"
-          echo "Date    : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Date    : $(date -u)"
           echo "=========================================="
 
 
       # ==========================================================
-      # RootFS
+      # 3. RootFS 大小
       # ==========================================================
 
-      - name: Configure RootFS
+      - name: Configure rootfs size
         shell: bash
         run: |
 
           SIZE="${{ inputs.rootfs_size }}"
-
-          if [ -z "${SIZE}" ]; then
-            SIZE="4G"
-          fi
-
 
           case "${SIZE}" in
 
@@ -197,10 +191,10 @@ jobs:
 
 
       # ==========================================================
-      # 安装编译依赖
+      # 4. 编译依赖
       # ==========================================================
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
 
           sudo apt-get update
@@ -236,60 +230,44 @@ jobs:
             libxml-parser-perl \
             libelf-dev \
             ecj \
-            fastjar
+            fastjar \
+            zstd
 
 
       # ==========================================================
-      # 下载 OpenWrt
+      # 5. 下载 OpenWrt
       # ==========================================================
 
       - name: Clone OpenWrt
         run: |
 
           git clone \
+            --depth=1 \
+            --branch "v${OPENWRT_VERSION}" \
             https://github.com/openwrt/openwrt.git \
             openwrt
 
-          cd openwrt
-
-          git checkout "${OPENWRT_COMMIT}"
-
 
       # ==========================================================
-      # 添加第三方 feeds
+      # 6. 添加 PassWall feeds
       #
-      # PassWall 官方 25.12 编译方式：
-      # passwall-packages
-      # passwall-luci
-      #
-      # Aurora
-      # Bandix
-      # luci-app-run
+      # 这是 PassWall 官方目前推荐的源码编译方式。
       # ==========================================================
 
-      - name: Configure third-party feeds
+      - name: Add PassWall feeds
         working-directory: openwrt
         run: |
 
           cat >> feeds.conf.default <<'EOF'
 
           src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main
-
           src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main
-
-          src-git aurora https://github.com/eamonxg/luci-theme-aurora.git;main
-
-          src-git bandix https://github.com/timsaya/openwrt-bandix.git;main
-
-          src-git bandix_luci https://github.com/timsaya/luci-app-bandix.git;main
-
-          src-git luci_app_run https://github.com/wukongdaily/luci-app-run.git;main
 
           EOF
 
 
       # ==========================================================
-      # 更新 feeds
+      # 7. 更新 feeds
       # ==========================================================
 
       - name: Update feeds
@@ -300,7 +278,7 @@ jobs:
 
 
       # ==========================================================
-      # 安装 feeds
+      # 8. 安装官方 feeds
       # ==========================================================
 
       - name: Install feeds
@@ -311,14 +289,46 @@ jobs:
 
 
       # ==========================================================
-      # OpenClash
+      # 9. 强制安装 PassWall packages
       # ==========================================================
 
-      - name: Add OpenClash
+      - name: Install PassWall packages
+        working-directory: openwrt
+        run: |
+
+          ./scripts/feeds install -a -f -p passwall_packages
+
+
+      # ==========================================================
+      # 10. 安装 PassWall LuCI
+      # ==========================================================
+
+      - name: Install PassWall LuCI
+        working-directory: openwrt
+        run: |
+
+          ./scripts/feeds install luci-app-passwall
+
+          ./scripts/feeds install luci-base
+
+
+      # ==========================================================
+      # 11. 第三方软件
+      #
+      # 不放进 feeds，直接放到 package/custom
+      # 避免影响官方 feeds update
+      # ==========================================================
+
+      - name: Add third-party packages
         working-directory: openwrt
         run: |
 
           mkdir -p package/custom
+
+
+          # ------------------------------------------------------
+          # OpenClash
+          # ------------------------------------------------------
 
           git clone \
             --depth=1 \
@@ -326,11 +336,88 @@ jobs:
             package/custom/OpenClash
 
 
+          # ------------------------------------------------------
+          # Aurora
+          # ------------------------------------------------------
+
+          git clone \
+            --depth=1 \
+            https://github.com/eamonxg/luci-theme-aurora.git \
+            package/custom/luci-theme-aurora
+
+
+          # ------------------------------------------------------
+          # Bandix
+          # ------------------------------------------------------
+
+          git clone \
+            --depth=1 \
+            https://github.com/timsaya/openwrt-bandix.git \
+            package/custom/openwrt-bandix
+
+
+          git clone \
+            --depth=1 \
+            https://github.com/timsaya/luci-app-bandix.git \
+            package/custom/luci-app-bandix
+
+
+          # ------------------------------------------------------
+          # luci-app-run
+          # ------------------------------------------------------
+
+          git clone \
+            --depth=1 \
+            https://github.com/wukongdaily/luci-app-run.git \
+            package/custom/luci-app-run
+
+
       # ==========================================================
-      # 基础配置
+      # 12. 读取你的自定义包列表
       # ==========================================================
 
-      - name: Generate base config
+      - name: Load custom package list
+        shell: bash
+        run: |
+
+          if [ ! -f shell/apk-custom-packages.sh ]; then
+
+            echo "ERROR:"
+            echo "shell/apk-custom-packages.sh not found."
+
+            exit 1
+
+          fi
+
+
+          source shell/apk-custom-packages.sh
+
+
+          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+
+            echo "ERROR:"
+            echo "CUSTOM_PACKAGES is empty."
+
+            exit 1
+
+          fi
+
+
+          echo "=========================================="
+          echo "Custom packages"
+          echo "=========================================="
+
+          echo "${CUSTOM_PACKAGES}"
+
+
+          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "$GITHUB_ENV"
+
+
+      # ==========================================================
+      # 13. 生成基础配置
+      # ==========================================================
+
+      - name: Generate OpenWrt config
         working-directory: openwrt
         run: |
 
@@ -341,9 +428,6 @@ jobs:
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
           CONFIG_TARGET_ROOTFS_EXT4FS=y
-          # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
-
-          CONFIG_TARGET_IMAGES_GZIP=y
 
           CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 
@@ -351,9 +435,6 @@ jobs:
           CONFIG_PACKAGE_luci-ssl=y
 
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-
-          CONFIG_PACKAGE_luci-proto-ipv6=y
-          CONFIG_PACKAGE_luci-proto-ppp=y
 
           CONFIG_PACKAGE_ppp=y
           CONFIG_PACKAGE_ppp-mod-pppoe=y
@@ -364,9 +445,16 @@ jobs:
           CONFIG_PACKAGE_odhcp6c=y
           CONFIG_PACKAGE_odhcpd-ipv6only=y
 
+          CONFIG_PACKAGE_luci-proto-ipv6=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+
           CONFIG_PACKAGE_mwan3=y
           CONFIG_PACKAGE_luci-app-mwan3=y
           CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-passwall=y
+
+          CONFIG_PACKAGE_luci-app-openclash=y
 
           EOF
 
@@ -381,50 +469,14 @@ jobs:
           fi
 
 
-          make defconfig
-
-
       # ==========================================================
-      # 自定义包列表
-      #
-      # 使用你现有的：
-      #
-      # shell/apk-custom-packages.sh
-      #
-      # 不在这里重复维护 package 清单。
+      # 14. 加入自定义包
       # ==========================================================
 
-      - name: Load custom packages
+      - name: Enable custom packages
+        working-directory: openwrt
         shell: bash
         run: |
-
-          if [ ! -f shell/apk-custom-packages.sh ]; then
-
-            echo "ERROR: shell/apk-custom-packages.sh not found."
-
-            exit 1
-
-          fi
-
-
-          source shell/apk-custom-packages.sh
-
-
-          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
-
-            echo "ERROR: CUSTOM_PACKAGES is empty."
-
-            exit 1
-
-          fi
-
-
-          echo "CUSTOM_PACKAGES:"
-          echo "${CUSTOM_PACKAGES}"
-
-
-          cd openwrt
-
 
           for package in ${CUSTOM_PACKAGES}; do
 
@@ -437,26 +489,13 @@ jobs:
 
 
       # ==========================================================
-      # OpenClash
-      # ==========================================================
-
-      - name: Enable OpenClash
-        working-directory: openwrt
-        run: |
-
-          echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
-
-          make defconfig
-
-
-      # ==========================================================
-      # 网络配置
+      # 15. 网络配置
       #
       # eth0 = WAN
       # eth1 = WANB
       # eth2~eth5 = LAN
       #
-      # PPPoE 账号密码使用 GitHub Secrets
+      # PPPoE 密码来自 GitHub Secrets
       # ==========================================================
 
       - name: Generate network configuration
@@ -471,22 +510,18 @@ jobs:
         run: |
 
           if [ -z "${WAN1_USER}" ] || [ -z "${WAN1_PASS}" ]; then
-            echo "WAN1_USER / WAN1_PASS not configured."
+            echo "WAN1 PPPoE credentials are missing."
             exit 1
           fi
 
 
           if [ -z "${WAN2_USER}" ] || [ -z "${WAN2_PASS}" ]; then
-            echo "WAN2_USER / WAN2_PASS not configured."
+            echo "WAN2 PPPoE credentials are missing."
             exit 1
           fi
 
 
           LAN_IP="${{ inputs.lan_ip }}"
-
-          if [ -z "${LAN_IP}" ]; then
-            LAN_IP="192.168.1.2"
-          fi
 
 
           mkdir -p \
@@ -524,7 +559,7 @@ jobs:
               option proto 'pppoe'
               option username '${WAN1_USER}'
               option password '${WAN1_PASS}'
-              option ipv6 '1'
+              option ipv6 'auto'
 
 
           config interface 'wan6'
@@ -539,7 +574,7 @@ jobs:
               option proto 'pppoe'
               option username '${WAN2_USER}'
               option password '${WAN2_PASS}'
-              option ipv6 '1'
+              option ipv6 'auto'
 
 
           config interface 'wanb6'
@@ -552,7 +587,7 @@ jobs:
 
 
       # ==========================================================
-      # DHCP + IPv6 RA
+      # 16. DHCP / IPv6
       # ==========================================================
 
       - name: Generate DHCP configuration
@@ -605,7 +640,7 @@ jobs:
 
 
       # ==========================================================
-      # 默认简体中文
+      # 17. 默认简体中文
       # ==========================================================
 
       - name: Set default language
@@ -620,7 +655,6 @@ jobs:
           #!/bin/sh
 
           uci -q set luci.main.lang='zh_cn'
-
           uci -q commit luci
 
           exit 0
@@ -633,10 +667,10 @@ jobs:
 
 
       # ==========================================================
-      # 编译信息
+      # 18. 编译信息
       # ==========================================================
 
-      - name: Create build information
+      - name: Add build information
         run: |
 
           mkdir -p \
@@ -647,10 +681,10 @@ jobs:
 
           OpenWrt Custom Build
 
-          OpenWrt Version:
+          Version:
           ${OPENWRT_VERSION}
 
-          OpenWrt Commit:
+          Commit:
           ${OPENWRT_COMMIT}
 
           Target:
@@ -693,10 +727,29 @@ jobs:
 
 
       # ==========================================================
-      # 下载
+      # 19. 最终配置
       # ==========================================================
 
-      - name: Download packages
+      - name: Finalize config
+        working-directory: openwrt
+        run: |
+
+          make defconfig
+
+
+          echo
+          echo "=========================================="
+          echo "Selected packages"
+          echo "=========================================="
+
+          grep '^CONFIG_PACKAGE_' .config | grep '=y' | head -100 || true
+
+
+      # ==========================================================
+      # 20. 下载源码
+      # ==========================================================
+
+      - name: Download sources
         working-directory: openwrt
         run: |
 
@@ -706,7 +759,7 @@ jobs:
 
 
       # ==========================================================
-      # 编译
+      # 21. 编译
       # ==========================================================
 
       - name: Build OpenWrt
@@ -719,7 +772,7 @@ jobs:
 
 
       # ==========================================================
-      # 准备 Release
+      # 22. 准备 Release
       # ==========================================================
 
       - name: Prepare release
@@ -731,7 +784,7 @@ jobs:
 
 
       # ==========================================================
-      # BIOS
+      # 23. BIOS
       # ==========================================================
 
       - name: Copy BIOS image
@@ -742,8 +795,8 @@ jobs:
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*ext4-combined.img.gz' \
-              ! -name '*efi*' |
+              -name '*ext4-combined.img.gz' |
+            grep -v 'efi' |
             head -1
           )"
 
@@ -751,6 +804,8 @@ jobs:
           if [ -z "${IMAGE}" ]; then
 
             echo "BIOS image not found."
+
+            find openwrt/bin/targets/x86/64 -maxdepth 1 -type f
 
             exit 1
 
@@ -762,7 +817,7 @@ jobs:
 
 
       # ==========================================================
-      # UEFI
+      # 24. UEFI
       # ==========================================================
 
       - name: Copy UEFI image
@@ -782,6 +837,8 @@ jobs:
 
             echo "UEFI image not found."
 
+            find openwrt/bin/targets/x86/64 -maxdepth 1 -type f
+
             exit 1
 
           fi
@@ -792,7 +849,7 @@ jobs:
 
 
       # ==========================================================
-      # 解压 UEFI RAW
+      # 25. 解压 RAW
       # ==========================================================
 
       - name: Prepare raw image
@@ -805,7 +862,7 @@ jobs:
               -type f \
               -name '*ext4-combined-efi.img.gz' |
             head -1
-          )"
+          )
 
 
           if [ -z "${IMAGE}" ]; then
@@ -818,7 +875,7 @@ jobs:
 
 
       # ==========================================================
-      # QCOW2
+      # 26. QCOW2
       # ==========================================================
 
       - name: Create QCOW2
@@ -834,7 +891,7 @@ jobs:
 
 
       # ==========================================================
-      # VMDK
+      # 27. VMDK
       # ==========================================================
 
       - name: Create VMDK
@@ -849,7 +906,7 @@ jobs:
 
 
       # ==========================================================
-      # RAW
+      # 28. RAW
       # ==========================================================
 
       - name: Create RAW
@@ -861,7 +918,7 @@ jobs:
 
 
       # ==========================================================
-      # SHA256
+      # 29. SHA256
       # ==========================================================
 
       - name: Generate SHA256
@@ -873,10 +930,10 @@ jobs:
 
 
       # ==========================================================
-      # Release 信息
+      # 30. Release 信息
       # ==========================================================
 
-      - name: Create release information
+      - name: Create release info
         run: |
 
           cat > release/build-info.txt <<EOF
@@ -888,7 +945,7 @@ jobs:
           OpenWrt:
           ${OPENWRT_VERSION}
 
-          OpenWrt commit:
+          Commit:
           ${OPENWRT_COMMIT}
 
           Target:
@@ -897,11 +954,12 @@ jobs:
           RootFS:
           ${ROOTFS_SIZE}
 
-          Build date:
+          Build Date:
           ${BUILD_DATE}
 
-          Build time:
+          Build Time:
           ${BUILD_TIME} UTC
+
 
           Network:
 
@@ -912,10 +970,14 @@ jobs:
           eth4 = LAN
           eth5 = LAN
 
-          LAN:
+
+          LAN IP:
+
           ${{ inputs.lan_ip }}
 
+
           IPv6:
+
           Enabled
 
           ==========================================
@@ -924,21 +986,27 @@ jobs:
 
 
       # ==========================================================
-      # 显示文件
+      # 31. 查看最终文件
       # ==========================================================
 
       - name: Show release files
         run: |
 
+          echo
+          echo "=========================================="
+          echo "Release files"
+          echo "=========================================="
+
           ls -lh release
 
 
       # ==========================================================
-      # 创建 Release
+      # 32. GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+
         with:
 
           tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
@@ -974,7 +1042,6 @@ jobs:
             - PassWall
             - OpenClash
             - Aurora
-            - Aurora Config
             - Bandix
             - luci-app-run
             - FileBrowser Go
