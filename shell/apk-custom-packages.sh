@@ -1,84 +1,118 @@
 #!/bin/bash
 
 # ============================================================
-# OpenWrt 25.12.x custom APK packages
-# Target: x86_64
-#
-# Based on:
-#   Axlyee42/ImmortalWrt-ImageBuilder
-#   wukongdaily/ImmortalWrt-ImageBuilder
-#
-# Purpose:
-#   Centralized package selection for the custom OpenWrt build.
-#
-# IMPORTANT:
-#   This file only builds the CUSTOM_PACKAGES variable.
-#   The GitHub Actions workflow must source this file before
-#   running make defconfig / make.
+# OpenWrt 25.12.x Custom Package List
 # ============================================================
+#
+# Target:
+#   Official OpenWrt 25.12.x
+#   x86_64
+#
+# This file ONLY builds the CUSTOM_PACKAGES variable.
+#
+# It does NOT:
+#   - clone repositories
+#   - modify .config
+#   - run make
+#   - install APK files
+#
+# The GitHub Actions workflow is responsible for:
+#   1. Adding third-party source repositories
+#   2. Updating feeds
+#   3. Generating .config
+#   4. Building OpenWrt
+#
+# ============================================================
+
+#!/bin/bash
 
 set -e
 
 CUSTOM_PACKAGES=""
 
+
 # ============================================================
-# 1. LuCI base
+# 01. LuCI
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-ssl"
+
+# Simplified Chinese
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-base-zh-cn"
 
-# ============================================================
-# 2. Default language / LuCI essentials
-# ============================================================
-
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-lib-base"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-base"
 
 # ============================================================
-# 3. Aurora theme
-#    github.com/eamonxg/luci-theme-aurora
+# 02. Aurora Theme
+#
+# Project:
+# https://github.com/eamonxg/luci-theme-aurora
+#
+# Config app:
+# https://github.com/eamonxg/luci-app-aurora-config
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-aurora"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-aurora-config"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-aurora-config-zh-cn"
 
+
 # ============================================================
-# 4. FileBrowser Go
+# 03. FileBrowser Go
 #
-# QuickFile intentionally removed because it conflicts with
+# QuickFile has been REMOVED because it conflicts with
 # luci-app-run's nginx configuration.
+#
+# Keep FileBrowser Go Chinese translation.
 # ============================================================
 
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-filebrowser-go"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-filebrowser-go-zh-cn"
 
+
 # ============================================================
-# 5. Bandix
-#    github.com/timsaya/luci-app-bandix
+# 04. Bandix
+#
+# Traffic monitoring
+#
+# Backend:
+#   bandix
+#
+# LuCI:
+#   luci-app-bandix
+#
+# Chinese:
+#   luci-i18n-bandix-zh-cn
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES bandix"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-bandix"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-bandix-zh-cn"
 
+
 # ============================================================
-# 6. luci-app-run
-#    github.com/wukongdaily/luci-app-run
+# 05. luci-app-run
 #
-# OpenWrt 25.12+ uses APK.
+# Project:
+# https://github.com/wukongdaily/luci-app-run
+#
+# Used to install/run .run packages.
+#
+# IMPORTANT:
+#   QuickFile is intentionally NOT included.
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-run"
 
+
 # ============================================================
-# 7. PassWall
+# 06. PassWall
 #
-# PassWall itself comes from the PassWall feed.
-# The packages below are runtime dependencies used by the
-# current PassWall build configuration.
+# Project:
+# https://github.com/Openwrt-Passwall/openwrt-passwall
+#
+# PassWall itself is provided by the third-party source tree.
+#
+# Runtime components:
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES geoview"
@@ -86,24 +120,27 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES xray-core"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES sing-box"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES hysteria"
 
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-nft-socket"
+# nftables transparent proxy support
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-nft-tproxy"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-nft-socket"
 
+# PassWall LuCI
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-passwall"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-passwall-zh-cn"
 
+
 # ============================================================
-# 8. OpenClash
-#    github.com/vernesong/OpenClash
+# 07. OpenClash
 #
-# OpenClash official dependencies for current OpenWrt.
+# Project:
+# https://github.com/vernesong/OpenClash
+#
+# 25.12 / APK related dependencies
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-openclash"
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-compat"
-
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES dnsmasq-full"
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES bash"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES curl"
@@ -111,60 +148,81 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES ca-bundle"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES ip-full"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES unzip"
 
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES ipset"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES ruby"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES ruby-yaml"
-
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES iptables"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-ipt-nat"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES iptables-mod-tproxy"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES iptables-mod-extra"
-
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES ip6tables-mod-nat"
-
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-tun"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-inet-diag"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-nft-tproxy"
 
+
 # ============================================================
-# 9. Multi-WAN / mwan3
+# 08. mwan3
 #
-# Required for the planned:
-#   WAN1 -> PPPoE
-#   WAN2 -> PPPoE
-#   Load balancing
-#   Failover
+# Dual WAN:
+#
+#   eth0 -> WAN
+#   eth1 -> WANB
+#
+# Used later for:
+#   - load balancing
+#   - failover
+#   - policy routing
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES mwan3"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-mwan3"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-mwan3-zh-cn"
 
+
 # ============================================================
-# 10. Network / PPPoE
+# 09. PPPoE
+#
+# WAN1 / WAN2 use PPPoE.
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES ppp"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES ppp-mod-pppoe"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-pppoe"
 
+
 # ============================================================
-# 11. Time Wake-on-LAN
+# 10. IPv6
+#
+# Required for:
+#   - WAN1 IPv6
+#   - WAN2 IPv6
+#   - DHCPv6
+#   - IPv6 Prefix Delegation
+#   - LAN IPv6 RA
+# ============================================================
+
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES kmod-ipv6"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES odhcp6c"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES odhcpd-ipv6only"
+
+
+# ============================================================
+# 11. Timewol
+#
+# Wake-on-LAN scheduling
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-timewol-zh-cn"
 
+
 # ============================================================
-# 12. Automatic reboot
+# 12. Auto Reboot
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-autoreboot-zh-cn"
 
+
 # ============================================================
 # 13. TTYD
+#
+# LuCI translation
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-ttyd-zh-cn"
+
 
 # ============================================================
 # 14. UPnP
@@ -172,43 +230,112 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-ttyd-zh-cn"
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-upnp-zh-cn"
 
+
 # ============================================================
 # 15. VLMCSd
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-vlmcsd-zh-cn"
 
+
 # ============================================================
 # 16. Useful network tools
+#
+# These are useful for diagnosing:
+#   PPPoE
+#   mwan3
+#   IPv6
+#   routing
+#   network interfaces
 # ============================================================
 
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES iproute2"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES iproute2-ss"
 CUSTOM_PACKAGES="$CUSTOM_PACKAGES ethtool"
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES tcpdump"
+
 
 # ============================================================
-# 17. DNS / DHCP
+# 17. Optional diagnostic tools
 #
-# OpenClash requires dnsmasq-full.
+# Uncomment if needed.
 # ============================================================
 
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES dnsmasq-full"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES tcpdump"
+
 
 # ============================================================
-# 18. IPv6 / firewall helpers
+# 18. Optional WireGuard
+#
+# Not enabled by default.
 # ============================================================
 
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES ip6tables"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-proto-wireguard"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES wireguard-tools"
+
 
 # ============================================================
-# 19. Output
+# 19. Optional Tailscale
+#
+# Not enabled by default.
 # ============================================================
 
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-tailscale-community"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-tailscale-community-zh-cn"
+
+
+# ============================================================
+# 20. Optional DDNS
+#
+# Not enabled by default.
+# ============================================================
+
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-ddns-zh-cn"
+
+
+# ============================================================
+# 21. Optional SMB
+#
+# Not enabled by default.
+# ============================================================
+
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-ksmbd-zh-cn"
+
+
+# ============================================================
+# 22. Optional Docker
+#
+# OpenWrt 25.12 x86_64 can run containers, but this is not
+# included in the default build to keep the router focused.
+# ============================================================
+
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES dockerd"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-dockerman"
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-dockerman-zh-cn"
+
+
+# ============================================================
+# 23. Optional File Manager alternatives
+# ============================================================
+
+# CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-filemanager-zh-cn"
+
+
+# ============================================================
+# 24. Final package list
+# ============================================================
+
+echo
 echo "============================================================"
-echo "Custom OpenWrt APK packages"
+echo " OpenWrt 25.12.x Custom Package List"
 echo "============================================================"
+echo
 echo "$CUSTOM_PACKAGES"
+echo
 echo "============================================================"
+echo " End of package list"
+echo "============================================================"
+echo
 
+
+# Export for build-x86-64.yml
 export CUSTOM_PACKAGES
