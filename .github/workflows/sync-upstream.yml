@@ -1,163 +1,389 @@
-name: Sync upstream and build
+#!/usr/bin/env bash
 
-on:
+set -euo pipefail
 
-  schedule:
 
-    # 每天北京时间 10:30
-    - cron: "30 2 * * *"
+# ==============================================================
+# OpenWrt upstream synchronization
+#
+# Tracks:
+#
+#   OpenWrt 25.12 stable release
+#   OpenWrt packages openwrt-25.12
+#   OpenWrt LuCI openwrt-25.12
+#
+# Also tracks:
+#
+#   PassWall
+#   OpenClash
+#   Aurora
+#   Bandix
+#   luci-app-run
+#
+# The resulting upstream-state.env is committed to the repo.
+# ==============================================================
 
-  workflow_dispatch:
 
+STATE_FILE="upstream-state.env"
 
-permissions:
 
-  contents: write
-  actions: write
+# ==============================================================
+# GitHub repositories
+# ==============================================================
 
+OPENWRT_REPO="https://github.com/openwrt/openwrt.git"
 
-jobs:
+PACKAGES_REPO="https://github.com/openwrt/packages.git"
 
-  sync:
+LUCI_REPO="https://github.com/openwrt/luci.git"
 
-    runs-on: ubuntu-24.04
+PASSWALL_REPO="https://github.com/Openwrt-Passwall/openwrt-passwall.git"
 
+PASSWALL_PACKAGES_REPO="https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git"
 
-    steps:
+OPENCLASH_REPO="https://github.com/vernesong/OpenClash.git"
 
-      # ==========================================================
-      # 1. Checkout
-      # ==========================================================
+AURORA_REPO="https://github.com/eamonxg/luci-theme-aurora.git"
 
-      - name: Checkout
-        uses: actions/checkout@v4
+BANDIX_REPO="https://github.com/timsaya/openwrt-bandix.git"
 
-        with:
+BANDIX_LUCI_REPO="https://github.com/timsaya/luci-app-bandix.git"
 
-          fetch-depth: 0
+LUCI_APP_RUN_REPO="https://github.com/wukongdaily/luci-app-run.git"
 
 
-      # ==========================================================
-      # 2. Install jq
-      # ==========================================================
+# ==============================================================
+# Helper
+# ==============================================================
 
-      - name: Install jq
-        run: |
+get_branch_commit() {
 
-          sudo apt-get update
+    local repo="$1"
 
-          sudo apt-get install -y jq
+    local branch="$2"
 
 
-      # ==========================================================
-      # 3. Run upstream sync
-      # ==========================================================
+    git ls-remote \
+        "${repo}" \
+        "refs/heads/${branch}" |
+    awk '{print $1}'
 
-      - name: Check upstream
-        id: upstream
-        shell: bash
-        run: |
+}
 
-          chmod +x shell/sync-upstream.sh
 
-          ./shell/sync-upstream.sh
+get_tag_commit() {
 
+    local repo="$1"
 
-      # ==========================================================
-      # 4. Read results
-      # ==========================================================
+    local tag="$2"
 
-      - name: Show upstream state
-        run: |
 
-          echo "=========================================="
+    git ls-remote \
+        "${repo}" \
+        "refs/tags/${tag}" |
+    awk '{print $1}'
 
-          cat upstream-state.env
+}
 
-          echo "=========================================="
 
+# ==============================================================
+# Find latest OpenWrt 25.12 stable release
+# ==============================================================
 
-      # ==========================================================
-      # 5. Commit sync state
-      #
-      # 这里非常重要。
-      #
-      # upstream-state.env 作为“上一次同步状态”。
-      #
-      # 下一次运行就可以知道：
-      #
-      # OpenWrt 有没有变化
-      # packages 有没有变化
-      # LuCI 有没有变化
-      # 第三方插件有没有变化
-      # ==========================================================
+echo
+echo "=========================================="
+echo "Checking OpenWrt releases"
+echo "=========================================="
 
-      - name: Commit upstream state
-        id: commit
-        shell: bash
-        run: |
 
-          git config user.name "github-actions[bot]"
+OPENWRT_VERSION="$(
+    git ls-remote \
+        --tags \
+        "${OPENWRT_REPO}" \
+        'refs/tags/v25.12.*' |
+    sed 's#.*refs/tags/v##' |
+    grep -E '^25\.12\.[0-9]+$' |
+    sort -V |
+    tail -1
+)"
 
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+if [ -z "${OPENWRT_VERSION}" ]; then
 
-          git add upstream-state.env
+    echo
+    echo "ERROR:"
+    echo "Cannot find OpenWrt 25.12 release."
 
+    exit 1
 
-          if git diff --cached --quiet; then
+fi
 
-            echo "UPSTREAM_CHANGED=false" >> "$GITHUB_OUTPUT"
 
-            echo "No upstream changes."
+OPENWRT_COMMIT="$(
+    get_tag_commit \
+        "${OPENWRT_REPO}" \
+        "v${OPENWRT_VERSION}"
+)"
 
-            exit 0
 
-          fi
+echo
+echo "OpenWrt version:"
+echo "${OPENWRT_VERSION}"
 
+echo
+echo "OpenWrt commit:"
+echo "${OPENWRT_COMMIT}"
 
-          git commit \
-            -m "chore: sync upstream sources"
 
+# ==============================================================
+# packages
+# ==============================================================
 
-          git push
+echo
+echo "=========================================="
+echo "Checking packages"
+echo "=========================================="
 
 
-          echo "UPSTREAM_CHANGED=true" >> "$GITHUB_OUTPUT"
+PACKAGES_COMMIT="$(
+    get_branch_commit \
+        "${PACKAGES_REPO}" \
+        "openwrt-25.12"
+)"
 
 
-      # ==========================================================
-      # 6. Trigger build
-      #
-      # 只有发现 upstream commit 发生变化才编译。
-      # ==========================================================
+if [ -z "${PACKAGES_COMMIT}" ]; then
 
-      - name: Trigger build
-        if: steps.commit.outputs.UPSTREAM_CHANGED == 'true'
-        env:
+    echo "ERROR: packages branch not found."
 
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    exit 1
 
-        shell: bash
-        run: |
+fi
 
-          source upstream-state.env
 
+echo "packages:"
+echo "${PACKAGES_COMMIT}"
 
-          echo
-          echo "Triggering build..."
-          echo
 
+# ==============================================================
+# LuCI
+# ==============================================================
 
-          gh api \
-            --method POST \
-            "/repos/${GITHUB_REPOSITORY}/dispatches" \
-            -f event_type="upstream-update" \
-            -f client_payload[openwrt_version]="${OPENWRT_VERSION}" \
-            -f client_payload[openwrt_commit]="${OPENWRT_COMMIT}" \
-            -f client_payload[packages_commit]="${PACKAGES_COMMIT}" \
-            -f client_payload[luci_commit]="${LUCI_COMMIT}"
+echo
+echo "=========================================="
+echo "Checking LuCI"
+echo "=========================================="
 
 
-          echo
-          echo "Build workflow triggered."
+LUCI_COMMIT="$(
+    get_branch_commit \
+        "${LUCI_REPO}" \
+        "openwrt-25.12"
+)"
+
+
+if [ -z "${LUCI_COMMIT}" ]; then
+
+    echo "ERROR: LuCI branch not found."
+
+    exit 1
+
+fi
+
+
+echo "LuCI:"
+echo "${LUCI_COMMIT}"
+
+
+# ==============================================================
+# Third party sources
+#
+# These are not used to decide OpenWrt version.
+#
+# But their commits are tracked.
+# ==============================================================
+
+
+echo
+echo "=========================================="
+echo "Third-party packages"
+echo "=========================================="
+
+
+PASSWALL_COMMIT="$(
+    get_branch_commit \
+        "${PASSWALL_REPO}" \
+        "main"
+)"
+
+
+PASSWALL_PACKAGES_COMMIT="$(
+    get_branch_commit \
+        "${PASSWALL_PACKAGES_REPO}" \
+        "main"
+)"
+
+
+OPENCLASH_COMMIT="$(
+    get_branch_commit \
+        "${OPENCLASH_REPO}" \
+        "master"
+)"
+
+
+AURORA_COMMIT="$(
+    get_branch_commit \
+        "${AURORA_REPO}" \
+        "main"
+)"
+
+
+BANDIX_COMMIT="$(
+    get_branch_commit \
+        "${BANDIX_REPO}" \
+        "main"
+)"
+
+
+BANDIX_LUCI_COMMIT="$(
+    get_branch_commit \
+        "${BANDIX_LUCI_REPO}" \
+        "main"
+)"
+
+
+LUCI_APP_RUN_COMMIT="$(
+    get_branch_commit \
+        "${LUCI_APP_RUN_REPO}" \
+        "main"
+)"
+
+
+echo
+echo "PassWall:"
+echo "${PASSWALL_COMMIT}"
+
+
+echo
+echo "PassWall packages:"
+echo "${PASSWALL_PACKAGES_COMMIT}"
+
+
+echo
+echo "OpenClash:"
+echo "${OPENCLASH_COMMIT}"
+
+
+echo
+echo "Aurora:"
+echo "${AURORA_COMMIT}"
+
+
+echo
+echo "Bandix:"
+echo "${BANDIX_COMMIT}"
+
+
+echo
+echo "Bandix LuCI:"
+echo "${BANDIX_LUCI_COMMIT}"
+
+
+echo
+echo "luci-app-run:"
+echo "${LUCI_APP_RUN_COMMIT}"
+
+
+# ==============================================================
+# Generate state
+# ==============================================================
+
+TMP_FILE="$(mktemp)"
+
+
+cat > "${TMP_FILE}" <<EOF
+
+# ==========================================================
+# Automatically generated by shell/sync-upstream.sh
+#
+# DO NOT EDIT MANUALLY
+# ==========================================================
+
+OPENWRT_VERSION="${OPENWRT_VERSION}"
+
+OPENWRT_COMMIT="${OPENWRT_COMMIT}"
+
+PACKAGES_COMMIT="${PACKAGES_COMMIT}"
+
+LUCI_COMMIT="${LUCI_COMMIT}"
+
+PASSWALL_COMMIT="${PASSWALL_COMMIT}"
+
+PASSWALL_PACKAGES_COMMIT="${PASSWALL_PACKAGES_COMMIT}"
+
+OPENCLASH_COMMIT="${OPENCLASH_COMMIT}"
+
+AURORA_COMMIT="${AURORA_COMMIT}"
+
+BANDIX_COMMIT="${BANDIX_COMMIT}"
+
+BANDIX_LUCI_COMMIT="${BANDIX_LUCI_COMMIT}"
+
+LUCI_APP_RUN_COMMIT="${LUCI_APP_RUN_COMMIT}"
+
+EOF
+
+
+# ==============================================================
+# Compare
+# ==============================================================
+
+if [ ! -f "${STATE_FILE}" ]; then
+
+    echo
+    echo "No previous upstream state."
+
+    mv "${TMP_FILE}" "${STATE_FILE}"
+
+    exit 0
+
+fi
+
+
+if cmp -s "${TMP_FILE}" "${STATE_FILE}"; then
+
+    echo
+    echo "=========================================="
+    echo "No upstream changes."
+    echo "=========================================="
+
+    rm -f "${TMP_FILE}"
+
+    exit 0
+
+fi
+
+
+# ==============================================================
+# Show differences
+# ==============================================================
+
+echo
+echo "=========================================="
+echo "UPSTREAM CHANGES"
+echo "=========================================="
+
+
+diff -u \
+    "${STATE_FILE}" \
+    "${TMP_FILE}" \
+    || true
+
+
+mv "${TMP_FILE}" "${STATE_FILE}"
+
+
+echo
+echo "=========================================="
+echo "Upstream state updated."
+echo "=========================================="
