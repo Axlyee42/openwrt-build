@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt 25.12.x 版本，留空自动使用 openwrt-version"
+        description: "OpenWrt 25.12.x，留空使用 openwrt-version"
         required: false
         default: ""
         type: string
 
       rootfs_size:
-        description: "固件大小"
+        description: "RootFS 大小"
         required: true
         default: "4G"
         type: choice
@@ -40,8 +40,11 @@ env:
 
 
 jobs:
+
   build:
+
     runs-on: ubuntu-24.04
+
 
     steps:
 
@@ -79,10 +82,12 @@ jobs:
           fi
 
           if [ -z "${VERSION}" ]; then
+
             echo "Detecting latest OpenWrt 25.12.x..."
 
             VERSION="$(
-              git ls-remote --tags \
+              git ls-remote \
+                --tags \
                 https://github.com/openwrt/openwrt.git \
                 'refs/tags/v25.12.*' |
               sed 's#.*refs/tags/v##' |
@@ -90,16 +95,24 @@ jobs:
               sort -V |
               tail -1
             )"
+
           fi
 
-          if ! printf '%s\n' "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
+          if ! printf '%s\n' "${VERSION}" | \
+            grep -Eq '^25\.12\.[0-9]+$'; then
+
             echo "ERROR: Invalid OpenWrt version: ${VERSION}"
+
             exit 1
+
           fi
 
           echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+
           echo "BUILD_DATE=$(date +%Y%m%d)" >> "${GITHUB_ENV}"
+
           echo "BUILD_TIME=$(date +%H%M%S)" >> "${GITHUB_ENV}"
+
 
           echo
           echo "=========================================="
@@ -112,7 +125,7 @@ jobs:
       # RootFS
       # ==========================================================
 
-      - name: Configure rootfs size
+      - name: Configure RootFS
         shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
@@ -127,36 +140,48 @@ jobs:
           fi
 
           case "${SIZE}" in
+
             1G)
               PARTSIZE=1024
               ;;
+
             2G)
               PARTSIZE=2048
               ;;
+
             3G)
               PARTSIZE=3072
               ;;
+
             4G)
               PARTSIZE=4096
               ;;
+
             *)
-              echo "ERROR: Invalid rootfs size: ${SIZE}"
+              echo "ERROR: Invalid RootFS size: ${SIZE}"
               exit 1
               ;;
+
           esac
 
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
+
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "RootFS size: ${SIZE}"
-          echo "RootFS partition: ${PARTSIZE} MB"
+          echo
+          echo "RootFS:"
+          echo "${SIZE}"
+
+          echo
+          echo "Partition:"
+          echo "${PARTSIZE} MB"
 
 
       # ==========================================================
       # LAN IP
       # ==========================================================
 
-      - name: Configure LAN IP
+      - name: Configure LAN
         shell: bash
         env:
           INPUT_LAN_IP: ${{ inputs.lan_ip }}
@@ -176,7 +201,7 @@ jobs:
 
 
       # ==========================================================
-      # 安装 ImageBuilder / APK 所需工具
+      # 安装 ImageBuilder 依赖
       # ==========================================================
 
       - name: Install dependencies
@@ -186,21 +211,26 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
-            curl \
-            wget \
-            jq \
-            unzip \
-            xz-utils \
-            gzip \
-            zstd \
+            build-essential \
             file \
-            qemu-utils \
+            gawk \
+            gettext \
+            git \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-setuptools \
             rsync \
-            python3
+            unzip \
+            wget \
+            curl \
+            jq \
+            qemu-utils \
+            zstd
 
 
       # ==========================================================
-      # 下载官方 OpenWrt ImageBuilder
+      # 下载官方 ImageBuilder
       # ==========================================================
 
       - name: Download OpenWrt ImageBuilder
@@ -210,22 +240,33 @@ jobs:
 
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
 
+          ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+
+
           echo
           echo "=========================================="
-          echo "Downloading OpenWrt ImageBuilder"
+          echo "Downloading ImageBuilder"
           echo "=========================================="
 
-          wget -q --show-progress \
-            "${BASE_URL}/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst" \
+
+          wget \
+            --retry-connrefused \
+            --tries=5 \
+            --timeout=30 \
+            "${BASE_URL}/${ARCHIVE}" \
             -O imagebuilder.tar.zst
+
 
           mkdir -p imagebuilder
 
+
           tar \
-            --use-compress-program=unzstd \
+            --zstd \
             -xf imagebuilder.tar.zst \
             --strip-components=1 \
+            --no-same-owner \
             -C imagebuilder
+
 
           echo
           echo "ImageBuilder:"
@@ -233,26 +274,481 @@ jobs:
 
 
       # ==========================================================
-      # 配置第三方 APK 仓库
+      # 检查 ImageBuilder
       # ==========================================================
 
-      - name: Configure APK repositories
+      - name: Check ImageBuilder
+        working-directory: imagebuilder
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p imagebuilder/repositories
+          echo
+          echo "=========================================="
+          echo "ImageBuilder structure"
+          echo "=========================================="
 
-          cat > imagebuilder/repositories/custom.conf <<'EOF'
-          https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/packages
-          EOF
+
+          ls -lah
+
 
           echo
-          echo "Repository configuration prepared."
+          echo "repositories:"
+
+
+          if [ -f repositories ]; then
+            cat repositories
+          else
+            echo "repositories file not found"
+          fi
+
+
+          echo
+          echo "repositories.conf:"
+
+
+          if [ -f repositories.conf ]; then
+            cat repositories.conf
+          else
+            echo "repositories.conf not found"
+          fi
+
+
+          echo
+          echo "Running make info..."
+
+
+          make info
 
 
       # ==========================================================
-      # 复制 files
+      # 配置官方 APK 仓库
+      #
+      # ImageBuilder 自带官方 repositories。
+      # 这里只显示，不重新创建 repositories 目录。
+      # ==========================================================
+
+      - name: Configure official repositories
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Official APK repositories"
+          echo "=========================================="
+
+
+          if [ -f repositories ]; then
+
+            echo
+            echo "Current repositories file:"
+
+            cat repositories
+
+          fi
+
+
+          if [ -f repositories.conf ]; then
+
+            echo
+            echo "Current repositories.conf:"
+
+            cat repositories.conf
+
+          fi
+
+
+      # ==========================================================
+      # 添加 PassWall APK 仓库
+      #
+      # PassWall 25.12 APK:
+      #
+      # passwall_luci
+      # passwall_packages
+      # passwall2
+      # ==========================================================
+
+      - name: Add PassWall APK repositories
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
+
+
+          echo
+          echo "=========================================="
+          echo "Adding PassWall repositories"
+          echo "=========================================="
+
+
+          if [ ! -f repositories ]; then
+
+            echo "ERROR: ImageBuilder repositories file not found."
+
+            exit 1
+
+          fi
+
+
+          cat >> repositories <<EOF
+
+          ${PASSWALL_BASE}/passwall_luci/packages.adb
+          ${PASSWALL_BASE}/passwall_packages/packages.adb
+          ${PASSWALL_BASE}/passwall2/packages.adb
+          EOF
+
+
+          echo
+          echo "Final repositories:"
+
+
+          cat repositories
+
+
+      # ==========================================================
+      # PassWall APK key
+      # ==========================================================
+
+      - name: Install PassWall APK key
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p keys
+
+          wget \
+            -q \
+            https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
+            -O keys/openwrt-passwall-build.pem
+
+
+          echo
+          echo "PassWall APK key installed."
+
+          ls -lh keys/openwrt-passwall-build.pem
+
+
+      # ==========================================================
+      # 准备 ImageBuilder 本地 APK 包目录
+      # ==========================================================
+
+      - name: Prepare local APK packages
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p packages
+
+          echo
+          echo "Local package directory:"
+          ls -lah packages
+
+
+      # ==========================================================
+      # 下载 Aurora 最新 APK
+      #
+      # Aurora 官方 README 明确提供 25.12+ APK。
+      # ==========================================================
+
+      - name: Download Aurora APK
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          API="https://api.github.com/repos/eamonxg/luci-theme-aurora/releases/latest"
+
+
+          echo
+          echo "=========================================="
+          echo "Downloading Aurora APK"
+          echo "=========================================="
+
+
+          curl \
+            -fsSL \
+            "${API}" \
+            -o /tmp/aurora-release.json
+
+
+          jq -r '
+            .assets[]
+            | select(.name | endswith(".apk"))
+            | .browser_download_url
+          ' /tmp/aurora-release.json \
+            > /tmp/aurora-apks
+
+
+          if [ ! -s /tmp/aurora-apks ]; then
+
+            echo "ERROR: No Aurora APK found."
+
+            exit 1
+
+          fi
+
+
+          while IFS= read -r URL; do
+
+            echo "Downloading:"
+            echo "${URL}"
+
+            wget \
+              --retry-connrefused \
+              --tries=5 \
+              "${URL}" \
+              -P packages
+
+          done < /tmp/aurora-apks
+
+
+          echo
+          echo "Aurora APKs:"
+
+          ls -lh packages
+
+
+      # ==========================================================
+      # 下载 Bandix APK
+      #
+      # backend:
+      #   bandix
+      #
+      # frontend:
+      #   luci-app-bandix
+      # ==========================================================
+
+      - name: Download Bandix APK
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Downloading Bandix APK"
+          echo "=========================================="
+
+
+          BANDIX_API="https://api.github.com/repos/timsaya/openwrt-bandix/releases/latest"
+
+          BANDIX_LUCI_API="https://api.github.com/repos/timsaya/luci-app-bandix/releases/latest"
+
+
+          curl \
+            -fsSL \
+            "${BANDIX_API}" \
+            -o /tmp/bandix.json
+
+
+          curl \
+            -fsSL \
+            "${BANDIX_LUCI_API}" \
+            -o /tmp/bandix-luci.json
+
+
+          jq -r '
+            .assets[]
+            | select(.name | endswith(".apk"))
+            | select(
+                (.name | test("x86_64|x86-64|all"; "i"))
+              )
+            | .browser_download_url
+          ' /tmp/bandix.json \
+            > /tmp/bandix-apks
+
+
+          jq -r '
+            .assets[]
+            | select(.name | endswith(".apk"))
+            | .browser_download_url
+          ' /tmp/bandix-luci.json \
+            > /tmp/bandix-luci-apks
+
+
+          if [ ! -s /tmp/bandix-apks ]; then
+
+            echo "ERROR: Bandix backend APK not found."
+
+            echo
+            echo "Available Bandix assets:"
+
+            jq -r '.assets[].name' /tmp/bandix.json
+
+            exit 1
+
+          fi
+
+
+          if [ ! -s /tmp/bandix-luci-apks ]; then
+
+            echo "ERROR: luci-app-bandix APK not found."
+
+            echo
+            echo "Available luci-app-bandix assets:"
+
+            jq -r '.assets[].name' /tmp/bandix-luci.json
+
+            exit 1
+
+          fi
+
+
+          while IFS= read -r URL; do
+
+            echo "Downloading:"
+            echo "${URL}"
+
+            wget \
+              --retry-connrefused \
+              --tries=5 \
+              "${URL}" \
+              -P packages
+
+          done < /tmp/bandix-apks
+
+
+          while IFS= read -r URL; do
+
+            echo "Downloading:"
+            echo "${URL}"
+
+            wget \
+              --retry-connrefused \
+              --tries=5 \
+              "${URL}" \
+              -P packages
+
+          done < /tmp/bandix-luci-apks
+
+
+          echo
+          echo "Bandix APKs:"
+
+          ls -lh packages
+
+
+      # ==========================================================
+      # 下载 OpenClash APK
+      # ==========================================================
+
+      - name: Download OpenClash APK
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Downloading OpenClash APK"
+          echo "=========================================="
+
+
+          API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
+
+
+          curl \
+            -fsSL \
+            "${API}" \
+            -o /tmp/openclash-release.json
+
+
+          jq -r '
+            .assets[]
+            | select(.name | endswith(".apk"))
+            | .browser_download_url
+          ' /tmp/openclash-release.json \
+            > /tmp/openclash-apks
+
+
+          if [ ! -s /tmp/openclash-apks ]; then
+
+            echo "ERROR: OpenClash APK not found."
+
+            echo
+            echo "Available assets:"
+
+            jq -r '.assets[].name' /tmp/openclash-release.json
+
+            exit 1
+
+          fi
+
+
+          while IFS= read -r URL; do
+
+            echo "Downloading:"
+            echo "${URL}"
+
+            wget \
+              --retry-connrefused \
+              --tries=5 \
+              "${URL}" \
+              -P packages
+
+          done < /tmp/openclash-apks
+
+
+          echo
+          echo "OpenClash APK:"
+
+          ls -lh packages
+
+
+      # ==========================================================
+      # 查看本地 APK
+      # ==========================================================
+
+      - name: Verify local APK packages
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Local APK packages"
+          echo "=========================================="
+
+
+          find packages \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            -printf '%f\n' \
+            | sort
+
+
+          COUNT="$(
+            find packages \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | wc -l
+          )"
+
+
+          echo
+          echo "APK count: ${COUNT}"
+
+
+          if [ "${COUNT}" -eq 0 ]; then
+
+            echo "ERROR: No local APK packages."
+
+            exit 1
+
+          fi
+
+
+      # ==========================================================
+      # 自定义 files
       # ==========================================================
 
       - name: Install custom files
@@ -260,19 +756,38 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p imagebuilder/files
+
+
           if [ -d files ]; then
+
+            echo
             echo "Installing custom files..."
 
-            rsync -a \
+            rsync \
+              -a \
               files/ \
               imagebuilder/files/
+
           else
-            echo "No files directory found."
+
+            echo "ERROR: files directory not found."
+
+            exit 1
+
           fi
 
 
+          echo
+          echo "Installed files:"
+
+          find imagebuilder/files \
+            -type f \
+            -print
+
+
       # ==========================================================
-      # 加载自定义 APK 包列表
+      # 读取自定义包清单
       # ==========================================================
 
       - name: Load custom package list
@@ -281,176 +796,56 @@ jobs:
           set -euo pipefail
 
           if [ ! -f shell/apk-custom-packages.sh ]; then
+
             echo "ERROR: shell/apk-custom-packages.sh not found."
+
             exit 1
+
           fi
+
 
           source shell/apk-custom-packages.sh
 
+
           if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+
             echo "ERROR: CUSTOM_PACKAGES is empty."
+
             exit 1
+
           fi
+
+
+          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" \
+            >> "${GITHUB_ENV}"
+
 
           echo
           echo "=========================================="
-          echo "Custom packages"
+          echo "Custom package list"
           echo "=========================================="
+
 
           printf '%s\n' "${CUSTOM_PACKAGES}"
 
-          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "${GITHUB_ENV}"
-
 
       # ==========================================================
-      # 下载第三方 APK 仓库
-      #
-      # 这里使用 APK 仓库方式，不再 clone LuCI feed。
+      # 构造最终包列表
       # ==========================================================
 
-      - name: Prepare third-party APK repositories
+      - name: Build package list
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p apk-repositories
-
-          echo
-          echo "=========================================="
-          echo "Third-party APK repositories"
-          echo "=========================================="
-
-          echo "OpenWrt official repository:"
-          echo "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/packages"
-
-          echo
-          echo "PassWall:"
-          echo "https://github.com/Openwrt-Passwall/openwrt-passwall"
-
-          echo
-          echo "Aurora:"
-          echo "https://github.com/eamonxg/luci-theme-aurora"
-
-          echo
-          echo "Bandix:"
-          echo "https://github.com/timsaya/openwrt-bandix"
-
-
-      # ==========================================================
-      # 下载 PassWall APK
-      # ==========================================================
-
-      - name: Prepare PassWall APK repository
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p third-party/passwall
-
-          echo "PassWall APK repository will be resolved during package installation."
-
-          cat > third-party/passwall/README.txt <<'EOF'
-          PassWall source:
-          https://github.com/Openwrt-Passwall/openwrt-passwall
-
-          PassWall packages:
-          https://github.com/Openwrt-Passwall/openwrt-passwall-packages
-          EOF
-
-
-      # ==========================================================
-      # 下载 Aurora APK
-      # ==========================================================
-
-      - name: Prepare Aurora APK repository
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p third-party/aurora
-
-          git clone \
-            --depth=1 \
-            https://github.com/eamonxg/luci-theme-aurora.git \
-            third-party/aurora/source
-
-          echo
-          echo "Aurora source downloaded."
-
-          find third-party/aurora/source \
-            -type f \
-            -name Makefile \
-            -print || true
-
-
-      # ==========================================================
-      # 下载 Bandix APK
-      # ==========================================================
-
-      - name: Prepare Bandix APK repository
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p third-party/bandix
-
-          git clone \
-            --depth=1 \
-            https://github.com/timsaya/openwrt-bandix.git \
-            third-party/bandix/source
-
-          echo
-          echo "Bandix source downloaded."
-
-          find third-party/bandix/source \
-            -type f \
-            -name Makefile \
-            -print || true
-
-
-      # ==========================================================
-      # OpenClash
-      # ==========================================================
-
-      - name: Prepare OpenClash
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p third-party/openclash
-
-          git clone \
-            --depth=1 \
-            https://github.com/vernesong/OpenClash.git \
-            third-party/openclash/source
-
-          echo
-          echo "OpenClash source downloaded."
-
-          find third-party/openclash/source \
-            -type f \
-            -name Makefile \
-            -print || true
-
-
-      # ==========================================================
-      # 生成 ImageBuilder package 列表
-      # ==========================================================
-
-      - name: Generate package list
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p build
-
-          cat > build/packages.txt <<EOF
+          cat > /tmp/base-packages <<'EOF'
           luci
           luci-i18n-base-zh-cn
+          luci-proto-ppp
+          luci-proto-ipv6
           ppp
           ppp-mod-pppoe
           kmod-pppoe
-          luci-proto-ipv6
           odhcp6c
           odhcpd-ipv6only
           mwan3
@@ -468,26 +863,118 @@ jobs:
           luci-i18n-filebrowser-go-zh-cn
           EOF
 
+
+          {
+            cat /tmp/base-packages
+
+            printf '%s\n' "${CUSTOM_PACKAGES}" \
+              | tr ' ' '\n'
+
+            echo "luci-theme-aurora"
+            echo "luci-app-aurora-config"
+            echo "luci-app-bandix"
+            echo "bandix"
+            echo "luci-app-openclash"
+            echo "luci-app-passwall"
+
+          } \
+            | sed '/^[[:space:]]*$/d' \
+            | sort -u \
+            > /tmp/final-packages
+
+
           echo
-          echo "Base packages:"
-          cat build/packages.txt
+          echo "=========================================="
+          echo "Final package list"
+          echo "=========================================="
+
+
+          cat /tmp/final-packages
+
+
+          echo
+          echo "Saving package list..."
+
+
+          cp \
+            /tmp/final-packages \
+            selected-packages.txt
+
+
+          echo "SELECTED_PACKAGES_FILE=${GITHUB_WORKSPACE}/selected-packages.txt" \
+            >> "${GITHUB_ENV}"
 
 
       # ==========================================================
-      # 检查 ImageBuilder
+      # 检查关键包是否存在
       # ==========================================================
 
-      - name: Check ImageBuilder
+      - name: Verify packages
         working-directory: imagebuilder
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ ! -x make-image.sh ]; then
-            echo "ERROR: make-image.sh not found."
+          echo
+          echo "=========================================="
+          echo "Checking package availability"
+          echo "=========================================="
+
+
+          make package_list \
+            PROFILE="generic"
+
+
+          echo
+          echo "Checking selected packages..."
+
+
+          FAILED=0
+
+
+          while IFS= read -r PACKAGE; do
+
+            [ -z "${PACKAGE}" ] && continue
+
+
+            if [[ "${PACKAGE}" == luci-theme-aurora ]] || \
+               [[ "${PACKAGE}" == luci-app-aurora-config ]] || \
+               [[ "${PACKAGE}" == bandix ]] || \
+               [[ "${PACKAGE}" == luci-app-bandix ]] || \
+               [[ "${PACKAGE}" == luci-app-openclash ]]; then
+
+              if ! find packages \
+                -maxdepth 1 \
+                -type f \
+                -name "${PACKAGE}-*.apk" \
+                -print \
+                -quit \
+                | grep -q .; then
+
+                echo "ERROR: Local APK not found: ${PACKAGE}"
+
+                FAILED=1
+
+              else
+
+                echo "OK local: ${PACKAGE}"
+
+              fi
+
+              continue
+
+            fi
+
+
+            echo "Checking official/remote: ${PACKAGE}"
+
+
+          done < /tmp/final-packages
+
+
+          if [ "${FAILED}" -ne 0 ]; then
             exit 1
           fi
-
-          ./make-image.sh info
 
 
       # ==========================================================
@@ -500,23 +987,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p ../output
+          PACKAGES="$(
+            tr '\n' ' ' \
+              < /tmp/final-packages
+          )"
 
-          PACKAGES="$(tr '\n' ' ' < ../build/packages.txt)"
 
           echo
           echo "=========================================="
-          echo "Building OpenWrt UEFI"
+          echo "Building UEFI image"
           echo "=========================================="
 
-          ./make-image.sh \
-            TARGET_FILES="files" \
+
+          make image \
+            PROFILE="generic" \
             PACKAGES="${PACKAGES}" \
-            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
+            FILES="${GITHUB_WORKSPACE}/imagebuilder/files" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            BIN_DIR="${GITHUB_WORKSPACE}/output" \
+            EXTRA_IMAGE_NAME="${OPENWRT_VERSION}-${ROOTFS_SIZE}-${BUILD_DATE}"
 
 
       # ==========================================================
-      # 查找 UEFI 镜像
+      # 查找 UEFI
       # ==========================================================
 
       - name: Locate UEFI image
@@ -525,38 +1018,57 @@ jobs:
           set -euo pipefail
 
           echo
-          echo "Available output files:"
-          find imagebuilder/bin \
-            -maxdepth 3 \
+          echo "=========================================="
+          echo "ImageBuilder output"
+          echo "=========================================="
+
+
+          find output \
+            -maxdepth 2 \
             -type f \
             -print
 
+
           IMAGE="$(
-            find imagebuilder/bin \
+            find output \
               -type f \
-              \( \
-                -name '*combined-efi.img.gz' \
-                -o \
-                -name '*combined-efi.img' \
-              \) |
-            head -1
+              -name '*combined-efi.img.gz' \
+              | head -1
           )"
 
+
           if [ -z "${IMAGE}" ]; then
+
             echo
             echo "ERROR: UEFI image not found."
+
+            echo
+            echo "Available images:"
+
+            find output \
+              -type f \
+              -print
+
             exit 1
+
           fi
 
-          cp "${IMAGE}" \
-            "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
+          FINAL_IMAGE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
+
+
+          mv \
+            "${IMAGE}" \
+            "${FINAL_IMAGE}"
+
+
+          echo
           echo "UEFI image:"
-          ls -lh output
+          ls -lh "${FINAL_IMAGE}"
 
 
       # ==========================================================
-      # 生成 QCOW2
+      # QCOW2
       # ==========================================================
 
       - name: Create QCOW2
@@ -566,34 +1078,45 @@ jobs:
 
           IMAGE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
+
           if [ ! -f "${IMAGE}" ]; then
-            echo "ERROR: UEFI image does not exist."
+
+            echo "ERROR: UEFI image not found."
+
             exit 1
+
           fi
 
-          gzip -dc \
+
+          gzip \
+            -dc \
             "${IMAGE}" \
-            > output/openwrt.raw
+            > /tmp/openwrt.raw
+
 
           qemu-img convert \
             -f raw \
             -O qcow2 \
-            output/openwrt.raw \
+            -o compression_type=zstd \
+            /tmp/openwrt.raw \
             "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
-          rm -f output/openwrt.raw
+
+          rm -f /tmp/openwrt.raw
+
 
           echo
           echo "QCOW2:"
-          ls -lh output
+          ls -lh output/*.qcow2
 
 
       # ==========================================================
-      # SHA256
+      # 生成 SHA256
       # ==========================================================
 
       - name: Generate SHA256
         working-directory: output
+        shell: bash
         run: |
           set -e
 
@@ -602,6 +1125,8 @@ jobs:
             *.qcow2 \
             > sha256sums.txt
 
+
+          echo
           cat sha256sums.txt
 
 
@@ -617,7 +1142,7 @@ jobs:
           cat > output/build-info.txt <<EOF
           OpenWrt Custom Build
 
-          OpenWrt Version:
+          OpenWrt:
           ${OPENWRT_VERSION}
 
           Target:
@@ -636,6 +1161,7 @@ jobs:
           ${LAN_IP}
 
           Network:
+
           eth0 = WAN / PPPoE
           eth1 = WANB / PPPoE
           eth2 = LAN
@@ -647,39 +1173,73 @@ jobs:
           Enabled
 
           Images:
+
           UEFI
           QCOW2
           EOF
 
 
       # ==========================================================
-      # 删除空文件
+      # 保存包清单
       # ==========================================================
 
-      - name: Remove empty files
+      - name: Save selected packages
         shell: bash
         run: |
           set -e
 
-          find output \
-            -type f \
-            -size 0 \
-            -delete
-
-          echo
-          echo "Final files:"
-          ls -lh output
+          cp \
+            selected-packages.txt \
+            output/selected-packages.txt
 
 
       # ==========================================================
-      # Release
+      # 最终检查
+      # ==========================================================
+
+      - name: Verify final output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Final release files"
+          echo "=========================================="
+
+
+          find output \
+            -maxdepth 1 \
+            -type f \
+            -size +0c \
+            -printf '%f %s bytes\n' \
+            | sort
+
+
+          test -s \
+            "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
+
+
+          test -s \
+            "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
+
+
+          test -s \
+            output/sha256sums.txt
+
+
+      # ==========================================================
+      # GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+
         with:
           tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
+
           name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
+
           generate_release_notes: false
 
           body: |
@@ -709,11 +1269,28 @@ jobs:
             - UEFI
             - QCOW2
 
+            ## Packages
+
+            - LuCI
+            - Simplified Chinese
+            - mwan3
+            - PassWall
+            - OpenClash
+            - Aurora
+            - Bandix
+            - FileBrowser Go
+            - ttyd
+            - UPnP
+            - VLMCSd
+            - Timewol
+            - Autoreboot
+
           files: |
             output/*.img.gz
             output/*.qcow2
             output/sha256sums.txt
             output/build-info.txt
+            output/selected-packages.txt
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
