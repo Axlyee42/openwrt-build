@@ -1,22 +1,189 @@
-name: Build OpenWrt 25.12.5
+name: Build OpenWrt 25.12.5 x86-64
 
 on:
   workflow_dispatch:
+    inputs:
 
-env:
-  OPENWRT_VERSION: v25.12.5
+      openwrt_version:
+        description: "OpenWrt 版本"
+        required: true
+        default: "25.12.5"
+        type: choice
+        options:
+          - "25.12.5"
+
+      rootfs_size:
+        description: "RootFS 分区大小"
+        required: true
+        default: "4G"
+        type: choice
+        options:
+          - "1G"
+          - "2G"
+          - "3G"
+          - "4G"
+
+      lan_ip:
+        description: "LAN 管理 IP"
+        required: true
+        default: "192.168.1.2"
+        type: string
+
+      build_bios:
+        description: "生成 BIOS / Legacy 镜像"
+        required: true
+        default: true
+        type: boolean
+
+      build_uefi:
+        description: "生成 UEFI 镜像"
+        required: true
+        default: true
+        type: boolean
+
+      build_qcow2:
+        description: "生成 QCOW2 虚拟机镜像"
+        required: true
+        default: true
+        type: boolean
+
+      build_vmdk:
+        description: "生成 VMDK VMware 镜像"
+        required: true
+        default: false
+        type: boolean
+
+      build_raw:
+        description: "生成 RAW 镜像"
+        required: true
+        default: false
+        type: boolean
+
 
 jobs:
+
   build:
+
     runs-on: ubuntu-24.04
 
+    permissions:
+      contents: write
+
+    env:
+      OPENWRT_VERSION: ${{ inputs.openwrt_version }}
+      LAN_IP: ${{ inputs.lan_ip }}
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+
+      # ============================================================
+      # 01. Checkout
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 02. Build information
+      # ============================================================
+
+      - name: Set build information
+        shell: bash
+        run: |
+
+          BUILD_DATE="$(date -u +%Y%m%d)"
+          BUILD_TIME="$(date -u +%H%M%S)"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+
+          echo "BUILD_DATE=${BUILD_DATE}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=${BUILD_TIME}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          echo "=============================================="
+          echo "OpenWrt build information"
+          echo "=============================================="
+          echo "Version   : ${OPENWRT_VERSION}"
+          echo "Date      : ${BUILD_DATE}"
+          echo "Time UTC  : ${BUILD_TIME}"
+          echo "Git SHA   : ${SHORT_SHA}"
+          echo "LAN IP    : ${LAN_IP}"
+          echo "=============================================="
+
+
+      # ============================================================
+      # 03. RootFS size
+      #
+      # OpenWrt uses MB / MiB for this configuration.
+      # ============================================================
+
+      - name: Set rootfs size
+        shell: bash
+        run: |
+
+          case "${{ inputs.rootfs_size }}" in
+
+            1G)
+              ROOTFS_SIZE=1024
+              ;;
+
+            2G)
+              ROOTFS_SIZE=2048
+              ;;
+
+            3G)
+              ROOTFS_SIZE=3072
+              ;;
+
+            4G)
+              ROOTFS_SIZE=4096
+              ;;
+
+            *)
+              echo "Invalid rootfs size."
+              exit 1
+              ;;
+
+          esac
+
+          echo "ROOTFS_SIZE=${ROOTFS_SIZE}" >> "$GITHUB_ENV"
+
+          echo "RootFS partition: ${ROOTFS_SIZE} MiB"
+
+
+      # ============================================================
+      # 04. Check disk space
+      # ============================================================
+
+      - name: Check build environment
+        shell: bash
+        run: |
+
+          echo "CPU:"
+          nproc
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h
+
+          echo
+          echo "Ubuntu:"
+          lsb_release -a || true
+
+
+      # ============================================================
+      # 05. Install dependencies
+      # ============================================================
 
       - name: Install build dependencies
+        shell: bash
         run: |
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             clang \
@@ -24,78 +191,1153 @@ jobs:
             bison \
             g++ \
             gawk \
+            gcc-multilib \
+            g++-multilib \
             gettext \
             git \
             libncurses-dev \
             libssl-dev \
             python3 \
             python3-setuptools \
+            python3-pip \
             rsync \
+            swig \
             unzip \
             zlib1g-dev \
             file \
             wget \
             curl \
+            jq \
+            qemu-utils \
+            dos2unix \
+            device-tree-compiler \
             xsltproc \
-            swig \
-            time
+            libxml-parser-perl \
+            libelf-dev \
+            ecj \
+            fastjar \
+            java-propose-classpath \
+            python3-distutils
+
+
+      # ============================================================
+      # 06. Clone OpenWrt
+      # ============================================================
 
       - name: Clone OpenWrt
+        shell: bash
         run: |
+
           git clone \
-            --branch ${OPENWRT_VERSION} \
-            --depth 1 \
+            --depth=1 \
+            --branch "v${OPENWRT_VERSION}" \
             https://github.com/openwrt/openwrt.git \
             openwrt
 
-      - name: Update feeds
-        working-directory: openwrt
+          cd openwrt
+
+          echo
+          echo "OpenWrt commit:"
+          git rev-parse HEAD
+
+          echo
+          echo "OpenWrt version:"
+          git describe --tags --always
+
+
+      # ============================================================
+      # 07. Configure PassWall feeds
+      #
+      # PassWall official recommendation:
+      #
+      # Remove old OpenWrt proxy-core packages first,
+      # then use PassWall's package tree.
+      #
+      # This avoids duplicate / conflicting package definitions.
+      # ============================================================
+
+      - name: Configure PassWall sources
+        shell: bash
         run: |
+
+          cd openwrt
+
+          echo "Removing OpenWrt proxy packages which PassWall replaces..."
+
+          rm -rf \
+            feeds/packages/net/xray-core \
+            feeds/packages/net/v2ray-geodata \
+            feeds/packages/net/sing-box \
+            feeds/packages/net/chinadns-ng \
+            feeds/packages/net/dns2socks \
+            feeds/packages/net/hysteria \
+            feeds/packages/net/ipt2socks \
+            feeds/packages/net/microsocks \
+            feeds/packages/net/naiveproxy \
+            feeds/packages/net/shadowsocks-rust \
+            feeds/packages/net/shadowsocksr-libev \
+            feeds/packages/net/simple-obfs \
+            feeds/packages/net/tcping \
+            feeds/packages/net/v2ray-plugin \
+            feeds/packages/net/xray-plugin \
+            feeds/packages/net/geoview \
+            feeds/packages/net/shadow-tls \
+            2>/dev/null || true
+
+          rm -rf \
+            feeds/luci/applications/luci-app-passwall \
+            2>/dev/null || true
+
+          mkdir -p package/custom
+
+          git clone \
+            --depth=1 \
+            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
+            package/custom/passwall-packages
+
+          git clone \
+            --depth=1 \
+            https://github.com/Openwrt-Passwall/openwrt-passwall.git \
+            package/custom/passwall-luci
+
+
+      # ============================================================
+      # 08. Add Aurora
+      # ============================================================
+
+      - name: Add Aurora
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          git clone \
+            --depth=1 \
+            https://github.com/eamonxg/luci-theme-aurora.git \
+            package/custom/luci-theme-aurora
+
+
+      # ============================================================
+      # 09. Add Bandix
+      #
+      # Backend and frontend are kept as separate repositories.
+      # Their versions need to match.
+      # ============================================================
+
+      - name: Add Bandix
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          git clone \
+            --depth=1 \
+            https://github.com/timsaya/openwrt-bandix.git \
+            package/custom/openwrt-bandix
+
+          git clone \
+            --depth=1 \
+            https://github.com/timsaya/luci-app-bandix.git \
+            package/custom/luci-app-bandix
+
+
+      # ============================================================
+      # 10. Add luci-app-run
+      # ============================================================
+
+      - name: Add luci-app-run
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          git clone \
+            --depth=1 \
+            https://github.com/wukongdaily/luci-app-run.git \
+            package/custom/luci-app-run
+
+
+      # ============================================================
+      # 11. Update OpenWrt feeds
+      # ============================================================
+
+      - name: Update feeds
+        shell: bash
+        run: |
+
+          cd openwrt
+
           ./scripts/feeds update -a
+
+
+      # ============================================================
+      # 12. Install OpenWrt feeds
+      # ============================================================
+
+      - name: Install feeds
+        shell: bash
+        run: |
+
+          cd openwrt
+
           ./scripts/feeds install -a
 
-      - name: Configure x86_64
-        working-directory: openwrt
+
+      # ============================================================
+      # 13. Verify custom package sources
+      # ============================================================
+
+      - name: Verify custom package sources
+        shell: bash
         run: |
+
+          cd openwrt
+
+          echo
+          echo "=============================================="
+          echo "Custom package source tree"
+          echo "=============================================="
+
+          find package/custom \
+            -maxdepth 3 \
+            -type f \
+            \( -name Makefile -o -name "*.mk" \) \
+            | sort \
+            | head -300
+
+          echo
+          echo "=============================================="
+          echo "Feed package list"
+          echo "=============================================="
+
+          ./scripts/feeds list -i | grep -Ei \
+            'passwall|aurora|bandix|run' \
+            || true
+
+
+      # ============================================================
+      # 14. Create OpenWrt base configuration
+      # ============================================================
+
+      - name: Create base configuration
+        shell: bash
+        run: |
+
+          cd openwrt
+
           cat > .config <<'EOF'
+
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          CONFIG_PACKAGE_ppp=y
-          CONFIG_PACKAGE_ppp-mod-pppoe=y
-          CONFIG_PACKAGE_kmod-pppoe=y
+          CONFIG_TARGET_ROOTFS_EXT4FS=y
+          # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
+
+          CONFIG_TARGET_IMAGES_GZIP=y
+
+          CONFIG_TARGET_KERNEL_PARTSIZE=64
+
           EOF
 
           make defconfig
 
-      - name: Download packages
-        working-directory: openwrt
-        run: |
-          make download -j$(nproc)
 
-      - name: Compile OpenWrt
-        working-directory: openwrt
-        run: |
-          make -j$(nproc) V=s
+      # ============================================================
+      # 15. Configure BIOS / UEFI
+      # ============================================================
 
-      - name: Show firmware
+      - name: Configure image formats
+        shell: bash
         run: |
-          echo "===== Firmware files ====="
-          find openwrt/bin/targets/x86/64/ -type f \
-            \( -name "*.img.gz" -o -name "*.vmdk" -o -name "*.qcow2" \) \
-            -print
 
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
+          cd openwrt
+
+          # --------------------------------------------------------
+          # BIOS
+          # --------------------------------------------------------
+
+          if [ "${{ inputs.build_bios }}" = "true" ]; then
+            echo "CONFIG_GRUB_IMAGES=y" >> .config
+          else
+            echo "# CONFIG_GRUB_IMAGES is not set" >> .config
+          fi
+
+
+          # --------------------------------------------------------
+          # UEFI
+          # --------------------------------------------------------
+
+          if [ "${{ inputs.build_uefi }}" = "true" ]; then
+            echo "CONFIG_GRUB_EFI_IMAGES=y" >> .config
+          else
+            echo "# CONFIG_GRUB_EFI_IMAGES is not set" >> .config
+          fi
+
+
+          # --------------------------------------------------------
+          # VMDK is generated from the finished UEFI image using
+          # qemu-img, so no need to enable VMDK_IMAGES here.
+          # --------------------------------------------------------
+
+          make defconfig
+
+
+      # ============================================================
+      # 16. Generate custom package list
+      #
+      # IMPORTANT:
+      # apk-custom-packages.sh is sourced in this same shell.
+      # ============================================================
+
+      - name: Configure custom packages
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          if [ ! -f ../shell/apk-custom-packages.sh ]; then
+            echo
+            echo "ERROR:"
+            echo "shell/apk-custom-packages.sh not found."
+            echo
+            exit 1
+          fi
+
+          chmod +x ../shell/apk-custom-packages.sh
+
+          source ../shell/apk-custom-packages.sh
+
+          if [ -z "${CUSTOM_PACKAGES}" ]; then
+            echo "ERROR: CUSTOM_PACKAGES is empty."
+            exit 1
+          fi
+
+          echo
+          echo "=============================================="
+          echo "Requested packages"
+          echo "=============================================="
+
+          for pkg in ${CUSTOM_PACKAGES}; do
+            echo "  ${pkg}"
+          done
+
+          echo
+          echo "=============================================="
+          echo "Writing package configuration"
+          echo "=============================================="
+
+          for pkg in ${CUSTOM_PACKAGES}; do
+            echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+          done
+
+          # Essential LuCI / network packages
+
+          cat >> .config <<'EOF'
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          CONFIG_PACKAGE_luci-proto-ipv6=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+
+          CONFIG_PACKAGE_ppp=y
+          CONFIG_PACKAGE_ppp-mod-pppoe=y
+          CONFIG_PACKAGE_kmod-pppoe=y
+
+          CONFIG_PACKAGE_kmod-ipv6=y
+          CONFIG_PACKAGE_odhcp6c=y
+          CONFIG_PACKAGE_odhcpd-ipv6only=y
+
+          EOF
+
+          make defconfig
+
+
+      # ============================================================
+      # 17. Package validation
+      #
+      # This is very important.
+      #
+      # If a requested package does not actually exist in the
+      # OpenWrt 25.12.5 package tree / custom package tree,
+      # make defconfig will remove it.
+      #
+      # We detect that BEFORE starting the long compilation.
+      # ============================================================
+
+      - name: Validate requested packages
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          source ../shell/apk-custom-packages.sh
+
+          FAILED=0
+
+          echo
+          echo "=============================================="
+          echo "Package validation"
+          echo "=============================================="
+
+          for pkg in ${CUSTOM_PACKAGES}; do
+
+            if grep -q "^CONFIG_PACKAGE_${pkg}=y$" .config; then
+
+              echo "OK      ${pkg}"
+
+            else
+
+              echo "MISSING ${pkg}"
+              FAILED=1
+
+            fi
+
+          done
+
+          echo
+          echo "=============================================="
+
+          if [ "${FAILED}" -ne 0 ]; then
+
+            echo
+            echo "ERROR: One or more requested packages are"
+            echo "not available in the current package tree."
+            echo
+            echo "The build has been stopped BEFORE compilation."
+            echo
+            echo "Check the package names above."
+            echo
+
+            exit 1
+          fi
+
+          echo "All requested packages are available."
+          echo
+
+
+      # ============================================================
+      # 18. Final OpenWrt configuration
+      # ============================================================
+
+      - name: Finalize OpenWrt configuration
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          make defconfig
+
+          echo
+          echo "=============================================="
+          echo "Target configuration"
+          echo "=============================================="
+
+          grep -E \
+            '^CONFIG_TARGET_|^CONFIG_GRUB_|^CONFIG_PACKAGE_(luci|mwan3|ppp|kmod-ipv6|odhcp6c|odhcpd)' \
+            .config \
+            | head -300
+
+
+      # ============================================================
+      # 19. Set RootFS partition size
+      # ============================================================
+
+      - name: Set RootFS partition size
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          sed -i \
+            "s/^CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_SIZE}/" \
+            .config
+
+          if ! grep -q '^CONFIG_TARGET_ROOTFS_PARTSIZE=' .config; then
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_SIZE}" >> .config
+          fi
+
+          make defconfig
+
+          echo
+          echo "RootFS:"
+          grep '^CONFIG_TARGET_ROOTFS_PARTSIZE=' .config
+
+
+      # ============================================================
+      # 20. Create default network configuration
+      #
+      # eth0 -> WAN1
+      # eth1 -> WANB
+      # eth2 -> LAN
+      # eth3 -> LAN
+      # eth4 -> LAN
+      # eth5 -> LAN
+      #
+      # PPPoE credentials are read from GitHub Secrets.
+      # ============================================================
+
+      - name: Create network configuration
+        shell: bash
+        env:
+          WAN1_USER: ${{ secrets.WAN1_USER }}
+          WAN1_PASS: ${{ secrets.WAN1_PASS }}
+          WAN2_USER: ${{ secrets.WAN2_USER }}
+          WAN2_PASS: ${{ secrets.WAN2_PASS }}
+
+        run: |
+
+          if [ -z "${WAN1_USER}" ] || [ -z "${WAN1_PASS}" ]; then
+            echo "ERROR: WAN1_USER / WAN1_PASS are not configured."
+            exit 1
+          fi
+
+          if [ -z "${WAN2_USER}" ] || [ -z "${WAN2_PASS}" ]; then
+            echo "ERROR: WAN2_USER / WAN2_PASS are not configured."
+            exit 1
+          fi
+
+          mkdir -p openwrt/files/etc/config
+
+          cat > openwrt/files/etc/config/network <<EOF
+
+          config interface 'loopback'
+              option device 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
+
+
+          config globals 'globals'
+
+
+          #
+          # LAN bridge
+          #
+          # eth2
+          # eth3
+          # eth4
+          # eth5
+          #
+
+          config device
+              option name 'br-lan'
+              option type 'bridge'
+              list ports 'eth2'
+              list ports 'eth3'
+              list ports 'eth4'
+              list ports 'eth5'
+
+
+          #
+          # LAN
+          #
+
+          config interface 'lan'
+              option device 'br-lan'
+              option proto 'static'
+              option ipaddr '${LAN_IP}'
+              option netmask '255.255.255.0'
+              option ip6assign '64'
+
+
+          #
+          # WAN1
+          # eth0
+          #
+
+          config interface 'wan'
+              option device 'eth0'
+              option proto 'pppoe'
+              option username '${WAN1_USER}'
+              option password '${WAN1_PASS}'
+              option ipv6 'auto'
+
+
+          #
+          # WAN1 IPv6
+          #
+
+          config interface 'wan6'
+              option device '@wan'
+              option proto 'dhcpv6'
+              option reqaddress 'try'
+              option reqprefix 'auto'
+
+
+          #
+          # WAN2
+          # eth1
+          #
+
+          config interface 'wanb'
+              option device 'eth1'
+              option proto 'pppoe'
+              option username '${WAN2_USER}'
+              option password '${WAN2_PASS}'
+              option ipv6 'auto'
+
+
+          #
+          # WAN2 IPv6
+          #
+
+          config interface 'wanb6'
+              option device '@wanb'
+              option proto 'dhcpv6'
+              option reqaddress 'try'
+              option reqprefix 'auto'
+
+          EOF
+
+          echo
+          echo "Network configuration created."
+
+
+      # ============================================================
+      # 21. Create DHCP / IPv6 configuration
+      # ============================================================
+
+      - name: Create DHCP configuration
+        shell: bash
+        run: |
+
+          cat > openwrt/files/etc/config/dhcp <<'EOF'
+
+          config dnsmasq
+              option domainneeded '1'
+              option boguspriv '1'
+              option filterwin2k '0'
+              option localise_queries '1'
+              option rebind_protection '1'
+              option rebind_localhost '1'
+              option local '/lan/'
+              option domain 'lan'
+              option expandhosts '1'
+              option authoritative '1'
+              option readethers '1'
+              option leasefile '/tmp/dhcp.leases'
+              option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+
+
+          config dhcp 'lan'
+              option interface 'lan'
+              option start '100'
+              option limit '150'
+              option leasetime '12h'
+
+              option dhcpv4 'server'
+              option dhcpv6 'server'
+
+              option ra 'server'
+              option ra_management '1'
+
+
+          config dhcp 'wan'
+              option interface 'wan'
+              option ignore '1'
+
+
+          config dhcp 'wanb'
+              option interface 'wanb'
+              option ignore '1'
+
+
+          config odhcpd 'odhcpd'
+              option maindhcp '0'
+              option leasefile '/tmp/hosts/odhcpd'
+              option leasetrigger '/usr/sbin/odhcpd-update'
+              option loglevel '4'
+
+          EOF
+
+
+      # ============================================================
+      # 22. Set default LuCI language to Simplified Chinese
+      # ============================================================
+
+      - name: Set default language
+        shell: bash
+        run: |
+
+          mkdir -p openwrt/files/etc/uci-defaults
+
+          cat > openwrt/files/etc/uci-defaults/99-default-language <<'EOF'
+
+          #!/bin/sh
+
+          uci -q set luci.main.lang='zh_cn'
+          uci -q commit luci
+
+          exit 0
+
+          EOF
+
+          chmod +x openwrt/files/etc/uci-defaults/99-default-language
+
+
+      # ============================================================
+      # 23. Create build info
+      # ============================================================
+
+      - name: Create build metadata
+        shell: bash
+        env:
+          WAN1_USER: ${{ secrets.WAN1_USER }}
+          WAN2_USER: ${{ secrets.WAN2_USER }}
+
+        run: |
+
+          mkdir -p openwrt/files/etc/openwrt-custom
+
+          cat > openwrt/files/etc/openwrt-custom/build-info <<EOF
+
+          OpenWrt Custom Build
+          ====================
+
+          OpenWrt Version : ${OPENWRT_VERSION}
+          Target          : x86_64
+          RootFS Size     : ${{ inputs.rootfs_size }}
+
+          Build Date UTC  : ${BUILD_DATE}
+          Build Time UTC  : ${BUILD_TIME}
+
+          Git Commit      : ${GITHUB_SHA}
+
+          LAN             : ${LAN_IP}/24
+
+          WAN1            : eth0 / PPPoE
+          WAN2            : eth1 / PPPoE
+
+          LAN Ports       : eth2 eth3 eth4 eth5
+
+          IPv6            : enabled
+          IPv6 PD         : enabled
+
+          WAN1 Account    : ${WAN1_USER}
+          WAN2 Account    : ${WAN2_USER}
+
+          EOF
+
+
+      # ============================================================
+      # 24. Download package sources
+      # ============================================================
+
+      - name: Download sources
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          make download \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ============================================================
+      # 25. Build OpenWrt
+      # ============================================================
+
+      - name: Build OpenWrt
+        shell: bash
+        run: |
+
+          cd openwrt
+
+          make \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ============================================================
+      # 26. Locate build output
+      # ============================================================
+
+      - name: Inspect build output
+        shell: bash
+        run: |
+
+          IMAGE_DIR="openwrt/bin/targets/x86/64"
+
+          echo
+          echo "=============================================="
+          echo "Build output"
+          echo "=============================================="
+
+          ls -lah "${IMAGE_DIR}"
+
+          echo
+          echo "Images:"
+          find "${IMAGE_DIR}" \
+            -maxdepth 1 \
+            -type f \
+            | sort
+
+
+      # ============================================================
+      # 27. Prepare release directory
+      # ============================================================
+
+      - name: Prepare release directory
+        shell: bash
+        run: |
+
+          rm -rf release
+          mkdir -p release
+
+
+      # ============================================================
+      # 28. Copy BIOS image
+      # ============================================================
+
+      - name: Package BIOS image
+        if: ${{ inputs.build_bios }}
+        shell: bash
+        run: |
+
+          IMAGE_DIR="openwrt/bin/targets/x86/64"
+
+          BIOS_IMAGE="$(find "${IMAGE_DIR}" \
+            -maxdepth 1 \
+            -type f \
+            -name '*ext4-combined.img.gz' \
+            ! -name '*efi*' \
+            | head -1)"
+
+          if [ -z "${BIOS_IMAGE}" ]; then
+            echo "ERROR: BIOS image not found."
+            exit 1
+          fi
+
+          cp "${BIOS_IMAGE}" \
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-BIOS.img.gz"
+
+
+      # ============================================================
+      # 29. Copy UEFI image
+      # ============================================================
+
+      - name: Package UEFI image
+        if: ${{ inputs.build_uefi }}
+        shell: bash
+        run: |
+
+          IMAGE_DIR="openwrt/bin/targets/x86/64"
+
+          UEFI_IMAGE="$(find "${IMAGE_DIR}" \
+            -maxdepth 1 \
+            -type f \
+            -name '*ext4-combined-efi.img.gz' \
+            | head -1)"
+
+          if [ -z "${UEFI_IMAGE}" ]; then
+            echo "ERROR: UEFI image not found."
+            exit 1
+          fi
+
+          cp "${UEFI_IMAGE}" \
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.img.gz"
+
+
+      # ============================================================
+      # 30. Extract UEFI RAW image
+      #
+      # QCOW2 / VMDK conversion uses this.
+      # ============================================================
+
+      - name: Prepare RAW image
+        if: ${{ inputs.build_qcow2 || inputs.build_vmdk || inputs.build_raw }}
+        shell: bash
+        run: |
+
+          IMAGE_DIR="openwrt/bin/targets/x86/64"
+
+          UEFI_IMAGE="$(find "${IMAGE_DIR}" \
+            -maxdepth 1 \
+            -type f \
+            -name '*ext4-combined-efi.img.gz' \
+            | head -1)"
+
+          if [ -z "${UEFI_IMAGE}" ]; then
+            echo "ERROR: UEFI image is required for RAW/QCOW2/VMDK."
+            exit 1
+          fi
+
+          gunzip -c "${UEFI_IMAGE}" \
+            > "OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+          ls -lh \
+            "OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+
+      # ============================================================
+      # 31. QCOW2
+      # ============================================================
+
+      - name: Generate QCOW2
+        if: ${{ inputs.build_qcow2 }}
+        shell: bash
+        run: |
+
+          RAW_FILE="OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+          QCOW2_FILE="release/OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.qcow2"
+
+          qemu-img convert \
+            -p \
+            -f raw \
+            -O qcow2 \
+            -o compression_type=zstd \
+            "${RAW_FILE}" \
+            "${QCOW2_FILE}"
+
+          qemu-img info "${QCOW2_FILE}"
+
+
+      # ============================================================
+      # 32. VMDK
+      # ============================================================
+
+      - name: Generate VMDK
+        if: ${{ inputs.build_vmdk }}
+        shell: bash
+        run: |
+
+          RAW_FILE="OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+          VMDK_FILE="release/OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.vmdk"
+
+          qemu-img convert \
+            -p \
+            -f raw \
+            -O vmdk \
+            "${RAW_FILE}" \
+            "${VMDK_FILE}"
+
+          qemu-img info "${VMDK_FILE}"
+
+
+      # ============================================================
+      # 33. Copy RAW
+      # ============================================================
+
+      - name: Copy RAW
+        if: ${{ inputs.build_raw }}
+        shell: bash
+        run: |
+
+          RAW_FILE="OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+          cp "${RAW_FILE}" \
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+
+      # ============================================================
+      # 34. Remove temporary RAW
+      # ============================================================
+
+      - name: Remove temporary RAW
+        if: ${{ !inputs.build_raw }}
+        shell: bash
+        run: |
+
+          rm -f \
+            "OpenWrt-${OPENWRT_VERSION}-x86-64-${{ inputs.rootfs_size }}-${BUILD_DATE}-UEFI.raw"
+
+
+      # ============================================================
+      # 35. Generate SHA256
+      # ============================================================
+
+      - name: Generate SHA256
+        shell: bash
+        run: |
+
+          cd release
+
+          sha256sum \
+            * \
+            > sha256sums
+
+          echo
+          echo "=============================================="
+          echo "SHA256"
+          echo "=============================================="
+
+          cat sha256sums
+
+
+      # ============================================================
+      # 36. Generate build info
+      # ============================================================
+
+      - name: Generate release information
+        shell: bash
+        run: |
+
+          cat > release/build-info.txt <<EOF
+
+          ==================================================
+          OpenWrt Custom Build
+          ==================================================
+
+          OpenWrt Version : ${OPENWRT_VERSION}
+
+          Target          : x86_64
+
+          RootFS Size     : ${{ inputs.rootfs_size }}
+
+          Build Date UTC  : ${BUILD_DATE}
+
+          Build Time UTC  : ${BUILD_TIME}
+
+          Git Commit      : ${GITHUB_SHA}
+
+          LAN IP          : ${LAN_IP}
+
+          ==================================================
+          Network
+          ==================================================
+
+          eth0 -> WAN1 -> PPPoE -> IPv4 + IPv6
+
+          eth1 -> WANB -> PPPoE -> IPv4 + IPv6
+
+          eth2 -> LAN
+          eth3 -> LAN
+          eth4 -> LAN
+          eth5 -> LAN
+
+          LAN IPv4:
+          ${LAN_IP}/24
+
+          IPv6:
+          WAN1 DHCPv6 / Prefix Delegation
+          WAN2 DHCPv6 / Prefix Delegation
+          LAN IPv6 RA
+
+          ==================================================
+          Packages
+          ==================================================
+
+          LuCI
+          Simplified Chinese
+          Aurora
+          Aurora Config
+          FileBrowser Go Chinese
+          Bandix
+          luci-app-run
+          PassWall
+          OpenClash
+          mwan3
+          PPPoE
+          IPv6
+          ttyd
+          UPnP
+          VLMCSd
+          Timewol
+          Autoreboot
+
+          ==================================================
+
+          EOF
+
+          cat release/build-info.txt
+
+
+      # ============================================================
+      # 37. Show final files
+      # ============================================================
+
+      - name: Show release files
+        shell: bash
+        run: |
+
+          echo
+          echo "=============================================="
+          echo "Final release files"
+          echo "=============================================="
+
+          ls -lh release
+
+
+      # ============================================================
+      # 38. Create GitHub Release
+      #
+      # Example:
+      #
+      # OpenWrt-25.12.5-x86-64-4G-20260817-123
+      #
+      # Date + GitHub run number guarantees uniqueness.
+      # ============================================================
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+
         with:
-          name: openwrt-25.12.5-x86-64
-          path: |
-            openwrt/bin/targets/x86/64/*.img.gz
-            openwrt/bin/targets/x86/64/*.vmdk
-            openwrt/bin/targets/x86/64/*.manifest
-            openwrt/bin/targets/x86/64/*.buildinfo
-            openwrt/bin/targets/x86/64/sha256sums
-          retention-days: 7
+
+          tag_name: "OpenWrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ inputs.rootfs_size }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
+
+          name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ inputs.rootfs_size }} ${{ env.BUILD_DATE }} #${{ github.run_number }}"
+
+          body: |
+            # OpenWrt ${{ env.OPENWRT_VERSION }} Custom Build
+
+            **Target:** x86_64
+
+            **RootFS:** ${{ inputs.rootfs_size }}
+
+            **Build date:** ${{ env.BUILD_DATE }}
+
+            **Build time UTC:** ${{ env.BUILD_TIME }}
+
+            **LAN:** `${{ inputs.lan_ip }}`
+
+            ## Network
+
+            | Interface | Function |
+            |---|---|
+            | eth0 | WAN1 / PPPoE / IPv4 + IPv6 |
+            | eth1 | WANB / PPPoE / IPv4 + IPv6 |
+            | eth2 | LAN |
+            | eth3 | LAN |
+            | eth4 | LAN |
+            | eth5 | LAN |
+
+            ## Features
+
+            - LuCI
+            - Simplified Chinese
+            - Aurora
+            - Aurora Config
+            - FileBrowser Go
+            - Bandix
+            - luci-app-run
+            - PassWall
+            - OpenClash
+            - mwan3
+            - PPPoE
+            - IPv6
+            - IPv6 Prefix Delegation
+            - ttyd
+            - UPnP
+            - VLMCSd
+            - Timewol
+            - Autoreboot
+
+            ## Images
+
+            Images are generated according to the selected workflow options.
+
+            See `build-info.txt` and `sha256sums`.
+
+          files: |
+            release/*
+
+          generate_release_notes: false
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
