@@ -3,7 +3,6 @@ name: Build OpenWrt x86-64
 on:
   workflow_dispatch:
     inputs:
-
       openwrt_version:
         description: "OpenWrt 25.12.x 版本，留空自动使用最新版本"
         required: false
@@ -64,11 +63,8 @@ on:
 permissions:
   contents: write
 
-
 jobs:
-
   build:
-
     runs-on: ubuntu-24.04
 
     steps:
@@ -84,7 +80,7 @@ jobs:
 
 
       # ==========================================================
-      # Resolve OpenWrt version
+      # 确定 OpenWrt 版本
       # ==========================================================
 
       - name: Resolve OpenWrt version
@@ -92,19 +88,16 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
-
         run: |
-
           set -euo pipefail
 
-          VERSION="${MANUAL_VERSION:-}"
+          VERSION="${MANUAL_VERSION}"
 
           if [ -z "${VERSION}" ]; then
-            VERSION="${DISPATCH_VERSION:-}"
+            VERSION="${DISPATCH_VERSION}"
           fi
 
           if [ -z "${VERSION}" ]; then
-
             echo "Detecting latest OpenWrt 25.12.x..."
 
             VERSION="$(
@@ -117,7 +110,6 @@ jobs:
               sort -V |
               tail -1
             )"
-
           fi
 
           if ! printf '%s\n' "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
@@ -155,59 +147,54 @@ jobs:
 
 
       # ==========================================================
-      # RootFS size
+      # 固件大小
       # ==========================================================
 
-      - name: Configure RootFS
+      - name: Configure rootfs size
         shell: bash
         env:
           INPUT_ROOTFS_SIZE: ${{ inputs.rootfs_size }}
-
         run: |
-
           set -euo pipefail
 
-          SIZE="${INPUT_ROOTFS_SIZE:-4G}"
+          SIZE="${INPUT_ROOTFS_SIZE}"
+
+          if [ -z "${SIZE}" ]; then
+            SIZE="4G"
+          fi
 
           case "${SIZE}" in
-
             1G)
               PARTSIZE=1024
               ;;
-
             2G)
               PARTSIZE=2048
               ;;
-
             3G)
               PARTSIZE=3072
               ;;
-
             4G)
               PARTSIZE=4096
               ;;
-
             *)
-              echo "ERROR: Invalid RootFS size: ${SIZE}"
+              echo "ERROR: Invalid rootfs size: ${SIZE}"
               exit 1
               ;;
-
           esac
 
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
           echo "RootFS size: ${SIZE}"
-          echo "RootFS partition: ${PARTSIZE} MB"
+          echo "Partition size: ${PARTSIZE} MB"
 
 
       # ==========================================================
-      # Install dependencies
+      # 安装编译依赖
       # ==========================================================
 
       - name: Install build dependencies
         run: |
-
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -249,81 +236,73 @@ jobs:
       # ==========================================================
 
       - name: Clone OpenWrt
+        shell: bash
         run: |
-
           set -euo pipefail
 
           git clone \
             --depth=1 \
-            --branch="v${OPENWRT_VERSION}" \
             https://github.com/openwrt/openwrt.git \
             openwrt
 
           cd openwrt
 
-          git fetch --depth=1 origin \
+          git fetch \
+            --depth=1 \
+            origin \
+            "refs/tags/v${OPENWRT_VERSION}"
+
+          git checkout \
             "${OPENWRT_COMMIT}"
-
-          git checkout "${OPENWRT_COMMIT}"
-
-          echo
-          echo "OpenWrt checked out:"
-          git describe --tags --always
 
 
       # ==========================================================
-      # Third-party feeds
+      # 配置第三方 feeds
       # ==========================================================
 
       - name: Configure third-party feeds
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           cat >> feeds.conf.default <<'EOF'
 
           src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main
           src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main
-
           src-git bandix https://github.com/timsaya/openwrt-bandix.git;main
           src-git bandix_luci https://github.com/timsaya/luci-app-bandix.git;main
 
           EOF
 
-          echo
-          echo "Third-party feeds:"
-          tail -20 feeds.conf.default
+          echo "Third-party feeds configured."
 
 
       # ==========================================================
-      # Update feeds
+      # 更新 feeds
       # ==========================================================
 
       - name: Update feeds
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           ./scripts/feeds update -a
 
 
       # ==========================================================
-      # Install feeds
+      # 安装 feeds
       # ==========================================================
 
       - name: Install feeds
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           ./scripts/feeds install -a
 
 
       # ==========================================================
-      # Add custom packages
+      # 添加自定义软件源
       #
       # Aurora
       # OpenClash
@@ -333,111 +312,69 @@ jobs:
       - name: Add custom packages
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           mkdir -p package/custom
-
-
-          # ------------------------------------------------------
-          # Aurora
-          # ------------------------------------------------------
 
           echo
           echo "=========================================="
           echo "Adding Aurora"
           echo "=========================================="
 
-          rm -rf package/custom/luci-theme-aurora
-
           git clone \
             --depth=1 \
             https://github.com/eamonxg/luci-theme-aurora.git \
             package/custom/luci-theme-aurora
-
-
-          # ------------------------------------------------------
-          # luci-app-run
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "Adding luci-app-run"
-          echo "=========================================="
-
-          rm -rf package/custom/luci-app-run
-
-          git clone \
-            --depth=1 \
-            https://github.com/wukongdaily/luci-app-run.git \
-            package/custom/luci-app-run
-
-
-          # ------------------------------------------------------
-          # OpenClash
-          #
-          # OpenClash 的真正 package 在：
-          #
-          # OpenClash/luci-app-openclash
-          # ------------------------------------------------------
 
           echo
           echo "=========================================="
           echo "Adding OpenClash"
           echo "=========================================="
 
-          rm -rf /tmp/OpenClash
-          rm -rf package/custom/luci-app-openclash
-
           git clone \
             --depth=1 \
             https://github.com/vernesong/OpenClash.git \
-            /tmp/OpenClash
-
-          cp -a \
-            /tmp/OpenClash/luci-app-openclash \
-            package/custom/luci-app-openclash
-
+            package/custom/OpenClash
 
           echo
-          echo "Custom packages:"
-          echo "------------------------------------------"
+          echo "=========================================="
+          echo "Adding luci-app-run"
+          echo "=========================================="
 
+          git clone \
+            --depth=1 \
+            https://github.com/wukongdaily/luci-app-run.git \
+            package/custom/luci-app-run
+
+          echo
+          echo "Custom package directories:"
           find package/custom \
+            -maxdepth 2 \
             -type f \
             -name Makefile \
-            -print
+            -print || true
 
 
       # ==========================================================
-      # Base configuration
+      # 基础配置
       # ==========================================================
 
       - name: Generate base configuration
         working-directory: openwrt
-        env:
-          BIOS: ${{ inputs.bios }}
-          UEFI: ${{ inputs.uefi }}
-
         run: |
-
           set -euo pipefail
 
           cat > .config <<EOF
-
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
           CONFIG_TARGET_ROOTFS_EXT4FS=y
           CONFIG_TARGET_IMAGES_GZIP=y
-
           CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
-
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 
           CONFIG_PACKAGE_luci-proto-ipv6=y
           CONFIG_PACKAGE_luci-proto-ppp=y
@@ -453,240 +390,189 @@ jobs:
 
           CONFIG_PACKAGE_mwan3=y
           CONFIG_PACKAGE_luci-app-mwan3=y
-          CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
 
           CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-
           CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-
           CONFIG_PACKAGE_luci-app-vlmcsd=y
-          CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
-
           CONFIG_PACKAGE_luci-app-autoreboot=y
+
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
           CONFIG_PACKAGE_luci-i18n-autoreboot-zh-cn=y
-
           CONFIG_PACKAGE_luci-i18n-timewol-zh-cn=y
-
           CONFIG_PACKAGE_luci-i18n-filebrowser-go-zh-cn=y
-
-          CONFIG_PACKAGE_luci-theme-aurora=y
-          CONFIG_PACKAGE_luci-app-aurora-config=y
-
-          CONFIG_PACKAGE_luci-app-run=y
 
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-openclash=y
 
+          CONFIG_PACKAGE_luci-theme-aurora=y
+          CONFIG_PACKAGE_luci-app-aurora-config=y
+
           CONFIG_PACKAGE_bandix=y
           CONFIG_PACKAGE_luci-app-bandix=y
 
+          CONFIG_PACKAGE_luci-app-run=y
+
           EOF
-
-
-          if [ "${BIOS:-true}" = "true" ]; then
-            echo "CONFIG_GRUB_IMAGES=y" >> .config
-          fi
-
-          if [ "${UEFI:-true}" = "true" ]; then
-            echo "CONFIG_GRUB_EFI_IMAGES=y" >> .config
-          fi
-
-
-          echo
-          echo "Running make defconfig..."
 
           make defconfig
 
 
       # ==========================================================
-      # Force required packages after defconfig
+      # 确保需要的软件包被选中
       #
-      # 关键：
-      #
-      # 不再使用之前那个容易误报的 check_config。
-      #
-      # OpenWrt 25.12 的语言包本身是有效 package，
-      # 但 make defconfig 会根据依赖重新生成配置。
-      #
-      # 所以这里重新明确写入真正需要的 package。
+      # 不再使用之前错误的 grep 检查方式。
+      # 如果某个第三方包在当前 OpenWrt 分支不存在，
+      # 只警告并从最终配置中移除，避免整个编译无意义失败。
       # ==========================================================
 
-      - name: Select required packages
+      - name: Configure custom packages
         working-directory: openwrt
+        shell: bash
         run: |
-
           set -euo pipefail
 
           PACKAGES="
           luci
           luci-ssl
-          luci-i18n-base-zh-cn
-
           luci-proto-ipv6
           luci-proto-ppp
-
           ppp
           ppp-mod-pppoe
           kmod-pppoe
-
           ipv6
           kmod-ipv6
           odhcp6c
           odhcpd-ipv6only
-
           mwan3
           luci-app-mwan3
-          luci-i18n-mwan3-zh-cn
-
           luci-app-upnp
-          luci-i18n-upnp-zh-cn
-
           luci-app-ttyd
-          luci-i18n-ttyd-zh-cn
-
           luci-app-vlmcsd
-          luci-i18n-vlmcsd-zh-cn
-
           luci-app-autoreboot
+          luci-i18n-base-zh-cn
+          luci-i18n-mwan3-zh-cn
+          luci-i18n-upnp-zh-cn
+          luci-i18n-ttyd-zh-cn
+          luci-i18n-vlmcsd-zh-cn
           luci-i18n-autoreboot-zh-cn
-
           luci-i18n-timewol-zh-cn
-
           luci-i18n-filebrowser-go-zh-cn
-
-          luci-theme-aurora
-          luci-app-aurora-config
-
-          luci-app-run
-
           luci-app-passwall
           luci-app-openclash
-
+          luci-theme-aurora
+          luci-app-aurora-config
           bandix
           luci-app-bandix
+          luci-app-run
           "
 
-          for pkg in ${PACKAGES}; do
-            echo "CONFIG_PACKAGE_${pkg}=y"
-          done > /tmp/required-packages.config
-
-
-          cat /tmp/required-packages.config >> .config
-
+          : > /tmp/selected-packages.txt
+          : > /tmp/missing-packages.txt
 
           echo
-          echo "Running final make defconfig..."
+          echo "=========================================="
+          echo "Configuring packages"
+          echo "=========================================="
+
+          for PACKAGE in ${PACKAGES}; do
+
+            echo
+            echo "Checking: ${PACKAGE}"
+
+            FOUND=0
+
+            if ./scripts/feeds search "${PACKAGE}" 2>/dev/null | grep -q "^${PACKAGE}"; then
+              FOUND=1
+            fi
+
+            if find package/custom \
+              -type f \
+              -name Makefile \
+              -exec grep -q \
+              "define Package/${PACKAGE}" {} \; 2>/dev/null; then
+              FOUND=1
+            fi
+
+            if [ "${FOUND}" -eq 1 ]; then
+              echo "OK: ${PACKAGE}"
+              echo "CONFIG_PACKAGE_${PACKAGE}=y" >> .config
+              echo "${PACKAGE}" >> /tmp/selected-packages.txt
+            else
+              echo "WARNING: Package not found: ${PACKAGE}"
+              echo "${PACKAGE}" >> /tmp/missing-packages.txt
+            fi
+
+          done
+
+          make defconfig
+
+          echo
+          echo "=========================================="
+          echo "Selected packages"
+          echo "=========================================="
+
+          sort -u /tmp/selected-packages.txt || true
+
+          echo
+          echo "=========================================="
+          echo "Missing packages"
+          echo "=========================================="
+
+          sort -u /tmp/missing-packages.txt || true
+
+          cp /tmp/selected-packages.txt \
+            selected-packages.txt
+
+          cp /tmp/missing-packages.txt \
+            missing-packages.txt
+
+
+      # ==========================================================
+      # 处理 BIOS / UEFI
+      # ==========================================================
+
+      - name: Configure image formats
+        working-directory: openwrt
+        env:
+          BIOS: ${{ inputs.bios }}
+          UEFI: ${{ inputs.uefi }}
+        run: |
+          set -euo pipefail
+
+          BIOS_VALUE="${BIOS}"
+          UEFI_VALUE="${UEFI}"
+
+          if [ -z "${BIOS_VALUE}" ]; then
+            BIOS_VALUE="true"
+          fi
+
+          if [ -z "${UEFI_VALUE}" ]; then
+            UEFI_VALUE="true"
+          fi
+
+          if [ "${BIOS_VALUE}" = "true" ]; then
+            echo "CONFIG_GRUB_IMAGES=y" >> .config
+          fi
+
+          if [ "${UEFI_VALUE}" = "true" ]; then
+            echo "CONFIG_GRUB_EFI_IMAGES=y" >> .config
+          fi
 
           make defconfig
 
 
       # ==========================================================
-      # Package availability report
-      #
-      # 不再因为 grep 检查失败而直接停止。
-      # 这里只报告状态。
-      # ==========================================================
-
-      - name: Report selected packages
-        working-directory: openwrt
-        run: |
-
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Selected package status"
-          echo "=========================================="
-
-
-          PACKAGES="
-          luci
-          luci-i18n-base-zh-cn
-          luci-app-mwan3
-          luci-app-upnp
-          luci-app-ttyd
-          luci-app-vlmcsd
-          luci-app-autoreboot
-          luci-i18n-timewol-zh-cn
-          luci-i18n-filebrowser-go-zh-cn
-          luci-app-passwall
-          luci-app-openclash
-          luci-theme-aurora
-          luci-app-aurora-config
-          luci-app-bandix
-          bandix
-          luci-app-run
-          "
-
-
-          for pkg in ${PACKAGES}; do
-
-            if grep -q "^CONFIG_PACKAGE_${pkg}=" .config; then
-
-              VALUE="$(
-                grep "^CONFIG_PACKAGE_${pkg}=" .config |
-                tail -1
-              )"
-
-              echo "OK    ${VALUE}"
-
-            else
-
-              echo "MISS  ${pkg}"
-
-            fi
-
-          done
-
-
-          echo
-          echo "=========================================="
-          echo "Chinese translation packages"
-          echo "=========================================="
-
-          grep \
-            '^CONFIG_PACKAGE_luci-i18n-.*-zh-cn=' \
-            .config \
-            || true
-
-
-      # ==========================================================
-      # Default language
-      # ==========================================================
-
-      - name: Set default language
-        run: |
-
-          set -euo pipefail
-
-          mkdir -p \
-            openwrt/files/etc/uci-defaults
-
-
-          cat > openwrt/files/etc/uci-defaults/99-default-language <<'EOF'
-#!/bin/sh
-
-uci -q set luci.main.lang='zh_cn'
-uci -q commit luci
-
-exit 0
-EOF
-
-
-          chmod +x \
-            openwrt/files/etc/uci-defaults/99-default-language
-
-
-      # ==========================================================
-      # Network configuration
+      # 网络配置
       #
       # eth0 = WAN
       # eth1 = WANB
-      # eth2~eth5 = LAN
+      # eth2-eth5 = LAN
       #
-      # PPPoE credentials from GitHub Secrets
+      # PPPoE 用户名密码从 GitHub Secrets 获取
       # ==========================================================
 
       - name: Generate network configuration
@@ -696,83 +582,87 @@ EOF
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
           LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
-
           set -euo pipefail
 
-          if [ -z "${WAN1_USER}" ] || [ -z "${WAN1_PASS}" ]; then
-            echo "ERROR: WAN1_USER / WAN1_PASS is not configured."
+          if [ -z "${WAN1_USER}" ]; then
+            echo "ERROR: WAN1_USER is not configured."
             exit 1
           fi
 
-          if [ -z "${WAN2_USER}" ] || [ -z "${WAN2_PASS}" ]; then
-            echo "ERROR: WAN2_USER / WAN2_PASS is not configured."
+          if [ -z "${WAN1_PASS}" ]; then
+            echo "ERROR: WAN1_PASS is not configured."
             exit 1
           fi
 
-          LAN_IP="${LAN_IP:-192.168.1.2}"
+          if [ -z "${WAN2_USER}" ]; then
+            echo "ERROR: WAN2_USER is not configured."
+            exit 1
+          fi
 
-          mkdir -p \
-            openwrt/files/etc/config
+          if [ -z "${WAN2_PASS}" ]; then
+            echo "ERROR: WAN2_PASS is not configured."
+            exit 1
+          fi
 
+          IP="${LAN_IP}"
+
+          if [ -z "${IP}" ]; then
+            IP="192.168.1.2"
+          fi
+
+          mkdir -p openwrt/files/etc/config
 
           cat > openwrt/files/etc/config/network <<EOF
+          config interface 'loopback'
+              option device 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
 
-config interface 'loopback'
-    option device 'lo'
-    option proto 'static'
-    option ipaddr '127.0.0.1'
-    option netmask '255.0.0.0'
+          config device
+              option name 'br-lan'
+              option type 'bridge'
+              list ports 'eth2'
+              list ports 'eth3'
+              list ports 'eth4'
+              list ports 'eth5'
 
+          config interface 'lan'
+              option device 'br-lan'
+              option proto 'static'
+              option ipaddr '${IP}'
+              option netmask '255.255.255.0'
+              option ip6assign '64'
 
-config device
-    option name 'br-lan'
-    option type 'bridge'
-    list ports 'eth2'
-    list ports 'eth3'
-    list ports 'eth4'
-    list ports 'eth5'
+          config interface 'wan'
+              option device 'eth0'
+              option proto 'pppoe'
+              option username '${WAN1_USER}'
+              option password '${WAN1_PASS}'
+              option ipv6 'auto'
 
+          config interface 'wan6'
+              option device '@wan'
+              option proto 'dhcpv6'
+              option reqaddress 'try'
+              option reqprefix 'auto'
 
-config interface 'lan'
-    option device 'br-lan'
-    option proto 'static'
-    option ipaddr '${LAN_IP}'
-    option netmask '255.255.255.0'
-    option ip6assign '64'
+          config interface 'wanb'
+              option device 'eth1'
+              option proto 'pppoe'
+              option username '${WAN2_USER}'
+              option password '${WAN2_PASS}'
+              option ipv6 'auto'
 
+          config interface 'wanb6'
+              option device '@wanb'
+              option proto 'dhcpv6'
+              option reqaddress 'try'
+              option reqprefix 'auto'
+          EOF
 
-config interface 'wan'
-    option device 'eth0'
-    option proto 'pppoe'
-    option username '${WAN1_USER}'
-    option password '${WAN1_PASS}'
-    option ipv6 'auto'
-
-
-config interface 'wan6'
-    option device '@wan'
-    option proto 'dhcpv6'
-    option reqaddress 'try'
-    option reqprefix 'auto'
-
-
-config interface 'wanb'
-    option device 'eth1'
-    option proto 'pppoe'
-    option username '${WAN2_USER}'
-    option password '${WAN2_PASS}'
-    option ipv6 'auto'
-
-
-config interface 'wanb6'
-    option device '@wanb'
-    option proto 'dhcpv6'
-    option reqaddress 'try'
-    option reqprefix 'auto'
-
-EOF
+          echo "Network configuration generated."
 
 
       # ==========================================================
@@ -781,134 +671,154 @@ EOF
 
       - name: Generate DHCP configuration
         run: |
-
           set -euo pipefail
 
-          mkdir -p \
-            openwrt/files/etc/config
-
+          mkdir -p openwrt/files/etc/config
 
           cat > openwrt/files/etc/config/dhcp <<'EOF'
+          config dnsmasq
+              option domainneeded '1'
+              option boguspriv '1'
+              option localise_queries '1'
+              option rebind_protection '1'
+              option local '/lan/'
+              option domain 'lan'
+              option expandhosts '1'
+              option authoritative '1'
+              option readethers '1'
+              option leasefile '/tmp/dhcp.leases'
+              option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
 
-config dnsmasq
-    option domainneeded '1'
-    option boguspriv '1'
-    option localise_queries '1'
-    option rebind_protection '1'
-    option local '/lan/'
-    option domain 'lan'
-    option expandhosts '1'
-    option authoritative '1'
-    option readethers '1'
-    option leasefile '/tmp/dhcp.leases'
-    option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+          config dhcp 'lan'
+              option interface 'lan'
+              option start '100'
+              option limit '150'
+              option leasetime '12h'
+              option dhcpv4 'server'
+              option dhcpv6 'server'
+              option ra 'server'
+              option ra_management '1'
 
+          config dhcp 'wan'
+              option interface 'wan'
+              option ignore '1'
 
-config dhcp 'lan'
-    option interface 'lan'
-    option start '100'
-    option limit '150'
-    option leasetime '12h'
-    option dhcpv4 'server'
-    option dhcpv6 'server'
-    option ra 'server'
-    option ra_management '1'
+          config dhcp 'wanb'
+              option interface 'wanb'
+              option ignore '1'
 
+          config dhcp 'wan6'
+              option interface 'wan6'
+              option ignore '1'
 
-config dhcp 'wan'
-    option interface 'wan'
-    option ignore '1'
+          config dhcp 'wanb6'
+              option interface 'wanb6'
+              option ignore '1'
 
-
-config dhcp 'wanb'
-    option interface 'wanb'
-    option ignore '1'
-
-
-config odhcpd 'odhcpd'
-    option maindhcp '0'
-    option leasefile '/tmp/hosts/odhcpd'
-    option leasetrigger '/usr/sbin/odhcpd-update'
-    option loglevel '4'
-
-EOF
+          config odhcpd 'odhcpd'
+              option maindhcp '0'
+              option leasefile '/tmp/hosts/odhcpd'
+              option leasetrigger '/usr/sbin/odhcpd-update'
+              option loglevel '4'
+          EOF
 
 
       # ==========================================================
-      # Build information
+      # 默认简体中文
+      # ==========================================================
+
+      - name: Set default language
+        run: |
+          set -euo pipefail
+
+          mkdir -p openwrt/files/etc/uci-defaults
+
+          cat > openwrt/files/etc/uci-defaults/99-default-language <<'EOF'
+          #!/bin/sh
+
+          uci -q set luci.main.lang='zh_cn'
+          uci -q commit luci
+
+          exit 0
+          EOF
+
+          chmod +x \
+            openwrt/files/etc/uci-defaults/99-default-language
+
+
+      # ==========================================================
+      # 写入构建信息
       # ==========================================================
 
       - name: Create build information
-        env:
-          LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
-
           set -euo pipefail
 
-          LAN_IP="${LAN_IP:-192.168.1.2}"
-
-          mkdir -p \
-            openwrt/files/etc/openwrt-custom
-
+          mkdir -p openwrt/files/etc/openwrt-custom
 
           cat > openwrt/files/etc/openwrt-custom/build-info <<EOF
+          OpenWrt Custom Build
 
-OpenWrt Custom Build
+          OpenWrt Version:
+          ${OPENWRT_VERSION}
 
-OpenWrt Version:
-${OPENWRT_VERSION}
+          OpenWrt Commit:
+          ${OPENWRT_COMMIT}
 
-OpenWrt Commit:
-${OPENWRT_COMMIT}
+          Target:
+          x86-64
 
-Target:
-x86-64
+          RootFS:
+          ${ROOTFS_SIZE}
 
-RootFS:
-${ROOTFS_SIZE}
+          Build Date:
+          ${BUILD_DATE}
 
-Build Date:
-${BUILD_DATE}
+          Build Time:
+          ${BUILD_TIME} UTC
 
-Build Time:
-${BUILD_TIME} UTC
+          LAN:
+          ${{ inputs.lan_ip }}
 
-LAN:
-${LAN_IP}
+          Network:
+          eth0 = WAN / PPPoE
+          eth1 = WANB / PPPoE
+          eth2 = LAN
+          eth3 = LAN
+          eth4 = LAN
+          eth5 = LAN
 
-eth0:
-WAN / PPPoE
-
-eth1:
-WANB / PPPoE
-
-eth2:
-LAN
-
-eth3:
-LAN
-
-eth4:
-LAN
-
-eth5:
-LAN
-
-IPv6:
-Enabled
-
-EOF
+          IPv6:
+          Enabled
+          EOF
 
 
       # ==========================================================
-      # Download packages
+      # 显示最终配置
+      # ==========================================================
+
+      - name: Show final configuration
+        working-directory: openwrt
+        run: |
+          echo
+          echo "=========================================="
+          echo "Final OpenWrt configuration"
+          echo "=========================================="
+
+          grep '^CONFIG_TARGET_' .config | head -50 || true
+
+          echo
+          echo "Selected packages:"
+          grep '^CONFIG_PACKAGE_' .config | sort || true
+
+
+      # ==========================================================
+      # 下载软件包
       # ==========================================================
 
       - name: Download packages
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           make download \
@@ -917,13 +827,12 @@ EOF
 
 
       # ==========================================================
-      # Build
+      # 编译
       # ==========================================================
 
       - name: Build OpenWrt
         working-directory: openwrt
         run: |
-
           set -euo pipefail
 
           make \
@@ -932,44 +841,46 @@ EOF
 
 
       # ==========================================================
-      # Prepare release
+      # 准备 Release
       # ==========================================================
 
       - name: Prepare release directory
         run: |
-
           set -euo pipefail
 
           rm -rf release
           mkdir -p release
 
+          cp openwrt/selected-packages.txt \
+            release/selected-packages.txt
+
+          if [ -f openwrt/missing-packages.txt ]; then
+            cp openwrt/missing-packages.txt \
+              release/missing-packages.txt
+          fi
+
 
       # ==========================================================
-      # BIOS
+      # BIOS 镜像
       # ==========================================================
 
       - name: Copy BIOS image
-        if: inputs.bios
+        if: ${{ inputs.bios != false }}
+        shell: bash
         run: |
-
           set -euo pipefail
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*combined-ext4.img.gz' \
+              -name '*ext4-combined.img.gz' \
               ! -name '*efi*' |
             head -1
           )"
 
-
           if [ -z "${IMAGE}" ]; then
-
             echo "ERROR: BIOS image not found."
-
-            echo
-            echo "Available images:"
 
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
@@ -977,39 +888,32 @@ EOF
               -print
 
             exit 1
-
           fi
-
 
           cp "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-BIOS.img.gz"
 
 
       # ==========================================================
-      # UEFI
+      # UEFI 镜像
       # ==========================================================
 
       - name: Copy UEFI image
-        if: inputs.uefi
+        if: ${{ inputs.uefi != false }}
+        shell: bash
         run: |
-
           set -euo pipefail
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*combined-efi.img.gz' |
+              -name '*ext4-combined-efi.img.gz' |
             head -1
           )"
 
-
           if [ -z "${IMAGE}" ]; then
-
             echo "ERROR: UEFI image not found."
-
-            echo
-            echo "Available images:"
 
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
@@ -1017,38 +921,34 @@ EOF
               -print
 
             exit 1
-
           fi
-
 
           cp "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
 
       # ==========================================================
-      # Prepare raw
+      # 准备 RAW
       # ==========================================================
 
       - name: Prepare raw image
-        if: inputs.qcow2 || inputs.vmdk || inputs.raw
+        if: ${{ inputs.qcow2 || inputs.vmdk || inputs.raw }}
+        shell: bash
         run: |
-
           set -euo pipefail
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*combined-efi.img.gz' |
+              -name '*ext4-combined-efi.img.gz' |
             head -1
           )"
-
 
           if [ -z "${IMAGE}" ]; then
             echo "ERROR: UEFI image not found."
             exit 1
           fi
-
 
           gzip -dc \
             "${IMAGE}" \
@@ -1060,9 +960,8 @@ EOF
       # ==========================================================
 
       - name: Create QCOW2
-        if: inputs.qcow2
+        if: ${{ inputs.qcow2 }}
         run: |
-
           set -euo pipefail
 
           qemu-img convert \
@@ -1078,9 +977,8 @@ EOF
       # ==========================================================
 
       - name: Create VMDK
-        if: inputs.vmdk
+        if: ${{ inputs.vmdk }}
         run: |
-
           set -euo pipefail
 
           qemu-img convert \
@@ -1095,9 +993,8 @@ EOF
       # ==========================================================
 
       - name: Create RAW
-        if: inputs.raw
+        if: ${{ inputs.raw }}
         run: |
-
           set -euo pipefail
 
           cp \
@@ -1111,80 +1008,74 @@ EOF
 
       - name: Generate SHA256
         run: |
-
           set -euo pipefail
 
           cd release
 
-          sha256sum * > sha256sums
+          sha256sum \
+            *.img.gz \
+            *.qcow2 \
+            *.vmdk \
+            *.raw \
+            2>/dev/null > sha256sums || true
 
 
       # ==========================================================
-      # Release information
+      # Release 信息
       # ==========================================================
 
       - name: Create release information
-        env:
-          LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
-
           set -euo pipefail
 
-          LAN_IP="${LAN_IP:-192.168.1.2}"
-
-
           cat > release/build-info.txt <<EOF
+          ==========================================
+          OpenWrt Custom Build
+          ==========================================
 
-==========================================
-OpenWrt Custom Build
-==========================================
+          OpenWrt:
+          ${OPENWRT_VERSION}
 
-OpenWrt:
-${OPENWRT_VERSION}
+          OpenWrt commit:
+          ${OPENWRT_COMMIT}
 
-OpenWrt commit:
-${OPENWRT_COMMIT}
+          Target:
+          x86-64
 
-Target:
-x86-64
+          RootFS:
+          ${ROOTFS_SIZE}
 
-RootFS:
-${ROOTFS_SIZE}
+          Build date:
+          ${BUILD_DATE}
 
-Build date:
-${BUILD_DATE}
+          Build time:
+          ${BUILD_TIME} UTC
 
-Build time:
-${BUILD_TIME} UTC
+          Network:
 
-Network:
+          eth0 = WAN / PPPoE
+          eth1 = WANB / PPPoE
+          eth2 = LAN
+          eth3 = LAN
+          eth4 = LAN
+          eth5 = LAN
 
-eth0 = WAN / PPPoE
-eth1 = WANB / PPPoE
-eth2 = LAN
-eth3 = LAN
-eth4 = LAN
-eth5 = LAN
+          LAN:
+          ${{ inputs.lan_ip }}
 
-LAN IP:
-${LAN_IP}
+          IPv6:
+          Enabled
 
-IPv6:
-Enabled
-
-==========================================
-
-EOF
+          ==========================================
+          EOF
 
 
       # ==========================================================
-      # Show files
+      # 显示最终文件
       # ==========================================================
 
       - name: Show release files
         run: |
-
           echo
           echo "=========================================="
           echo "Release files"
@@ -1194,18 +1085,14 @@ EOF
 
 
       # ==========================================================
-      # GitHub Release
+      # 创建 GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-
         with:
-
           tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
-
           name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
-
           body: |
             # OpenWrt ${{ env.OPENWRT_VERSION }} x86-64
 
@@ -1247,6 +1134,10 @@ EOF
             - VLMCSd
             - Timewol
             - Autoreboot
+
+            ## WAN
+
+            WAN1 and WAN2 PPPoE credentials are provided through GitHub Actions Secrets.
 
           files: |
             release/*
