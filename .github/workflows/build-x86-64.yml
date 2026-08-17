@@ -228,7 +228,7 @@ jobs:
 
 
       # ==========================================================
-      # Download official ImageBuilder
+      # Official ImageBuilder
       # ==========================================================
 
       - name: Download official ImageBuilder
@@ -248,6 +248,7 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
+
           mkdir -p imagebuilder
 
           tar \
@@ -262,7 +263,7 @@ jobs:
 
 
       # ==========================================================
-      # ImageBuilder info
+      # Check ImageBuilder
       # ==========================================================
 
       - name: Check ImageBuilder
@@ -275,7 +276,7 @@ jobs:
 
 
       # ==========================================================
-      # PassWall repository
+      # PassWall
       # ==========================================================
 
       - name: Configure PassWall repository
@@ -291,26 +292,14 @@ jobs:
 
           PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-          grep -qxF \
+          for REPO in \
             "${PASSWALL_BASE}/passwall_luci/packages.adb" \
-            repositories ||
-            printf '%s\n' \
-              "${PASSWALL_BASE}/passwall_luci/packages.adb" \
-              >> repositories
-
-          grep -qxF \
             "${PASSWALL_BASE}/passwall_packages/packages.adb" \
-            repositories ||
-            printf '%s\n' \
-              "${PASSWALL_BASE}/passwall_packages/packages.adb" \
-              >> repositories
-
-          grep -qxF \
-            "${PASSWALL_BASE}/passwall2/packages.adb" \
-            repositories ||
-            printf '%s\n' \
-              "${PASSWALL_BASE}/passwall2/packages.adb" \
-              >> repositories
+            "${PASSWALL_BASE}/passwall2/packages.adb"
+          do
+            grep -qxF "${REPO}" repositories ||
+              printf '%s\n' "${REPO}" >> repositories
+          done
 
           mkdir -p keys
 
@@ -338,10 +327,7 @@ jobs:
             https://github.com/wukongdaily/apk.git \
             third-party-apk
 
-          if [ ! -d third-party-apk/run/x86 ]; then
-            echo "ERROR: third-party-apk/run/x86 not found."
-            exit 1
-          fi
+          test -d third-party-apk/run/x86
 
 
       # ==========================================================
@@ -378,7 +364,7 @@ jobs:
 
 
       # ==========================================================
-      # OpenClash APK
+      # OpenClash
       # ==========================================================
 
       - name: Prepare OpenClash APK
@@ -431,7 +417,7 @@ jobs:
 
 
       # ==========================================================
-      # Official OpenWrt SDK
+      # Official SDK
       # ==========================================================
 
       - name: Download official OpenWrt SDK
@@ -467,6 +453,7 @@ jobs:
             -O openwrt-sdk.tar.zst
 
           rm -rf sdk
+
           mkdir -p sdk
 
           tar \
@@ -478,7 +465,7 @@ jobs:
 
 
       # ==========================================================
-      # Update official SDK feeds
+      # Official SDK feeds
       # ==========================================================
 
       - name: Update SDK feeds
@@ -493,10 +480,34 @@ jobs:
 
 
       # ==========================================================
-      # Download sbwml packages
+      # Kiddin9 Kwrt 25.12 source
+      #
+      # 这是第三方源码的第一优先级。
       # ==========================================================
 
-      - name: Download sbwml package sources
+      - name: Download Kiddin9 Kwrt 25.12 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf kiddin9-kwrt
+
+          git clone \
+            --depth=1 \
+            --branch 25.12 \
+            https://github.com/kiddin9/Kwrt.git \
+            kiddin9-kwrt
+
+          echo
+          echo "Kiddin9 Kwrt:"
+          git -C kiddin9-kwrt log -1 --oneline
+
+
+      # ==========================================================
+      # Fallback repositories
+      # ==========================================================
+
+      - name: Download fallback package sources
         shell: bash
         run: |
           set -euo pipefail
@@ -508,33 +519,6 @@ jobs:
             https://github.com/sbwml/openwrt_pkgs.git \
             sbwml-pkgs
 
-          for DIR in \
-            filebrowser \
-            luci-app-filebrowser-go \
-            vlmcsd \
-            luci-app-vlmcsd \
-            luci-app-autoreboot
-          do
-            if [ ! -d "sbwml-pkgs/${DIR}" ]; then
-              echo "ERROR: sbwml package not found: ${DIR}"
-              exit 1
-            fi
-          done
-
-
-      # ==========================================================
-      # Download TimeWOL
-      #
-      # 不再从 VIKINGYFY/packages 获取。
-      # TimeWOL 的独立源码仓库：
-      # kiddin9/luci-app-timewol
-      # ==========================================================
-
-      - name: Download TimeWOL source
-        shell: bash
-        run: |
-          set -euo pipefail
-
           rm -rf timewol-pkg
 
           git clone \
@@ -542,89 +526,166 @@ jobs:
             https://github.com/kiddin9/luci-app-timewol.git \
             timewol-pkg
 
-          if [ ! -f timewol-pkg/Makefile ]; then
-            echo "ERROR: TimeWOL Makefile not found."
-            exit 1
-          fi
-
-          echo
-          echo "TimeWOL source:"
-          find timewol-pkg \
-            -maxdepth 4 \
-            -type f \
-            -print |
-          sort
-
 
       # ==========================================================
-      # Import all third-party package sources
+      # Find package source
       #
-      # 统一放进 SDK/package/third-party
+      # 优先级：
       #
-      # 这些 Makefile 本身引用：
-      #   $(TOPDIR)/feeds/luci/luci.mk
-      #
-      # 因此这里先 update/install 官方 LuCI feed。
+      # 1. Kiddin9/Kwrt 25.12
+      # 2. sbwml/openwrt_pkgs
+      # 3. kiddin9/luci-app-timewol
       # ==========================================================
 
-      - name: Import third-party packages into SDK
+      - name: Prepare third-party package sources
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            sdk/package/third-party
+          rm -rf sdk/package/third-party
+
+          mkdir -p sdk/package/third-party
+
+
+          find_package_dir() {
+            local ROOT="$1"
+            local NAME="$2"
+
+            find "${ROOT}" \
+              -type f \
+              -name Makefile \
+              -print |
+            while IFS= read -r MAKEFILE; do
+
+              DIR="$(dirname "${MAKEFILE}")"
+
+              if [ "$(basename "${DIR}")" = "${NAME}" ]; then
+                printf '%s\n' "${DIR}"
+                return 0
+              fi
+
+            done
+          }
+
+
+          resolve_package() {
+            local NAME="$1"
+
+            local SRC=""
+
+            # ----------------------------------------------------
+            # 1. Kiddin9 Kwrt
+            # ----------------------------------------------------
+
+            SRC="$(
+              find_package_dir \
+                kiddin9-kwrt \
+                "${NAME}" |
+              head -n 1
+            )"
+
+            if [ -n "${SRC}" ]; then
+              printf '%s\n' "${SRC}"
+              return 0
+            fi
+
+
+            # ----------------------------------------------------
+            # 2. sbwml
+            # ----------------------------------------------------
+
+            SRC="$(
+              find_package_dir \
+                sbwml-pkgs \
+                "${NAME}" |
+              head -n 1
+            )"
+
+            if [ -n "${SRC}" ]; then
+              printf '%s\n' "${SRC}"
+              return 0
+            fi
+
+
+            # ----------------------------------------------------
+            # 3. TimeWOL official independent source
+            # ----------------------------------------------------
+
+            if [ "${NAME}" = "luci-app-timewol" ] &&
+              [ -f timewol-pkg/Makefile ]
+            then
+              printf '%s\n' \
+                "$(cd timewol-pkg && pwd)"
+
+              return 0
+            fi
+
+
+            return 1
+          }
+
+
+          copy_package() {
+            local NAME="$1"
+
+            local SRC=""
+
+            if ! SRC="$(resolve_package "${NAME}")"; then
+
+              echo
+              echo "ERROR: Package source not found:"
+              echo "${NAME}"
+
+              echo
+              echo "Sources checked:"
+              echo "  - Kiddin9/Kwrt 25.12"
+              echo "  - sbwml/openwrt_pkgs"
+              echo "  - kiddin9/luci-app-timewol"
+
+              exit 1
+            fi
+
+
+            echo
+            echo "=========================================="
+            echo "Package: ${NAME}"
+            echo "Source : ${SRC}"
+            echo "=========================================="
+
+
+            rm -rf \
+              "sdk/package/third-party/${NAME}"
+
+
+            cp -a \
+              "${SRC}" \
+              "sdk/package/third-party/${NAME}"
+          }
 
 
           # ------------------------------------------------------
-          # 清理旧目录
+          # Backend
           # ------------------------------------------------------
 
-          rm -rf \
-            sdk/package/third-party/filebrowser \
-            sdk/package/third-party/luci-app-filebrowser-go \
-            sdk/package/third-party/vlmcsd \
-            sdk/package/third-party/luci-app-vlmcsd \
-            sdk/package/third-party/luci-app-autoreboot \
-            sdk/package/third-party/luci-app-timewol
+          copy_package filebrowser
+          copy_package vlmcsd
 
 
           # ------------------------------------------------------
-          # sbwml
+          # LuCI
           # ------------------------------------------------------
 
-          cp -a \
-            sbwml-pkgs/filebrowser \
-            sdk/package/third-party/filebrowser
-
-          cp -a \
-            sbwml-pkgs/luci-app-filebrowser-go \
-            sdk/package/third-party/luci-app-filebrowser-go
-
-          cp -a \
-            sbwml-pkgs/vlmcsd \
-            sdk/package/third-party/vlmcsd
-
-          cp -a \
-            sbwml-pkgs/luci-app-vlmcsd \
-            sdk/package/third-party/luci-app-vlmcsd
-
-          cp -a \
-            sbwml-pkgs/luci-app-autoreboot \
-            sdk/package/third-party/luci-app-autoreboot
-
-
-          # ------------------------------------------------------
-          # TimeWOL
-          # ------------------------------------------------------
-
-          cp -a \
-            timewol-pkg \
-            sdk/package/third-party/luci-app-timewol
+          copy_package luci-app-filebrowser-go
+          copy_package luci-app-vlmcsd
+          copy_package luci-app-autoreboot
+          copy_package luci-app-timewol
 
 
           echo
-          echo "Third-party package Makefiles:"
+          echo "=========================================="
+          echo "Prepared third-party packages"
+          echo "=========================================="
+
 
           find sdk/package/third-party \
             -maxdepth 2 \
@@ -635,7 +696,7 @@ jobs:
 
 
       # ==========================================================
-      # Verify package source structure
+      # Verify source packages
       # ==========================================================
 
       - name: Verify third-party package sources
@@ -643,23 +704,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          FAILED=0
+
           for PACKAGE in \
             filebrowser \
-            luci-app-filebrowser-go \
             vlmcsd \
+            luci-app-filebrowser-go \
             luci-app-vlmcsd \
             luci-app-autoreboot \
             luci-app-timewol
           do
 
-            if [ ! -f "sdk/package/third-party/${PACKAGE}/Makefile" ]; then
-              echo "ERROR: Makefile missing: ${PACKAGE}"
-              exit 1
+            if [ -f "sdk/package/third-party/${PACKAGE}/Makefile" ]; then
+              echo "OK: ${PACKAGE}"
+            else
+              echo "ERROR: Missing Makefile: ${PACKAGE}"
+              FAILED=1
             fi
 
-            echo "OK: ${PACKAGE}"
-
           done
+
+
+          if [ "${FAILED}" -ne 0 ]; then
+            exit 1
+          fi
 
 
       # ==========================================================
@@ -686,10 +754,10 @@ jobs:
 
 
       # ==========================================================
-      # Build FileBrowser backend + LuCI
+      # Build FileBrowser
       # ==========================================================
 
-      - name: Build FileBrowser Go packages
+      - name: Build FileBrowser Go
         working-directory: sdk
         shell: bash
         run: |
@@ -703,10 +771,10 @@ jobs:
 
 
       # ==========================================================
-      # Build VLMCSd backend + LuCI
+      # Build VLMCSd
       # ==========================================================
 
-      - name: Build VLMCSd packages
+      - name: Build VLMCSd
         working-directory: sdk
         shell: bash
         run: |
@@ -723,7 +791,7 @@ jobs:
       # Build AutoReboot
       # ==========================================================
 
-      - name: Build AutoReboot package
+      - name: Build AutoReboot
         working-directory: sdk
         shell: bash
         run: |
@@ -737,11 +805,9 @@ jobs:
 
       # ==========================================================
       # Build TimeWOL
-      #
-      # Makefile explicitly depends on etherwake.
       # ==========================================================
 
-      - name: Build TimeWOL package
+      - name: Build TimeWOL
         working-directory: sdk
         shell: bash
         run: |
@@ -757,7 +823,7 @@ jobs:
       # Collect SDK APK
       # ==========================================================
 
-      - name: Collect SDK APK packages
+      - name: Collect SDK APK
         shell: bash
         run: |
           set -euo pipefail
@@ -766,6 +832,7 @@ jobs:
           echo "=========================================="
           echo "SDK generated APK"
           echo "=========================================="
+
 
           find sdk/bin/packages \
             -type f \
@@ -781,8 +848,6 @@ jobs:
             wc -l
           )"
 
-          echo
-          echo "SDK APK count: ${SDK_APK_COUNT}"
 
           if [ "${SDK_APK_COUNT}" -eq 0 ]; then
             echo "ERROR: SDK produced zero APK files."
@@ -790,10 +855,7 @@ jobs:
           fi
 
 
-          # ------------------------------------------------------
-          # Remove older versions
-          # ------------------------------------------------------
-
+          # 删除同名旧包
           for PACKAGE in \
             filebrowser \
             luci-app-filebrowser-go \
@@ -806,18 +868,17 @@ jobs:
             luci-app-timewol \
             luci-i18n-timewol-zh-cn
           do
+
             find imagebuilder/packages \
               -maxdepth 1 \
               -type f \
               -name "${PACKAGE}-*.apk" \
               -delete
+
           done
 
 
-          # ------------------------------------------------------
-          # Copy SDK APK
-          # ------------------------------------------------------
-
+          # 复制 SDK APK
           find sdk/bin/packages \
             -type f \
             -name "*.apk" \
@@ -825,8 +886,7 @@ jobs:
 
 
           echo
-          echo "ImageBuilder APK packages:"
-
+          echo "Final local APK:"
           find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
@@ -836,10 +896,10 @@ jobs:
 
 
       # ==========================================================
-      # Verify rebuilt packages
+      # Verify missing packages
       # ==========================================================
 
-      - name: Verify rebuilt packages
+      - name: Verify additional packages
         shell: bash
         run: |
           set -euo pipefail
@@ -884,7 +944,7 @@ jobs:
 
 
       # ==========================================================
-      # Prepare custom files
+      # Custom files
       # ==========================================================
 
       - name: Prepare custom files
@@ -906,9 +966,11 @@ jobs:
             exit 1
           fi
 
+
           mkdir -p \
             imagebuilder/files/etc/config \
             imagebuilder/files/etc/uci-defaults
+
 
           if [ -d files ]; then
             rsync -a \
@@ -1033,7 +1095,7 @@ jobs:
 
 
       # ==========================================================
-      # Load user's custom packages
+      # User package list
       # ==========================================================
 
       - name: Load custom package list
@@ -1173,13 +1235,14 @@ jobs:
 
           done
 
+
           if [ "${FAILED}" -ne 0 ]; then
             exit 1
           fi
 
 
       # ==========================================================
-      # Build UEFI
+      # Build ImageBuilder
       # ==========================================================
 
       - name: Build UEFI image
@@ -1300,7 +1363,7 @@ jobs:
 
 
       # ==========================================================
-      # Build information
+      # Build info
       # ==========================================================
 
       - name: Create build information
@@ -1315,6 +1378,7 @@ jobs:
             "Target: x86-64" \
             "ImageBuilder: Official OpenWrt" \
             "SDK: Official OpenWrt SDK" \
+            "Third-party primary source: Kiddin9 Kwrt 25.12" \
             "RootFS: ${ROOTFS_SIZE}" \
             "RootFS partition: ${ROOTFS_PARTSIZE} MB" \
             "Build date: ${BUILD_DATE}" \
@@ -1401,7 +1465,8 @@ jobs:
             "- OpenWrt: \`${OPENWRT_VERSION}\`" \
             "- Target: \`x86-64\`" \
             "- ImageBuilder: Official OpenWrt" \
-            "- SDK: Official OpenWrt SDK" \
+            "- SDK: Official OpenWrt" \
+            "- Primary third-party source: Kiddin9/Kwrt 25.12" \
             "- RootFS: \`${ROOTFS_SIZE}\`" \
             "- Build date: \`${BUILD_DATE}\`" \
             "" \
@@ -1421,7 +1486,7 @@ jobs:
             "- UEFI" \
             "- QCOW2" \
             "" \
-            "## Additional SDK packages" \
+            "## Additional SDK-built packages" \
             "" \
             "- FileBrowser Go" \
             "- VLMCSd" \
