@@ -61,7 +61,6 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
-
         run: |
           set -euo pipefail
 
@@ -116,7 +115,6 @@ jobs:
         shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
-
         run: |
           set -euo pipefail
 
@@ -156,7 +154,6 @@ jobs:
         shell: bash
         env:
           INPUT_LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
           set -euo pipefail
 
@@ -183,7 +180,6 @@ jobs:
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
-
         run: |
           set -euo pipefail
 
@@ -232,7 +228,7 @@ jobs:
 
 
       # ==========================================================
-      # Official ImageBuilder
+      # Download official ImageBuilder
       # ==========================================================
 
       - name: Download official ImageBuilder
@@ -252,7 +248,6 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
-
           mkdir -p imagebuilder
 
           tar \
@@ -359,7 +354,6 @@ jobs:
           set -euo pipefail
 
           rm -rf imagebuilder/packages
-
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
@@ -473,7 +467,6 @@ jobs:
             -O openwrt-sdk.tar.zst
 
           rm -rf sdk
-
           mkdir -p sdk
 
           tar \
@@ -496,12 +489,14 @@ jobs:
 
           ./scripts/feeds update -a
 
+          ./scripts/feeds install -a
+
 
       # ==========================================================
-      # sbwml
+      # Download sbwml packages
       # ==========================================================
 
-      - name: Download sbwml packages
+      - name: Download sbwml package sources
         shell: bash
         run: |
           set -euo pipefail
@@ -513,179 +508,156 @@ jobs:
             https://github.com/sbwml/openwrt_pkgs.git \
             sbwml-pkgs
 
-          test -d sbwml-pkgs/filebrowser
-          test -d sbwml-pkgs/luci-app-filebrowser-go
-          test -d sbwml-pkgs/vlmcsd
-          test -d sbwml-pkgs/luci-app-vlmcsd
-          test -d sbwml-pkgs/luci-app-autoreboot
+          for DIR in \
+            filebrowser \
+            luci-app-filebrowser-go \
+            vlmcsd \
+            luci-app-vlmcsd \
+            luci-app-autoreboot
+          do
+            if [ ! -d "sbwml-pkgs/${DIR}" ]; then
+              echo "ERROR: sbwml package not found: ${DIR}"
+              exit 1
+            fi
+          done
 
 
       # ==========================================================
-      # Import sbwml
+      # Download TimeWOL
+      #
+      # 不再从 VIKINGYFY/packages 获取。
+      # TimeWOL 的独立源码仓库：
+      # kiddin9/luci-app-timewol
       # ==========================================================
 
-      - name: Import sbwml packages
+      - name: Download TimeWOL source
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            sdk/package/third-party \
-            sdk/feeds/luci/applications
-
-          rm -rf \
-            sdk/package/third-party/filebrowser \
-            sdk/package/third-party/vlmcsd \
-            sdk/feeds/luci/applications/luci-app-filebrowser-go \
-            sdk/feeds/luci/applications/luci-app-vlmcsd \
-            sdk/feeds/luci/applications/luci-app-autoreboot
-
-          cp -a \
-            sbwml-pkgs/filebrowser \
-            sdk/package/third-party/filebrowser
-
-          cp -a \
-            sbwml-pkgs/vlmcsd \
-            sdk/package/third-party/vlmcsd
-
-          cp -a \
-            sbwml-pkgs/luci-app-filebrowser-go \
-            sdk/feeds/luci/applications/luci-app-filebrowser-go
-
-          cp -a \
-            sbwml-pkgs/luci-app-vlmcsd \
-            sdk/feeds/luci/applications/luci-app-vlmcsd
-
-          cp -a \
-            sbwml-pkgs/luci-app-autoreboot \
-            sdk/feeds/luci/applications/luci-app-autoreboot
-
-
-      # ==========================================================
-      # VIKINGYFY
-      #
-      # 关键修复：
-      #
-      # 不再 --depth=1
-      #
-      # 因为 luci-app-timewol 已不在当前 main，
-      # 必须从完整 Git 历史中找最后一个存在它的 commit。
-      # ==========================================================
-
-      - name: Download VIKINGYFY package history
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf viking-pkgs
+          rm -rf timewol-pkg
 
           git clone \
-            https://github.com/VIKINGYFY/packages.git \
-            viking-pkgs
+            --depth=1 \
+            https://github.com/kiddin9/luci-app-timewol.git \
+            timewol-pkg
 
-          echo
-          echo "Searching VIKING history for luci-app-timewol..."
-
-          TIMEWOL_COMMIT="$(
-            git -C viking-pkgs \
-              rev-list \
-              --all \
-              -- \
-              luci-app-timewol/Makefile |
-            head -n 1
-          )"
-
-          if [ -z "${TIMEWOL_COMMIT}" ]; then
-            echo
-            echo "ERROR:"
-            echo "luci-app-timewol was not found anywhere in VIKING history."
-
-            echo
-            echo "Available related packages:"
-            find viking-pkgs \
-              -maxdepth 2 \
-              -type d \
-              -iname '*timewol*' \
-              -print ||
-              true
-
-            exit 1
-          fi
-
-          echo
-          echo "TimeWOL historical commit:"
-          echo "${TIMEWOL_COMMIT}"
-
-          echo "VIKING_TIMEWOL_COMMIT=${TIMEWOL_COMMIT}" \
-            >> "${GITHUB_ENV}"
-
-
-      # ==========================================================
-      # Extract historical TimeWOL
-      # ==========================================================
-
-      - name: Import historical TimeWOL
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf \
-            sdk/feeds/luci/applications/luci-app-timewol
-
-          mkdir -p \
-            sdk/feeds/luci/applications
-
-
-          git -C viking-pkgs \
-            archive \
-            "${VIKING_TIMEWOL_COMMIT}" \
-            luci-app-timewol |
-          tar \
-            -x \
-            -C sdk/feeds/luci/applications
-
-
-          if [ ! -f sdk/feeds/luci/applications/luci-app-timewol/Makefile ]; then
-            echo "ERROR: TimeWOL Makefile was not extracted."
+          if [ ! -f timewol-pkg/Makefile ]; then
+            echo "ERROR: TimeWOL Makefile not found."
             exit 1
           fi
 
           echo
           echo "TimeWOL source:"
-          find \
-            sdk/feeds/luci/applications/luci-app-timewol \
-            -maxdepth 3 \
+          find timewol-pkg \
+            -maxdepth 4 \
             -type f \
             -print |
           sort
 
 
       # ==========================================================
-      # Install feeds
+      # Import all third-party package sources
+      #
+      # 统一放进 SDK/package/third-party
+      #
+      # 这些 Makefile 本身引用：
+      #   $(TOPDIR)/feeds/luci/luci.mk
+      #
+      # 因此这里先 update/install 官方 LuCI feed。
       # ==========================================================
 
-      - name: Install SDK feed packages
-        working-directory: sdk
+      - name: Import third-party packages into SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          ./scripts/feeds install -a
+          mkdir -p \
+            sdk/package/third-party
 
+
+          # ------------------------------------------------------
+          # 清理旧目录
+          # ------------------------------------------------------
+
+          rm -rf \
+            sdk/package/third-party/filebrowser \
+            sdk/package/third-party/luci-app-filebrowser-go \
+            sdk/package/third-party/vlmcsd \
+            sdk/package/third-party/luci-app-vlmcsd \
+            sdk/package/third-party/luci-app-autoreboot \
+            sdk/package/third-party/luci-app-timewol
+
+
+          # ------------------------------------------------------
+          # sbwml
+          # ------------------------------------------------------
+
+          cp -a \
+            sbwml-pkgs/filebrowser \
+            sdk/package/third-party/filebrowser
+
+          cp -a \
+            sbwml-pkgs/luci-app-filebrowser-go \
+            sdk/package/third-party/luci-app-filebrowser-go
+
+          cp -a \
+            sbwml-pkgs/vlmcsd \
+            sdk/package/third-party/vlmcsd
+
+          cp -a \
+            sbwml-pkgs/luci-app-vlmcsd \
+            sdk/package/third-party/luci-app-vlmcsd
+
+          cp -a \
+            sbwml-pkgs/luci-app-autoreboot \
+            sdk/package/third-party/luci-app-autoreboot
+
+
+          # ------------------------------------------------------
+          # TimeWOL
+          # ------------------------------------------------------
+
+          cp -a \
+            timewol-pkg \
+            sdk/package/third-party/luci-app-timewol
+
+
+          echo
+          echo "Third-party package Makefiles:"
+
+          find sdk/package/third-party \
+            -maxdepth 2 \
+            -type f \
+            -name Makefile \
+            -print |
+          sort
+
+
+      # ==========================================================
+      # Verify package source structure
+      # ==========================================================
+
+      - name: Verify third-party package sources
+        shell: bash
+        run: |
+          set -euo pipefail
 
           for PACKAGE in \
+            filebrowser \
             luci-app-filebrowser-go \
+            vlmcsd \
             luci-app-vlmcsd \
             luci-app-autoreboot \
             luci-app-timewol
           do
 
-            if [ -d "package/feeds/luci/${PACKAGE}" ]; then
-              echo "OK: ${PACKAGE}"
-            else
-              echo "ERROR: ${PACKAGE} was not linked by feeds."
+            if [ ! -f "sdk/package/third-party/${PACKAGE}/Makefile" ]; then
+              echo "ERROR: Makefile missing: ${PACKAGE}"
               exit 1
             fi
+
+            echo "OK: ${PACKAGE}"
 
           done
 
@@ -702,16 +674,22 @@ jobs:
 
           printf '%s\n' \
             "CONFIG_LUCI_LANG_zh_Hans=y" \
+            "CONFIG_PACKAGE_filebrowser=m" \
+            "CONFIG_PACKAGE_vlmcsd=m" \
+            "CONFIG_PACKAGE_luci-app-filebrowser-go=m" \
+            "CONFIG_PACKAGE_luci-app-vlmcsd=m" \
+            "CONFIG_PACKAGE_luci-app-autoreboot=m" \
+            "CONFIG_PACKAGE_luci-app-timewol=m" \
             >> .config
 
           make defconfig
 
 
       # ==========================================================
-      # Build FileBrowser
+      # Build FileBrowser backend + LuCI
       # ==========================================================
 
-      - name: Build FileBrowser Go
+      - name: Build FileBrowser Go packages
         working-directory: sdk
         shell: bash
         run: |
@@ -719,16 +697,16 @@ jobs:
 
           make \
             package/third-party/filebrowser/compile \
-            package/feeds/luci/luci-app-filebrowser-go/compile \
+            package/third-party/luci-app-filebrowser-go/compile \
             -j"$(nproc)" \
             V=s
 
 
       # ==========================================================
-      # Build VLMCSd
+      # Build VLMCSd backend + LuCI
       # ==========================================================
 
-      - name: Build VLMCSd
+      - name: Build VLMCSd packages
         working-directory: sdk
         shell: bash
         run: |
@@ -736,7 +714,7 @@ jobs:
 
           make \
             package/third-party/vlmcsd/compile \
-            package/feeds/luci/luci-app-vlmcsd/compile \
+            package/third-party/luci-app-vlmcsd/compile \
             -j"$(nproc)" \
             V=s
 
@@ -745,30 +723,32 @@ jobs:
       # Build AutoReboot
       # ==========================================================
 
-      - name: Build AutoReboot
+      - name: Build AutoReboot package
         working-directory: sdk
         shell: bash
         run: |
           set -euo pipefail
 
           make \
-            package/feeds/luci/luci-app-autoreboot/compile \
+            package/third-party/luci-app-autoreboot/compile \
             -j"$(nproc)" \
             V=s
 
 
       # ==========================================================
       # Build TimeWOL
+      #
+      # Makefile explicitly depends on etherwake.
       # ==========================================================
 
-      - name: Build TimeWOL
+      - name: Build TimeWOL package
         working-directory: sdk
         shell: bash
         run: |
           set -euo pipefail
 
           make \
-            package/feeds/luci/luci-app-timewol/compile \
+            package/third-party/luci-app-timewol/compile \
             -j"$(nproc)" \
             V=s
 
@@ -805,10 +785,14 @@ jobs:
           echo "SDK APK count: ${SDK_APK_COUNT}"
 
           if [ "${SDK_APK_COUNT}" -eq 0 ]; then
-            echo "ERROR: SDK generated zero APK files."
+            echo "ERROR: SDK produced zero APK files."
             exit 1
           fi
 
+
+          # ------------------------------------------------------
+          # Remove older versions
+          # ------------------------------------------------------
 
           for PACKAGE in \
             filebrowser \
@@ -822,15 +806,17 @@ jobs:
             luci-app-timewol \
             luci-i18n-timewol-zh-cn
           do
-
             find imagebuilder/packages \
               -maxdepth 1 \
               -type f \
               -name "${PACKAGE}-*.apk" \
               -delete
-
           done
 
+
+          # ------------------------------------------------------
+          # Copy SDK APK
+          # ------------------------------------------------------
 
           find sdk/bin/packages \
             -type f \
@@ -839,7 +825,8 @@ jobs:
 
 
           echo
-          echo "ImageBuilder local APK:"
+          echo "ImageBuilder APK packages:"
+
           find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
@@ -897,7 +884,7 @@ jobs:
 
 
       # ==========================================================
-      # Custom files
+      # Prepare custom files
       # ==========================================================
 
       - name: Prepare custom files
@@ -907,7 +894,6 @@ jobs:
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
-
         run: |
           set -euo pipefail
 
@@ -920,11 +906,9 @@ jobs:
             exit 1
           fi
 
-
           mkdir -p \
             imagebuilder/files/etc/config \
             imagebuilder/files/etc/uci-defaults
-
 
           if [ -d files ]; then
             rsync -a \
@@ -988,7 +972,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # DHCP
+          # DHCP / IPv6
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -1049,7 +1033,7 @@ jobs:
 
 
       # ==========================================================
-      # User package list
+      # Load user's custom packages
       # ==========================================================
 
       - name: Load custom package list
@@ -1141,7 +1125,7 @@ jobs:
 
 
       # ==========================================================
-      # Verify all third-party APK
+      # Verify required third-party APK
       # ==========================================================
 
       - name: Verify required APK packages
@@ -1219,6 +1203,10 @@ jobs:
 
           echo "OpenWrt: ${OPENWRT_VERSION}"
           echo "RootFS: ${ROOTFS_PARTSIZE} MB"
+
+          echo
+          echo "Packages:"
+          echo "${PACKAGES}"
 
           make image \
             PROFILE="generic" \
@@ -1350,7 +1338,7 @@ jobs:
 
 
       # ==========================================================
-      # Package list
+      # Save package list
       # ==========================================================
 
       - name: Save package list
@@ -1364,7 +1352,7 @@ jobs:
 
 
       # ==========================================================
-      # Verify output
+      # Final verification
       # ==========================================================
 
       - name: Verify output
@@ -1391,14 +1379,13 @@ jobs:
 
 
       # ==========================================================
-      # Release
+      # GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         run: |
           set -euo pipefail
 
