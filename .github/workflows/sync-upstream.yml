@@ -1,0 +1,163 @@
+name: Sync upstream and build
+
+on:
+
+  schedule:
+
+    # 每天北京时间 10:30
+    - cron: "30 2 * * *"
+
+  workflow_dispatch:
+
+
+permissions:
+
+  contents: write
+  actions: write
+
+
+jobs:
+
+  sync:
+
+    runs-on: ubuntu-24.04
+
+
+    steps:
+
+      # ==========================================================
+      # 1. Checkout
+      # ==========================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+        with:
+
+          fetch-depth: 0
+
+
+      # ==========================================================
+      # 2. Install jq
+      # ==========================================================
+
+      - name: Install jq
+        run: |
+
+          sudo apt-get update
+
+          sudo apt-get install -y jq
+
+
+      # ==========================================================
+      # 3. Run upstream sync
+      # ==========================================================
+
+      - name: Check upstream
+        id: upstream
+        shell: bash
+        run: |
+
+          chmod +x shell/sync-upstream.sh
+
+          ./shell/sync-upstream.sh
+
+
+      # ==========================================================
+      # 4. Read results
+      # ==========================================================
+
+      - name: Show upstream state
+        run: |
+
+          echo "=========================================="
+
+          cat upstream-state.env
+
+          echo "=========================================="
+
+
+      # ==========================================================
+      # 5. Commit sync state
+      #
+      # 这里非常重要。
+      #
+      # upstream-state.env 作为“上一次同步状态”。
+      #
+      # 下一次运行就可以知道：
+      #
+      # OpenWrt 有没有变化
+      # packages 有没有变化
+      # LuCI 有没有变化
+      # 第三方插件有没有变化
+      # ==========================================================
+
+      - name: Commit upstream state
+        id: commit
+        shell: bash
+        run: |
+
+          git config user.name "github-actions[bot]"
+
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+
+          git add upstream-state.env
+
+
+          if git diff --cached --quiet; then
+
+            echo "UPSTREAM_CHANGED=false" >> "$GITHUB_OUTPUT"
+
+            echo "No upstream changes."
+
+            exit 0
+
+          fi
+
+
+          git commit \
+            -m "chore: sync upstream sources"
+
+
+          git push
+
+
+          echo "UPSTREAM_CHANGED=true" >> "$GITHUB_OUTPUT"
+
+
+      # ==========================================================
+      # 6. Trigger build
+      #
+      # 只有发现 upstream commit 发生变化才编译。
+      # ==========================================================
+
+      - name: Trigger build
+        if: steps.commit.outputs.UPSTREAM_CHANGED == 'true'
+        env:
+
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        shell: bash
+        run: |
+
+          source upstream-state.env
+
+
+          echo
+          echo "Triggering build..."
+          echo
+
+
+          gh api \
+            --method POST \
+            "/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type="upstream-update" \
+            -f client_payload[openwrt_version]="${OPENWRT_VERSION}" \
+            -f client_payload[openwrt_commit]="${OPENWRT_COMMIT}" \
+            -f client_payload[packages_commit]="${PACKAGES_COMMIT}" \
+            -f client_payload[luci_commit]="${LUCI_COMMIT}"
+
+
+          echo
+          echo "Build workflow triggered."
