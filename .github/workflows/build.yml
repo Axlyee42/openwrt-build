@@ -1,0 +1,11 @@
+name: Build OpenWrt 25.12.5
+
+on:
+  workflow_dispatch:
+
+env:
+  OPENWRT_VERSION: v25.12.5
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
