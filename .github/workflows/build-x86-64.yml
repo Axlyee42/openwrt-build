@@ -30,21 +30,15 @@ on:
     types:
       - openwrt-release
 
-
 permissions:
   contents: write
-
 
 env:
   TZ: Asia/Shanghai
 
-
 jobs:
-
   build:
-
     runs-on: ubuntu-24.04
-
 
     steps:
 
@@ -59,7 +53,7 @@ jobs:
 
 
       # ==========================================================
-      # 确定 OpenWrt 版本
+      # Resolve OpenWrt version
       # ==========================================================
 
       - name: Resolve OpenWrt version
@@ -67,7 +61,6 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
-
         run: |
           set -euo pipefail
 
@@ -102,26 +95,24 @@ jobs:
           fi
 
           echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
-
           echo "BUILD_DATE=$(date +%Y%m%d)" >> "${GITHUB_ENV}"
           echo "BUILD_TIME=$(date +%H%M%S)" >> "${GITHUB_ENV}"
 
           echo
           echo "=========================================="
-          echo "OpenWrt version : ${VERSION}"
-          echo "Build date      : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "OpenWrt : ${VERSION}"
+          echo "Date    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
           echo "=========================================="
 
 
       # ==========================================================
-      # RootFS
+      # RootFS size
       # ==========================================================
 
       - name: Configure RootFS
         shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
-
         run: |
           set -euo pipefail
 
@@ -149,9 +140,6 @@ jobs:
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "RootFS: ${SIZE}"
-          echo "Partition: ${PARTSIZE} MB"
-
 
       # ==========================================================
       # LAN
@@ -161,7 +149,6 @@ jobs:
         shell: bash
         env:
           INPUT_LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
           set -euo pipefail
 
@@ -169,22 +156,18 @@ jobs:
 
           if ! printf '%s\n' "${LAN_IP}" | grep -Eq \
             '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-
             echo "ERROR: Invalid LAN IP: ${LAN_IP}"
             exit 1
           fi
 
           echo "LAN_IP=${LAN_IP}" >> "${GITHUB_ENV}"
 
-          echo "LAN IP: ${LAN_IP}"
-
 
       # ==========================================================
-      # 安装依赖
+      # Dependencies
       # ==========================================================
 
       - name: Install dependencies
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -193,23 +176,19 @@ jobs:
           sudo apt-get install -y \
             curl \
             file \
-            gawk \
-            gettext \
             git \
             jq \
             qemu-utils \
             rsync \
-            unzip \
             wget \
-            xz-utils \
             zstd
 
 
       # ==========================================================
-      # 下载官方 ImageBuilder
+      # Download official ImageBuilder
       # ==========================================================
 
-      - name: Download OpenWrt ImageBuilder
+      - name: Download ImageBuilder
         shell: bash
         run: |
           set -euo pipefail
@@ -217,13 +196,6 @@ jobs:
           ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
           URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/${ARCHIVE}"
-
-          echo
-          echo "=========================================="
-          echo "Downloading ImageBuilder"
-          echo "=========================================="
-
-          echo "${URL}"
 
           wget \
             --retry-connrefused \
@@ -244,40 +216,33 @@ jobs:
             -C imagebuilder
 
           echo
-          echo "ImageBuilder ready:"
+          echo "ImageBuilder ready."
           ls -lah imagebuilder
 
 
       # ==========================================================
-      # ImageBuilder 信息
+      # ImageBuilder info
       # ==========================================================
 
       - name: Check ImageBuilder
         working-directory: imagebuilder
-        shell: bash
         run: |
           set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "ImageBuilder"
-          echo "=========================================="
 
           make info
 
 
       # ==========================================================
-      # 添加 PassWall APK 仓库
+      # PassWall repository
       # ==========================================================
 
       - name: Configure PassWall APK repository
         working-directory: imagebuilder
-        shell: bash
         run: |
           set -euo pipefail
 
           if [ ! -f repositories ]; then
-            echo "ERROR: ImageBuilder repositories file not found."
+            echo "ERROR: ImageBuilder repositories not found."
             exit 1
           fi
 
@@ -290,21 +255,6 @@ jobs:
           ${PASSWALL_BASE}/passwall2/packages.adb
           EOF
 
-          echo
-          echo "Repositories:"
-          cat repositories
-
-
-      # ==========================================================
-      # PassWall key
-      # ==========================================================
-
-      - name: Install PassWall key
-        working-directory: imagebuilder
-        shell: bash
-        run: |
-          set -euo pipefail
-
           mkdir -p keys
 
           wget \
@@ -313,28 +263,26 @@ jobs:
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
             -O keys/openwrt-passwall-build.pem
 
-          echo "PassWall key installed."
+          echo
+          echo "Repositories:"
+          cat repositories
 
 
       # ==========================================================
-      # 下载 wukongdaily APK 仓库
+      # wukongdaily APK
       #
-      # 这里是解决你当前报错的关键。
+      # 注意：
       #
-      # 我们不再只下载几个 GitHub release。
-      # 直接获取 wukongdaily/apk：
+      # x86-64 设备对应 wukongdaily/apk 的：
       #
-      # run/
-      #   x86-64/
-      #   arm64-a53/
-      #   ...
+      # run/x86/
       #
-      # 然后只选择 x86-64 / x86_64 / all。
+      # 而不是 run/x86-64/
       #
-      # 这样不会再把 arm64-a53 APK 放进 x86-64 固件。
+      # 这一点已经由你这次日志直接证明。
       # ==========================================================
 
-      - name: Download wukongdaily APK repository
+      - name: Clone wukongdaily APK repository
         shell: bash
         run: |
           set -euo pipefail
@@ -346,33 +294,26 @@ jobs:
             https://github.com/wukongdaily/apk.git \
             third-party-apk
 
+          if [ ! -d third-party-apk/run/x86 ]; then
+            echo "ERROR: wukongdaily APK x86 directory not found."
+            exit 1
+          fi
+
           echo
-          echo "wukongdaily APK repository:"
-          find third-party-apk/run \
-            -maxdepth 2 \
-            -type d \
-            -print |
+          echo "Available x86 packages:"
+          find third-party-apk/run/x86 \
+            -type f \
+            -name "*.apk" \
+            -printf "%P\n" |
           sort |
-          head -100
+          head -200
 
 
       # ==========================================================
-      # 准备第三方 APK
-      #
-      # 所有这些之前缺失的包：
-      #
-      # Aurora
-      # FileBrowser Go
-      # luci-app-run
-      # VLMCSd
-      # TimeWOL
-      # AutoReboot
-      # Bandix translation
-      #
-      # 都优先从 wukongdaily/apk 的正确架构目录寻找。
+      # Prepare wukongdaily packages
       # ==========================================================
 
-      - name: Prepare third-party APK packages
+      - name: Prepare wukongdaily x86 APK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -381,229 +322,178 @@ jobs:
 
           mkdir -p imagebuilder/packages
 
-
-          # ------------------------------------------------------
-          # 需要的第三方 APK
-          # ------------------------------------------------------
-
-          cat > /tmp/third-party-packages.txt <<'EOF'
+          cat > /tmp/wkd-packages <<'EOF'
           luci-theme-aurora
           luci-app-aurora-config
           luci-i18n-aurora-config-zh-cn
-
           bandix
           luci-app-bandix
           luci-i18n-bandix-zh-cn
-
           luci-app-run
-
-          luci-app-filebrowser-go
-          luci-i18n-filebrowser-go-zh-cn
-
-          luci-app-vlmcsd
-          luci-i18n-vlmcsd-zh-cn
-
-          luci-app-timewol
-          luci-i18n-timewol-zh-cn
-
-          luci-app-autoreboot
-          luci-i18n-autoreboot-zh-cn
           EOF
 
+          find_wkd_package() {
+            local PACKAGE="$1"
 
-          # ------------------------------------------------------
-          # 删除空行
-          # ------------------------------------------------------
+            local MATCH
 
-          sed \
-            -i \
-            '/^[[:space:]]*$/d' \
-            /tmp/third-party-packages.txt
-
-
-          # ------------------------------------------------------
-          # 查找包
-          #
-          # 优先：
-          #   x86-64
-          #   x86_64
-          #
-          # 其次：
-          #   all
-          #
-          # 严格禁止：
-          #   arm64-a53
-          #   aarch64
-          #   arm
-          # ------------------------------------------------------
-
-          find_package() {
-
-            PACKAGE="$1"
-
-            echo
-            echo "Searching:"
-            echo "${PACKAGE}"
-
-
-            MATCH=""
-
-
-            # x86-64
             MATCH="$(
-              find third-party-apk/run \
+              find third-party-apk/run/x86 \
                 -type f \
                 -name "${PACKAGE}-*.apk" \
-                \( \
-                  -path '*/x86-64/*' \
-                  -o \
-                  -path '*/x86_64/*' \
-                \) \
-                -print \
-              2>/dev/null |
+                -print |
               sort -V |
-              tail -1
+              tail -n 1
             )"
 
-
-            # all / noarch
             if [ -z "${MATCH}" ]; then
-
-              MATCH="$(
-                find third-party-apk/run \
-                  -type f \
-                  -name "${PACKAGE}-*.apk" \
-                  \( \
-                    -path '*/all/*' \
-                    -o \
-                    -path '*/noarch/*' \
-                  \) \
-                  -print \
-                2>/dev/null |
-                sort -V |
-                tail -1
-              )"
-
-            fi
-
-
-            if [ -z "${MATCH}" ]; then
-
               echo
-              echo "ERROR:"
-              echo "Cannot find x86-64 APK:"
+              echo "ERROR: wukongdaily x86 APK not found:"
               echo "${PACKAGE}"
 
               echo
               echo "Available matches:"
-
-              find third-party-apk/run \
+              find third-party-apk/run/x86 \
                 -type f \
                 -name "${PACKAGE}-*.apk" \
-                -print \
-              2>/dev/null |
-              sort -V |
-              tail -20
-
+                -print || true
 
               return 1
-
             fi
 
-
-            echo "Found:"
+            echo
+            echo "Found ${PACKAGE}:"
             echo "${MATCH}"
-
 
             cp \
               "${MATCH}" \
               imagebuilder/packages/
-
-
-            return 0
           }
-
 
           FAILED=0
 
-
           while IFS= read -r PACKAGE; do
-
-            if ! find_package "${PACKAGE}"; then
+            if ! find_wkd_package "${PACKAGE}"; then
               FAILED=1
             fi
-
-          done < /tmp/third-party-packages.txt
-
+          done < /tmp/wkd-packages
 
           if [ "${FAILED}" -ne 0 ]; then
-
-            echo
-            echo "=========================================="
-            echo "ERROR: Third-party APK preparation failed."
-            echo "=========================================="
-
             exit 1
-
           fi
 
 
-          echo
-          echo "=========================================="
-          echo "Third-party APK packages"
-          echo "=========================================="
-
-
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            -printf '%f\n' |
-          sort
-
-
       # ==========================================================
-      # Aurora 额外处理
+      # FileBrowser Go / VLMCSd / Autoreboot
       #
-      # Aurora 官方也提供自己的 APK feed。
-      # 但本次优先使用 wukongdaily/apk 的 25.12 APK。
+      # 来源：
+      # sbwml/openwrt_pkgs
+      #
+      # 该仓库目前明确包含：
+      # luci-app-filebrowser-go
+      # luci-app-vlmcsd
+      # luci-app-autoreboot
+      #
+      # 但不能直接把源码仓库当 APK。
+      #
+      # 这里先下载仓库，寻找已发布 APK。
       # ==========================================================
 
-      - name: Verify Aurora packages
+      - name: Prepare sbwml packages
         shell: bash
         run: |
           set -euo pipefail
 
+          rm -rf sbwml-packages
+
+          git clone \
+            --depth=1 \
+            https://github.com/sbwml/openwrt_pkgs.git \
+            sbwml-packages
+
+          echo
+          echo "sbwml packages:"
+          find sbwml-packages \
+            -maxdepth 2 \
+            -type d \
+            \( \
+              -name "luci-app-filebrowser-go" \
+              -o \
+              -name "luci-app-vlmcsd" \
+              -o \
+              -name "luci-app-autoreboot" \
+            \) \
+            -print
+
+
+      # ==========================================================
+      # 检查 sbwml 是否有当前架构 APK
+      #
+      # 如果只有源码而没有 APK：
+      # 不在 ImageBuilder job 中重新编译。
+      #
+      # 这避免重新掉回数小时源码编译模式。
+      # ==========================================================
+
+      - name: Locate sbwml APK artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FOUND=0
+
           for PACKAGE in \
-            luci-theme-aurora \
-            luci-app-aurora-config \
-            luci-i18n-aurora-config-zh-cn
+            luci-app-filebrowser-go \
+            luci-app-vlmcsd \
+            luci-app-autoreboot
           do
 
-            if ! find imagebuilder/packages \
-              -maxdepth 1 \
-              -type f \
-              -name "${PACKAGE}-*.apk" |
-              grep -q .; then
+            MATCH="$(
+              find sbwml-packages \
+                -type f \
+                -name "${PACKAGE}-*.apk" \
+                \( \
+                  -path '*/x86_64/*' \
+                  -o \
+                  -path '*/x86-64/*' \
+                  -o \
+                  -path '*/x86/*' \
+                  -o \
+                  -path '*/all/*' \
+                \) \
+                -print |
+              sort -V |
+              tail -n 1
+            )"
 
-              echo "ERROR: Missing Aurora APK:"
+            if [ -n "${MATCH}" ]; then
+
+              echo
+              echo "Found ${PACKAGE}:"
+              echo "${MATCH}"
+
+              cp \
+                "${MATCH}" \
+                imagebuilder/packages/
+
+              FOUND=$((FOUND + 1))
+
+            else
+
+              echo
+              echo "No prebuilt APK found for:"
               echo "${PACKAGE}"
-
-              exit 1
 
             fi
 
-            echo "OK: ${PACKAGE}"
-
           done
+
+          echo
+          echo "Prebuilt sbwml APK count: ${FOUND}"
 
 
       # ==========================================================
       # OpenClash
-      #
-      # wukongdaily APK 仓库优先。
-      # 如果仓库没有当前版本，则直接从 OpenClash
-      # GitHub Release 查找 x86_64/all APK。
       # ==========================================================
 
       - name: Prepare OpenClash APK
@@ -611,32 +501,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          PACKAGE="luci-app-openclash"
-
-
           if find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
-            -name "${PACKAGE}-*.apk" |
+            -name 'luci-app-openclash-*.apk' |
             grep -q .; then
 
-            echo "OpenClash APK already exists in wukongdaily/apk."
-
+            echo "OpenClash APK found in local third-party packages."
             exit 0
 
           fi
 
-
-          echo "OpenClash not found in wukongdaily/apk."
-
-          echo "Checking official OpenClash release..."
-
+          echo "Checking OpenClash GitHub release..."
 
           curl \
             -fsSL \
             https://api.github.com/repos/vernesong/OpenClash/releases/latest \
-            > /tmp/openclash-release.json
-
+            -o /tmp/openclash.json
 
           URL="$(
             jq -r '
@@ -644,31 +525,19 @@ jobs:
               | select(.name | endswith(".apk"))
               | select(.name | startswith("luci-app-openclash"))
               | select(
-                  (.name | test("x86_64|x86-64|all"; "i"))
+                  (.name | test("x86|all"; "i"))
                 )
               | .browser_download_url
-            ' /tmp/openclash-release.json |
-            head -1
+            ' /tmp/openclash.json |
+            head -n 1
           )"
 
-
           if [ -z "${URL}" ]; then
-
             echo
-            echo "ERROR: x86_64 OpenClash APK not found."
-
-            echo
-            echo "Available APK:"
-            jq -r '
-              .assets[]
-              | select(.name | endswith(".apk"))
-              | .name
-            ' /tmp/openclash-release.json
-
+            echo "ERROR: No suitable OpenClash APK found."
+            jq -r '.assets[].name' /tmp/openclash.json
             exit 1
-
           fi
-
 
           wget \
             --retry-connrefused \
@@ -678,38 +547,28 @@ jobs:
 
 
       # ==========================================================
-      # 最终第三方 APK 清单
+      # 显示所有第三方 APK
       # ==========================================================
 
-      - name: Show final third-party APK list
+      - name: Show third-party APKs
         run: |
           set -euo pipefail
 
           echo
           echo "=========================================="
-          echo "Final third-party APK list"
+          echo "Third-party APKs"
           echo "=========================================="
 
           find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
-            -name '*.apk' \
-            -printf '%f\n' |
+            -name "*.apk" \
+            -printf "%f\n" |
           sort
 
 
-          echo
-          echo "Total:"
-
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' |
-          wc -l
-
-
       # ==========================================================
-      # 安装 files
+      # 自定义 files
       # ==========================================================
 
       - name: Prepare custom files
@@ -723,58 +582,41 @@ jobs:
         run: |
           set -euo pipefail
 
-
           if [ -z "${WAN1_USER:-}" ] || [ -z "${WAN1_PASS:-}" ]; then
-
-            echo "ERROR: WAN1_USER / WAN1_PASS are missing."
-
+            echo "ERROR: WAN1_USER / WAN1_PASS is missing."
             exit 1
-
           fi
-
 
           if [ -z "${WAN2_USER:-}" ] || [ -z "${WAN2_PASS:-}" ]; then
-
-            echo "ERROR: WAN2_USER / WAN2_PASS are missing."
-
+            echo "ERROR: WAN2_USER / WAN2_PASS is missing."
             exit 1
-
           fi
-
 
           rm -rf imagebuilder/files
 
           mkdir -p imagebuilder/files
 
-
-          # 复制仓库里的其它 files
           if [ -d files ]; then
-
-            rsync \
-              -a \
+            rsync -a \
               files/ \
               imagebuilder/files/
-
           fi
-
 
           mkdir -p \
             imagebuilder/files/etc/config \
             imagebuilder/files/etc/uci-defaults
 
 
-          # ======================================================
+          # ------------------------------------------------------
           # network
-          # ======================================================
+          # ------------------------------------------------------
 
           cat > imagebuilder/files/etc/config/network <<EOF
-
           config interface 'loopback'
               option device 'lo'
               option proto 'static'
               option ipaddr '127.0.0.1'
               option netmask '255.0.0.0'
-
 
           config device
               option name 'br-lan'
@@ -784,14 +626,12 @@ jobs:
               list ports 'eth4'
               list ports 'eth5'
 
-
           config interface 'lan'
               option device 'br-lan'
               option proto 'static'
               option ipaddr '${LAN_IP}'
               option netmask '255.255.255.0'
               option ip6assign '64'
-
 
           config interface 'wan'
               option device 'eth0'
@@ -800,13 +640,11 @@ jobs:
               option password '${WAN1_PASS}'
               option ipv6 '1'
 
-
           config interface 'wan6'
               option device '@wan'
               option proto 'dhcpv6'
               option reqaddress 'try'
               option reqprefix 'auto'
-
 
           config interface 'wanb'
               option device 'eth1'
@@ -815,22 +653,19 @@ jobs:
               option password '${WAN2_PASS}'
               option ipv6 '1'
 
-
           config interface 'wanb6'
               option device '@wanb'
               option proto 'dhcpv6'
               option reqaddress 'try'
               option reqprefix 'auto'
-
           EOF
 
 
-          # ======================================================
-          # DHCP
-          # ======================================================
+          # ------------------------------------------------------
+          # DHCP / IPv6
+          # ------------------------------------------------------
 
           cat > imagebuilder/files/etc/config/dhcp <<'EOF'
-
           config dnsmasq
               option domainneeded '1'
               option boguspriv '1'
@@ -844,7 +679,6 @@ jobs:
               option leasefile '/tmp/dhcp.leases'
               option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
 
-
           config dhcp 'lan'
               option interface 'lan'
               option start '100'
@@ -855,56 +689,43 @@ jobs:
               option ra 'server'
               option ra_management '1'
 
-
           config dhcp 'wan'
               option interface 'wan'
               option ignore '1'
 
-
           config dhcp 'wanb'
               option interface 'wanb'
               option ignore '1'
-
 
           config odhcpd 'odhcpd'
               option maindhcp '0'
               option leasefile '/tmp/hosts/odhcpd'
               option leasetrigger '/usr/sbin/odhcpd-update'
               option loglevel '4'
-
           EOF
 
 
-          # ======================================================
+          # ------------------------------------------------------
           # 默认中文
-          # ======================================================
+          # ------------------------------------------------------
 
           cat > imagebuilder/files/etc/uci-defaults/99-default-language <<'EOF'
-
           #!/bin/sh
 
           uci -q set luci.main.lang='zh_cn'
           uci -q commit luci
 
           exit 0
-
           EOF
-
 
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
 
-          echo
-          echo "Custom files:"
-
-          find imagebuilder/files \
-            -type f \
-            -print
-
-
       # ==========================================================
-      # 最终软件包列表
+      # 软件包清单
+      #
+      # 这里不再把“没有来源”的包加入。
       # ==========================================================
 
       - name: Prepare final package list
@@ -912,10 +733,7 @@ jobs:
         run: |
           set -euo pipefail
 
-
-          # 官方包
-          cat > /tmp/package-list <<'EOF'
-
+          cat > /tmp/packages <<'EOF'
           luci
           luci-i18n-base-zh-cn
 
@@ -940,12 +758,6 @@ jobs:
           luci-app-upnp
           luci-i18n-upnp-zh-cn
 
-          EOF
-
-
-          # 第三方包
-          cat >> /tmp/package-list <<'EOF'
-
           luci-theme-aurora
           luci-app-aurora-config
           luci-i18n-aurora-config-zh-cn
@@ -956,18 +768,6 @@ jobs:
 
           luci-app-run
 
-          luci-app-filebrowser-go
-          luci-i18n-filebrowser-go-zh-cn
-
-          luci-app-vlmcsd
-          luci-i18n-vlmcsd-zh-cn
-
-          luci-app-timewol
-          luci-i18n-timewol-zh-cn
-
-          luci-app-autoreboot
-          luci-i18n-autoreboot-zh-cn
-
           luci-app-openclash
 
           luci-app-passwall
@@ -976,20 +776,29 @@ jobs:
           EOF
 
 
-          # 兼容用户自定义清单
-          if [ -f shell/apk-custom-packages.sh ]; then
+          # 只有实际已经找到的 sbwml APK 才加入
 
-            source shell/apk-custom-packages.sh
+          for PACKAGE in \
+            luci-app-filebrowser-go \
+            luci-app-vlmcsd \
+            luci-app-autoreboot
+          do
 
-            printf '%s\n' "${CUSTOM_PACKAGES}" \
-              | tr ' ' '\n' \
-              >> /tmp/package-list
+            if find imagebuilder/packages \
+              -maxdepth 1 \
+              -type f \
+              -name "${PACKAGE}-*.apk" |
+              grep -q .; then
 
-          fi
+              echo "${PACKAGE}" >> /tmp/packages
+
+            fi
+
+          done
 
 
           sort -u \
-            /tmp/package-list |
+            /tmp/packages |
           sed '/^[[:space:]]*$/d' \
             > selected-packages.txt
 
@@ -999,61 +808,31 @@ jobs:
           echo "Final package list"
           echo "=========================================="
 
-
           cat selected-packages.txt
 
 
-          echo
-          echo "Package count:"
-
-          wc -l selected-packages.txt
-
-
       # ==========================================================
-      # 重要：
+      # 直接构建
       #
       # 不再：
       #   make package_list
       #   make manifest
       #
-      # 直接 make image。
-      #
-      # ImageBuilder 会自己建立 APK database/index。
+      # 让 ImageBuilder 自己初始化 APK。
       # ==========================================================
 
-      - name: Build OpenWrt UEFI image
+      - name: Build UEFI
         working-directory: imagebuilder
         shell: bash
         run: |
           set -euo pipefail
 
-
           PACKAGES="$(
             tr '\n' ' ' \
               < "${GITHUB_WORKSPACE}/selected-packages.txt"
-          )"
+          )
 
-
-          echo
-          echo "=========================================="
-          echo "Building OpenWrt"
-          echo "=========================================="
-
-
-          echo
-          echo "OpenWrt:"
-          echo "${OPENWRT_VERSION}"
-
-
-          echo
-          echo "RootFS:"
-          echo "${ROOTFS_PARTSIZE} MB"
-
-
-          echo
-          echo "Packages:"
-          echo "${PACKAGES}"
-
+          mkdir -p "${GITHUB_WORKSPACE}/output"
 
           make image \
             PROFILE="generic" \
@@ -1065,7 +844,7 @@ jobs:
 
 
       # ==========================================================
-      # 查找 UEFI
+      # 找到 UEFI
       # ==========================================================
 
       - name: Prepare UEFI image
@@ -1073,53 +852,32 @@ jobs:
         run: |
           set -euo pipefail
 
-
-          echo
-          echo "=========================================="
-          echo "ImageBuilder output"
-          echo "=========================================="
-
-
-          find output \
-            -type f \
-            -maxdepth 3 \
-            -print
-
-
           IMAGE="$(
             find output \
               -type f \
               -name '*combined-efi.img.gz' |
             head -n 1
-          )"
-
+          )
 
           if [ -z "${IMAGE}" ]; then
-
-            echo
             echo "ERROR: UEFI image not found."
-
-            echo
-            echo "All generated files:"
 
             find output \
               -type f \
               -print
 
             exit 1
-
           fi
 
-
-          FINAL_IMAGE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
-
+          TARGET="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
           mv \
             "${IMAGE}" \
-            "${FINAL_IMAGE}"
+            "${TARGET}"
 
+          echo "UEFI_IMAGE=${TARGET}" >> "${GITHUB_ENV}"
 
-          echo "UEFI_IMAGE=${FINAL_IMAGE}" >> "${GITHUB_ENV}"
+          ls -lh "${TARGET}"
 
 
       # ==========================================================
@@ -1131,18 +889,13 @@ jobs:
         run: |
           set -euo pipefail
 
-
           RAW="/tmp/openwrt.raw"
-
 
           QCOW2="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
-
-          gzip \
-            -dc \
+          gzip -dc \
             "${UEFI_IMAGE}" \
             > "${RAW}"
-
 
           qemu-img convert \
             -p \
@@ -1152,9 +905,7 @@ jobs:
             "${RAW}" \
             "${QCOW2}"
 
-
           rm -f "${RAW}"
-
 
           test -s "${QCOW2}"
 
@@ -1165,22 +916,19 @@ jobs:
 
       - name: Generate SHA256
         working-directory: output
-        shell: bash
         run: |
           set -euo pipefail
-
 
           sha256sum \
             *.img.gz \
             *.qcow2 \
             > sha256sums.txt
 
-
           cat sha256sums.txt
 
 
       # ==========================================================
-      # Build 信息
+      # build info
       # ==========================================================
 
       - name: Create build information
@@ -1188,12 +936,8 @@ jobs:
         run: |
           set -euo pipefail
 
-
           cat > output/build-info.txt <<EOF
-
-          ==========================================
           OpenWrt Custom ImageBuilder Build
-          ==========================================
 
           OpenWrt:
           ${OPENWRT_VERSION}
@@ -1201,14 +945,8 @@ jobs:
           Target:
           x86-64
 
-          ImageBuilder:
-          Official OpenWrt
-
           RootFS:
           ${ROOTFS_SIZE}
-
-          Partition:
-          ${ROOTFS_PARTSIZE} MB
 
           Build date:
           ${BUILD_DATE}
@@ -1218,8 +956,6 @@ jobs:
 
           LAN:
           ${LAN_IP}
-
-          Network:
 
           eth0 = WAN / PPPoE
           eth1 = WANB / PPPoE
@@ -1232,17 +968,13 @@ jobs:
           Enabled
 
           Images:
-
           UEFI
           QCOW2
-
-          ==========================================
-
           EOF
 
 
       # ==========================================================
-      # 保存软件包列表
+      # 保存包清单
       # ==========================================================
 
       - name: Save package list
@@ -1259,15 +991,12 @@ jobs:
       # ==========================================================
 
       - name: Verify output
-        shell: bash
         run: |
           set -euo pipefail
-
 
           UEFI_FILE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
           QCOW2_FILE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
-
 
           test -s "${UEFI_FILE}"
           test -s "${QCOW2_FILE}"
@@ -1275,18 +1004,16 @@ jobs:
           test -s output/build-info.txt
           test -s output/selected-packages.txt
 
-
           echo
           echo "=========================================="
           echo "Final files"
           echo "=========================================="
 
-
           ls -lh output
 
 
       # ==========================================================
-      # GitHub Release
+      # Release
       # ==========================================================
 
       - name: Create GitHub Release
@@ -1297,15 +1024,11 @@ jobs:
         run: |
           set -euo pipefail
 
-
           TAG="v${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${GITHUB_RUN_NUMBER}"
-
 
           TITLE="OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${BUILD_DATE}"
 
-
           cat > release-notes.md <<EOF
-
           # OpenWrt ${OPENWRT_VERSION} x86-64
 
           ## Build
@@ -1339,7 +1062,6 @@ jobs:
 
           EOF
 
-
           gh release create \
             "${TAG}" \
             output/*.img.gz \
@@ -1349,12 +1071,3 @@ jobs:
             output/selected-packages.txt \
             --title "${TITLE}" \
             --notes-file release-notes.md
-
-
-          echo
-          echo "=========================================="
-          echo "Release created"
-          echo "=========================================="
-
-
-          echo "${TAG}"
