@@ -175,7 +175,7 @@ jobs:
 
 
       # ==========================================================
-      # PPPoE Secrets
+      # PPPoE secrets
       # ==========================================================
 
       - name: Validate PPPoE secrets
@@ -216,12 +216,19 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
+            bash \
             curl \
             file \
+            gawk \
+            gettext \
             git \
             jq \
+            libncurses-dev \
+            libssl-dev \
+            make \
             qemu-utils \
             rsync \
+            unzip \
             wget \
             zstd
 
@@ -235,9 +242,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
+
           ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
-          URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/${ARCHIVE}"
+          URL="${BASE_URL}/${ARCHIVE}"
 
           echo
           echo "=========================================="
@@ -254,6 +263,7 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
+
           mkdir -p imagebuilder
 
           tar \
@@ -269,7 +279,7 @@ jobs:
 
 
       # ==========================================================
-      # ImageBuilder info
+      # Check ImageBuilder
       # ==========================================================
 
       - name: Check ImageBuilder
@@ -298,11 +308,26 @@ jobs:
 
           PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-          printf '%s\n' \
+          grep -qxF \
             "${PASSWALL_BASE}/passwall_luci/packages.adb" \
+            repositories ||
+            printf '%s\n' \
+              "${PASSWALL_BASE}/passwall_luci/packages.adb" \
+              >> repositories
+
+          grep -qxF \
             "${PASSWALL_BASE}/passwall_packages/packages.adb" \
+            repositories ||
+            printf '%s\n' \
+              "${PASSWALL_BASE}/passwall_packages/packages.adb" \
+              >> repositories
+
+          grep -qxF \
             "${PASSWALL_BASE}/passwall2/packages.adb" \
-            >> repositories
+            repositories ||
+            printf '%s\n' \
+              "${PASSWALL_BASE}/passwall2/packages.adb" \
+              >> repositories
 
           mkdir -p keys
 
@@ -313,13 +338,9 @@ jobs:
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
             -O keys/openwrt-passwall-build.pem
 
-          echo
-          echo "PassWall repositories:"
-          tail -n 10 repositories
-
 
       # ==========================================================
-      # wukongdaily APK
+      # Download wukongdaily APK repository
       # ==========================================================
 
       - name: Download wukongdaily APK repository
@@ -339,17 +360,9 @@ jobs:
             exit 1
           fi
 
-          echo
-          echo "Available wukongdaily x86 APK:"
-          find third-party-apk/run/x86 \
-            -type f \
-            -name "*.apk" \
-            -printf "%P\n" |
-          sort
-
 
       # ==========================================================
-      # Prepare wukongdaily packages
+      # Prepare wukongdaily APK
       # ==========================================================
 
       - name: Prepare wukongdaily x86 APK
@@ -358,6 +371,7 @@ jobs:
           set -euo pipefail
 
           rm -rf imagebuilder/packages
+
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
@@ -374,21 +388,12 @@ jobs:
           )"
 
           echo
-          echo "Local APK count: ${APK_COUNT}"
+          echo "wukongdaily local APK count: ${APK_COUNT}"
 
           if [ "${APK_COUNT}" -eq 0 ]; then
-            echo "ERROR: No local APK packages prepared."
+            echo "ERROR: No wukongdaily APK packages found."
             exit 1
           fi
-
-          echo
-          echo "Prepared APK packages:"
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
 
 
       # ==========================================================
@@ -435,19 +440,6 @@ jobs:
 
           if [ -z "${URL}" ]; then
             echo "ERROR: OpenClash APK not found."
-
-            echo
-            echo "Available APK/IPK:"
-            jq -r '
-              .assets[]
-              | select(
-                  (.name | endswith(".apk"))
-                  or
-                  (.name | endswith(".ipk"))
-                )
-              | .name
-            ' /tmp/openclash.json
-
             exit 1
           fi
 
@@ -459,6 +451,460 @@ jobs:
             -P imagebuilder/packages
 
           ls -lh imagebuilder/packages/luci-app-openclash-*.apk
+
+
+      # ==========================================================
+      # Download official OpenWrt SDK
+      #
+      # 只用 SDK 编译缺失的第三方包。
+      #
+      # 不重新编译 OpenWrt。
+      # ==========================================================
+
+      - name: Download official OpenWrt SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_BASE="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
+
+          echo
+          echo "=========================================="
+          echo "Finding OpenWrt SDK"
+          echo "=========================================="
+
+          SDK_ARCHIVE="$(
+            curl \
+              -fsSL \
+              "${SDK_BASE}/" |
+            grep -oE \
+              'openwrt-sdk-[^"]+\.tar\.zst' |
+            grep -E \
+              "^openwrt-sdk-${OPENWRT_VERSION}-x86-64_.*\.tar\.zst$" |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "${SDK_ARCHIVE}" ]; then
+            echo "ERROR: OpenWrt SDK archive not found."
+            exit 1
+          fi
+
+          echo "SDK:"
+          echo "${SDK_ARCHIVE}"
+
+          wget \
+            --retry-connrefused \
+            --tries=5 \
+            --timeout=30 \
+            "${SDK_BASE}/${SDK_ARCHIVE}" \
+            -O openwrt-sdk.tar.zst
+
+          rm -rf sdk
+
+          mkdir -p sdk
+
+          tar \
+            --zstd \
+            -xf openwrt-sdk.tar.zst \
+            --strip-components=1 \
+            --no-same-owner \
+            -C sdk
+
+          echo
+          echo "SDK ready:"
+          ls -lah sdk
+
+
+      # ==========================================================
+      # Update official SDK feeds
+      # ==========================================================
+
+      - name: Prepare SDK feeds
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "Updating official SDK feeds..."
+
+          ./scripts/feeds update -a
+
+          ./scripts/feeds install -a
+
+
+      # ==========================================================
+      # Clone third-party package sources
+      # ==========================================================
+
+      - name: Download third-party package sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf sbwml-pkgs
+
+          git clone \
+            --depth=1 \
+            https://github.com/sbwml/openwrt_pkgs.git \
+            sbwml-pkgs
+
+          rm -rf viking-pkgs
+
+          git clone \
+            --depth=1 \
+            https://github.com/VIKINGYFY/packages.git \
+            viking-pkgs
+
+          echo
+          echo "Third-party sources downloaded."
+
+
+      # ==========================================================
+      # Import package sources into SDK
+      # ==========================================================
+
+      - name: Import third-party packages into SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            sdk/package/third-party
+
+
+          find_package_dir() {
+            local ROOT="$1"
+            local NAME="$2"
+
+            find "${ROOT}" \
+              -type f \
+              -name Makefile \
+              -print |
+            while IFS= read -r MAKEFILE; do
+              DIR="$(dirname "${MAKEFILE}")"
+
+              if [ "$(basename "${DIR}")" = "${NAME}" ]; then
+                printf '%s\n' "${DIR}"
+                return 0
+              fi
+            done
+          }
+
+
+          copy_package() {
+            local ROOT="$1"
+            local NAME="$2"
+
+            local SRC
+
+            SRC="$(find_package_dir "${ROOT}" "${NAME}" | head -n 1)"
+
+            if [ -z "${SRC}" ]; then
+              echo
+              echo "ERROR: Package source not found:"
+              echo "${NAME}"
+              echo "Repository:"
+              echo "${ROOT}"
+              exit 1
+            fi
+
+            echo
+            echo "Importing:"
+            echo "${NAME}"
+            echo "From:"
+            echo "${SRC}"
+
+            rm -rf \
+              "sdk/package/third-party/${NAME}"
+
+            cp -a \
+              "${SRC}" \
+              "sdk/package/third-party/${NAME}"
+          }
+
+
+          # ------------------------------------------------------
+          # sbwml
+          #
+          # FileBrowser Go
+          # VLMCSd
+          # Autoreboot
+          #
+          # FileBrowser/VLMCSd backend 一并加入。
+          # ------------------------------------------------------
+
+          copy_package \
+            sbwml-pkgs \
+            filebrowser
+
+          copy_package \
+            sbwml-pkgs \
+            luci-app-filebrowser-go
+
+          copy_package \
+            sbwml-pkgs \
+            vlmcsd
+
+          copy_package \
+            sbwml-pkgs \
+            luci-app-vlmcsd
+
+          copy_package \
+            sbwml-pkgs \
+            luci-app-autoreboot
+
+
+          # ------------------------------------------------------
+          # VIKINGYFY
+          #
+          # TimeWOL
+          # ------------------------------------------------------
+
+          copy_package \
+            viking-pkgs \
+            luci-app-timewol
+
+
+          echo
+          echo "SDK third-party packages:"
+
+          find sdk/package/third-party \
+            -maxdepth 2 \
+            -type f \
+            -name Makefile \
+            -print |
+          sort
+
+
+      # ==========================================================
+      # Configure SDK
+      # ==========================================================
+
+      - name: Configure SDK
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf '%s\n' \
+            "CONFIG_LUCI_LANG_zh_Hans=y" \
+            "CONFIG_PACKAGE_filebrowser=m" \
+            "CONFIG_PACKAGE_vlmcsd=m" \
+            "CONFIG_PACKAGE_luci-app-filebrowser-go=m" \
+            "CONFIG_PACKAGE_luci-app-vlmcsd=m" \
+            "CONFIG_PACKAGE_luci-app-autoreboot=m" \
+            "CONFIG_PACKAGE_luci-app-timewol=m" \
+            > /tmp/sdk-config
+
+          cat /tmp/sdk-config >> .config
+
+          make defconfig
+
+          echo
+          echo "SDK package configuration:"
+          grep -E \
+            'CONFIG_(LUCI_LANG_zh_Hans|PACKAGE_(filebrowser|vlmcsd|luci-app-filebrowser-go|luci-app-vlmcsd|luci-app-autoreboot|luci-app-timewol))=' \
+            .config ||
+            true
+
+
+      # ==========================================================
+      # Build FileBrowser Go
+      # ==========================================================
+
+      - name: Build FileBrowser Go packages
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make \
+            package/third-party/filebrowser/compile \
+            package/third-party/luci-app-filebrowser-go/compile \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ==========================================================
+      # Build VLMCSd
+      # ==========================================================
+
+      - name: Build VLMCSd packages
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make \
+            package/third-party/vlmcsd/compile \
+            package/third-party/luci-app-vlmcsd/compile \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ==========================================================
+      # Build Autoreboot
+      # ==========================================================
+
+      - name: Build Autoreboot packages
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make \
+            package/third-party/luci-app-autoreboot/compile \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ==========================================================
+      # Build TimeWOL
+      # ==========================================================
+
+      - name: Build TimeWOL packages
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make \
+            package/third-party/luci-app-timewol/compile \
+            -j"$(nproc)" \
+            V=s
+
+
+      # ==========================================================
+      # Collect SDK-generated APK
+      # ==========================================================
+
+      - name: Collect SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "SDK generated APK"
+          echo "=========================================="
+
+          find sdk/bin/packages \
+            -type f \
+            -name "*.apk" \
+            -printf "%p\n" |
+          sort
+
+
+          SDK_APK_COUNT="$(
+            find sdk/bin/packages \
+              -type f \
+              -name "*.apk" |
+            wc -l
+          )"
+
+          echo
+          echo "SDK APK count: ${SDK_APK_COUNT}"
+
+          if [ "${SDK_APK_COUNT}" -eq 0 ]; then
+            echo "ERROR: SDK produced no APK packages."
+            exit 1
+          fi
+
+
+          # ------------------------------------------------------
+          # 清理旧的同名包
+          # ------------------------------------------------------
+
+          for PACKAGE in \
+            filebrowser \
+            luci-app-filebrowser-go \
+            luci-i18n-filebrowser-go-zh-cn \
+            vlmcsd \
+            luci-app-vlmcsd \
+            luci-i18n-vlmcsd-zh-cn \
+            luci-app-autoreboot \
+            luci-i18n-autoreboot-zh-cn \
+            luci-app-timewol \
+            luci-i18n-timewol-zh-cn
+          do
+            find imagebuilder/packages \
+              -maxdepth 1 \
+              -type f \
+              -name "${PACKAGE}-*.apk" \
+              -delete
+          done
+
+
+          # ------------------------------------------------------
+          # 复制 SDK 产生的包
+          # ------------------------------------------------------
+
+          find sdk/bin/packages \
+            -type f \
+            -name "*.apk" \
+            -exec cp -v {} imagebuilder/packages/ \;
+
+
+          echo
+          echo "ImageBuilder local APK after SDK build:"
+
+          find imagebuilder/packages \
+            -maxdepth 1 \
+            -type f \
+            -name "*.apk" \
+            -printf "%f\n" |
+          sort
+
+
+      # ==========================================================
+      # Verify the six missing package groups
+      # ==========================================================
+
+      - name: Verify rebuilt packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FAILED=0
+
+
+          for PACKAGE in \
+            luci-app-filebrowser-go \
+            luci-i18n-filebrowser-go-zh-cn \
+            luci-app-vlmcsd \
+            luci-i18n-vlmcsd-zh-cn \
+            luci-app-autoreboot \
+            luci-i18n-autoreboot-zh-cn \
+            luci-app-timewol \
+            luci-i18n-timewol-zh-cn
+          do
+
+            MATCH="$(
+              find imagebuilder/packages \
+                -maxdepth 1 \
+                -type f \
+                -name "${PACKAGE}-*.apk" \
+                -print |
+              sort -V |
+              tail -n 1
+            )"
+
+            if [ -n "${MATCH}" ]; then
+              echo "OK: ${PACKAGE}"
+              echo "    ${MATCH}"
+            else
+              echo "ERROR: APK missing: ${PACKAGE}"
+              FAILED=1
+            fi
+
+          done
+
+
+          if [ "${FAILED}" -ne 0 ]; then
+            exit 1
+          fi
 
 
       # ==========================================================
@@ -494,6 +940,7 @@ jobs:
               files/ \
               imagebuilder/files/
           fi
+
 
           # ------------------------------------------------------
           # network
@@ -550,7 +997,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # DHCP
+          # DHCP / IPv6
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -594,7 +1041,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # 默认中文
+          # Default Chinese
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -609,15 +1056,9 @@ jobs:
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
-          echo
-          echo "Custom files:"
-          find imagebuilder/files \
-            -type f \
-            -print
-
 
       # ==========================================================
-      # Load custom packages
+      # Load custom package list
       # ==========================================================
 
       - name: Load custom package list
@@ -637,13 +1078,9 @@ jobs:
             sed '/^[[:space:]]*$/d' \
             > /tmp/custom-packages
 
-          echo
-          echo "Custom package list:"
-          cat /tmp/custom-packages
-
 
       # ==========================================================
-      # Build final package list
+      # Final package list
       # ==========================================================
 
       - name: Build final package list
@@ -651,21 +1088,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -f \
-            selected-packages.txt \
-            missing-packages.txt
-
-          touch \
-            selected-packages.txt \
-            missing-packages.txt
-
-
-          # ------------------------------------------------------
-          # 官方 OpenWrt 包
-          #
-          # 注意：
-          # 不再加入 ipv6 / kmod-ipv6。
-          # ------------------------------------------------------
+          rm -f selected-packages.txt
 
           printf '%s\n' \
             "luci" \
@@ -687,11 +1110,19 @@ jobs:
             "luci-app-openclash" \
             "luci-app-passwall" \
             "luci-i18n-passwall-zh-cn" \
+            "luci-app-filebrowser-go" \
+            "luci-i18n-filebrowser-go-zh-cn" \
+            "luci-app-vlmcsd" \
+            "luci-i18n-vlmcsd-zh-cn" \
+            "luci-app-autoreboot" \
+            "luci-i18n-autoreboot-zh-cn" \
+            "luci-app-timewol" \
+            "luci-i18n-timewol-zh-cn" \
             >> selected-packages.txt
 
 
           # ------------------------------------------------------
-          # 用户清单
+          # User-defined packages
           # ------------------------------------------------------
 
           while IFS= read -r PACKAGE; do
@@ -700,10 +1131,10 @@ jobs:
             case "${PACKAGE}" in
               ipv6|kmod-ipv6)
                 echo "Ignoring unavailable package: ${PACKAGE}"
-                echo "${PACKAGE}" >> missing-packages.txt
                 ;;
               *)
-                printf '%s\n' "${PACKAGE}" >> selected-packages.txt
+                printf '%s\n' "${PACKAGE}" \
+                  >> selected-packages.txt
                 ;;
             esac
           done < /tmp/custom-packages
@@ -714,84 +1145,19 @@ jobs:
             -o selected-packages.txt
 
 
-          # ------------------------------------------------------
-          # 当前没有本地 APK 的可选包
-          # ------------------------------------------------------
-
-          for PACKAGE in \
-            luci-app-filebrowser-go \
-            luci-i18n-filebrowser-go-zh-cn \
-            luci-app-vlmcsd \
-            luci-i18n-vlmcsd-zh-cn \
-            luci-app-autoreboot \
-            luci-i18n-autoreboot-zh-cn \
-            luci-i18n-timewol-zh-cn
-          do
-
-            if ! grep -Fxq "${PACKAGE}" selected-packages.txt; then
-              continue
-            fi
-
-            if find imagebuilder/packages \
-              -maxdepth 1 \
-              -type f \
-              -name "${PACKAGE}-*.apk" \
-              -print \
-              -quit |
-              grep -q .
-            then
-              echo "Found local APK: ${PACKAGE}"
-              continue
-            fi
-
-            TMP_FILE="$(mktemp)"
-
-            grep -Fxv \
-              "${PACKAGE}" \
-              selected-packages.txt \
-              > "${TMP_FILE}" ||
-              true
-
-            mv \
-              "${TMP_FILE}" \
-              selected-packages.txt
-
-            echo "${PACKAGE}" \
-              >> missing-packages.txt
-
-          done
-
-
-          sort -u \
-            missing-packages.txt \
-            -o missing-packages.txt
-
-
           echo
           echo "=========================================="
-          echo "Selected packages"
+          echo "Final package list"
           echo "=========================================="
 
           cat selected-packages.txt
 
 
-          echo
-          echo "=========================================="
-          echo "Missing packages"
-          echo "=========================================="
-
-          if [ -s missing-packages.txt ]; then
-            cat missing-packages.txt
-          else
-            echo "None"
-          fi
-
-
       # ==========================================================
-      # Verify required third-party APKs
+      # Verify all requested third-party APK
       # ==========================================================
 
-      - name: Verify required third-party APKs
+      - name: Verify all required APK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -806,20 +1172,31 @@ jobs:
             luci-app-bandix \
             luci-i18n-bandix-zh-cn \
             luci-app-run \
-            luci-app-openclash
+            luci-app-openclash \
+            luci-app-filebrowser-go \
+            luci-i18n-filebrowser-go-zh-cn \
+            luci-app-vlmcsd \
+            luci-i18n-vlmcsd-zh-cn \
+            luci-app-autoreboot \
+            luci-i18n-autoreboot-zh-cn \
+            luci-app-timewol \
+            luci-i18n-timewol-zh-cn
           do
 
-            if find imagebuilder/packages \
-              -maxdepth 1 \
-              -type f \
-              -name "${PACKAGE}-*.apk" \
-              -print \
-              -quit |
-              grep -q .
-            then
+            MATCH="$(
+              find imagebuilder/packages \
+                -maxdepth 1 \
+                -type f \
+                -name "${PACKAGE}-*.apk" \
+                -print |
+              sort -V |
+              tail -n 1
+            )"
+
+            if [ -n "${MATCH}" ]; then
               echo "OK: ${PACKAGE}"
             else
-              echo "ERROR: Required APK missing: ${PACKAGE}"
+              echo "ERROR: Missing APK: ${PACKAGE}"
               FAILED=1
             fi
 
@@ -831,7 +1208,7 @@ jobs:
 
 
       # ==========================================================
-      # Build image
+      # Build UEFI
       # ==========================================================
 
       - name: Build UEFI image
@@ -853,12 +1230,8 @@ jobs:
           echo "Building OpenWrt"
           echo "=========================================="
 
-          echo "OpenWrt:"
-          echo "${OPENWRT_VERSION}"
-
-          echo
-          echo "RootFS:"
-          echo "${ROOTFS_PARTSIZE} MB"
+          echo "OpenWrt: ${OPENWRT_VERSION}"
+          echo "RootFS: ${ROOTFS_PARTSIZE} MB"
 
           echo
           echo "Packages:"
@@ -974,6 +1347,7 @@ jobs:
             "OpenWrt: ${OPENWRT_VERSION}" \
             "Target: x86-64" \
             "ImageBuilder: Official OpenWrt" \
+            "SDK: Official OpenWrt SDK for ${OPENWRT_VERSION}" \
             "RootFS: ${ROOTFS_SIZE}" \
             "RootFS partition: ${ROOTFS_PARTSIZE} MB" \
             "Build date: ${BUILD_DATE}" \
@@ -997,10 +1371,10 @@ jobs:
 
 
       # ==========================================================
-      # Package lists
+      # Package list
       # ==========================================================
 
-      - name: Save package lists
+      - name: Save package list
         shell: bash
         run: |
           set -euo pipefail
@@ -1009,13 +1383,9 @@ jobs:
             selected-packages.txt \
             output/selected-packages.txt
 
-          cp \
-            missing-packages.txt \
-            output/missing-packages.txt
-
 
       # ==========================================================
-      # Verify output
+      # Final verification
       # ==========================================================
 
       - name: Verify output
@@ -1032,7 +1402,6 @@ jobs:
           test -s output/sha256sums.txt
           test -s output/build-info.txt
           test -s output/selected-packages.txt
-          test -s output/missing-packages.txt
 
           echo
           echo "=========================================="
@@ -1043,7 +1412,7 @@ jobs:
 
 
       # ==========================================================
-      # Release
+      # GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
@@ -1066,6 +1435,7 @@ jobs:
             "- OpenWrt: \`${OPENWRT_VERSION}\`" \
             "- Target: \`x86-64\`" \
             "- ImageBuilder: Official OpenWrt" \
+            "- SDK: Official OpenWrt SDK" \
             "- RootFS: \`${ROOTFS_SIZE}\`" \
             "- Build date: \`${BUILD_DATE}\`" \
             "" \
@@ -1085,7 +1455,12 @@ jobs:
             "- UEFI" \
             "- QCOW2" \
             "" \
-            "See selected-packages.txt and missing-packages.txt for package status." \
+            "## Additional packages built with the official SDK" \
+            "" \
+            "- FileBrowser Go" \
+            "- VLMCSd" \
+            "- AutoReboot" \
+            "- TimeWOL" \
             > release-notes.md
 
           gh release create \
@@ -1095,6 +1470,5 @@ jobs:
             output/sha256sums.txt \
             output/build-info.txt \
             output/selected-packages.txt \
-            output/missing-packages.txt \
             --title "${TITLE}" \
             --notes-file release-notes.md
