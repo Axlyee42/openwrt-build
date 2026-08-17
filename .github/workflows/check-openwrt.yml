@@ -1,1 +1,142 @@
+name: Check OpenWrt upstream
 
+on:
+  schedule:
+    # 每天北京时间 10:30
+    - cron: "30 2 * * *"
+
+  workflow_dispatch:
+
+
+permissions:
+  contents: write
+
+
+jobs:
+
+  check:
+    runs-on: ubuntu-24.04
+
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      version: ${{ steps.check.outputs.version }}
+
+    steps:
+
+      # ==========================================================
+      # Checkout
+      # ==========================================================
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+
+      # ==========================================================
+      # 检查最新 OpenWrt 25.12.x
+      # ==========================================================
+
+      - name: Check latest OpenWrt release
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LATEST="$(
+            git ls-remote \
+              --tags \
+              https://github.com/openwrt/openwrt.git \
+              'refs/tags/v25.12.*' |
+            sed 's#.*refs/tags/v##' |
+            grep -E '^25\.12\.[0-9]+$' |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "${LATEST}" ]; then
+            echo "ERROR: Cannot determine latest OpenWrt 25.12.x."
+            exit 1
+          fi
+
+          CURRENT=""
+
+          if [ -f openwrt-version ]; then
+            CURRENT="$(tr -d '[:space:]' < openwrt-version)"
+          fi
+
+          echo
+          echo "=========================================="
+          echo "OpenWrt upstream check"
+          echo "=========================================="
+
+          echo "Latest : ${LATEST}"
+          echo "Current: ${CURRENT:-none}"
+
+          if [ "${LATEST}" = "${CURRENT}" ]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "version=${LATEST}" >> "${GITHUB_OUTPUT}"
+
+            echo
+            echo "No new OpenWrt release."
+            exit 0
+          fi
+
+          echo "${LATEST}" > openwrt-version
+
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+          echo "version=${LATEST}" >> "${GITHUB_OUTPUT}"
+
+          echo
+          echo "New OpenWrt release detected:"
+          echo "${CURRENT:-none} -> ${LATEST}"
+
+
+      # ==========================================================
+      # 保存版本
+      # ==========================================================
+
+      - name: Commit new OpenWrt version
+        if: steps.check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add openwrt-version
+
+          git commit \
+            -m "chore: update OpenWrt version to ${{ steps.check.outputs.version }}"
+
+          git push
+
+
+  # ============================================================
+  # 新版本才构建
+  # ============================================================
+
+  build:
+    needs: check
+
+    if: needs.check.outputs.changed == 'true'
+
+    uses: ./.github/workflows/build-x86-64.yml
+
+    with:
+      openwrt_version: ${{ needs.check.outputs.version }}
+      rootfs_size: "4G"
+      lan_ip: "192.168.1.2"
+      bios: true
+      uefi: true
+      qcow2: true
+      vmdk: false
+      raw: false
+
+    secrets: inherit
