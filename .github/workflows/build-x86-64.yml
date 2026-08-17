@@ -30,14 +30,11 @@ on:
     types:
       - openwrt-release
 
-
 permissions:
   contents: write
 
-
 env:
   TZ: Asia/Shanghai
-
 
 jobs:
   build:
@@ -50,7 +47,7 @@ jobs:
       # ==========================================================
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -64,7 +61,6 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
-
         run: |
           set -euo pipefail
 
@@ -93,9 +89,7 @@ jobs:
             )"
           fi
 
-          if ! printf '%s\n' "${VERSION}" |
-            grep -Eq '^25\.12\.[0-9]+$'
-          then
+          if ! printf '%s\n' "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
             echo "ERROR: Invalid OpenWrt version: ${VERSION}"
             exit 1
           fi
@@ -119,7 +113,6 @@ jobs:
         shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
-
         run: |
           set -euo pipefail
 
@@ -152,14 +145,13 @@ jobs:
 
 
       # ==========================================================
-      # LAN IP
+      # LAN
       # ==========================================================
 
       - name: Configure LAN
         shell: bash
         env:
           INPUT_LAN_IP: ${{ inputs.lan_ip }}
-
         run: |
           set -euo pipefail
 
@@ -178,7 +170,7 @@ jobs:
 
 
       # ==========================================================
-      # PPPoE Secrets
+      # PPPoE secrets
       # ==========================================================
 
       - name: Validate PPPoE secrets
@@ -188,7 +180,6 @@ jobs:
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
-
         run: |
           set -euo pipefail
 
@@ -230,7 +221,7 @@ jobs:
 
 
       # ==========================================================
-      # Download official ImageBuilder
+      # Download ImageBuilder
       # ==========================================================
 
       - name: Download official ImageBuilder
@@ -246,7 +237,6 @@ jobs:
           echo "=========================================="
           echo "Downloading ImageBuilder"
           echo "=========================================="
-
           echo "${URL}"
 
           wget \
@@ -257,7 +247,6 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
-
           mkdir -p imagebuilder
 
           tar \
@@ -286,7 +275,7 @@ jobs:
 
 
       # ==========================================================
-      # PassWall APK repository
+      # PassWall repository
       # ==========================================================
 
       - name: Configure PassWall repository
@@ -302,18 +291,18 @@ jobs:
 
           PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-          cat >> repositories <<EOF
-
-${PASSWALL_BASE}/passwall_luci/packages.adb
-${PASSWALL_BASE}/passwall_packages/packages.adb
-${PASSWALL_BASE}/passwall2/packages.adb
-EOF
+          printf '%s\n' \
+            "${PASSWALL_BASE}/passwall_luci/packages.adb" \
+            "${PASSWALL_BASE}/passwall_packages/packages.adb" \
+            "${PASSWALL_BASE}/passwall2/packages.adb" \
+            >> repositories
 
           mkdir -p keys
 
           wget \
             --retry-connrefused \
             --tries=5 \
+            --timeout=30 \
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
             -O keys/openwrt-passwall-build.pem
 
@@ -323,7 +312,7 @@ EOF
 
 
       # ==========================================================
-      # Clone wukongdaily APK repository
+      # wukongdaily APK
       # ==========================================================
 
       - name: Download wukongdaily APK repository
@@ -353,11 +342,9 @@ EOF
 
 
       # ==========================================================
-      # Prepare wukongdaily x86 APK
+      # Prepare wukongdaily packages
       #
-      # 关键：
-      # run/x86 下有多个子目录，必须把 APK 展平复制到
-      # imagebuilder/packages，否则 packages.adb 会得到 0 个包。
+      # 只复制 APK，不复制其它文件。
       # ==========================================================
 
       - name: Prepare wukongdaily x86 APK
@@ -366,23 +353,12 @@ EOF
           set -euo pipefail
 
           rm -rf imagebuilder/packages
-
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
             -type f \
             -name "*.apk" \
             -exec cp -v {} imagebuilder/packages/ \;
-
-          echo
-          echo "Prepared local APK packages:"
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
-
 
           APK_COUNT="$(
             find imagebuilder/packages \
@@ -399,6 +375,15 @@ EOF
             echo "ERROR: No local APK packages prepared."
             exit 1
           fi
+
+          echo
+          echo "Prepared APK packages:"
+          find imagebuilder/packages \
+            -maxdepth 1 \
+            -type f \
+            -name "*.apk" \
+            -printf "%f\n" |
+          sort
 
 
       # ==========================================================
@@ -433,10 +418,6 @@ EOF
             https://api.github.com/repos/vernesong/OpenClash/releases/latest \
             -o /tmp/openclash.json
 
-          echo
-          echo "OpenClash release:"
-          jq -r '.tag_name' /tmp/openclash.json
-
           URL="$(
             jq -r '
               .assets[]
@@ -448,11 +429,8 @@ EOF
           )"
 
           if [ -z "${URL}" ]; then
-            echo
             echo "ERROR: OpenClash APK not found."
-
             echo
-            echo "Available APK/IPK:"
             jq -r '
               .assets[]
               | select(
@@ -462,12 +440,8 @@ EOF
                 )
               | .name
             ' /tmp/openclash.json
-
             exit 1
           fi
-
-          echo "Downloading:"
-          echo "${URL}"
 
           wget \
             --retry-connrefused \
@@ -482,7 +456,7 @@ EOF
 
 
       # ==========================================================
-      # 自定义 files
+      # Custom files
       # ==========================================================
 
       - name: Prepare custom files
@@ -492,7 +466,6 @@ EOF
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
-
         run: |
           set -euo pipefail
 
@@ -505,15 +478,11 @@ EOF
             exit 1
           fi
 
-
-          # 保留仓库中其它 files
           if [ -d files ]; then
-            rsync \
-              -a \
+            rsync -a \
               files/ \
               imagebuilder/files/
           fi
-
 
           mkdir -p \
             imagebuilder/files/etc/config \
@@ -524,129 +493,129 @@ EOF
           # network
           # ------------------------------------------------------
 
-          cat > imagebuilder/files/etc/config/network <<EOF
-config interface 'loopback'
-    option device 'lo'
-    option proto 'static'
-    option ipaddr '127.0.0.1'
-    option netmask '255.0.0.0'
-
-
-config device
-    option name 'br-lan'
-    option type 'bridge'
-    list ports 'eth2'
-    list ports 'eth3'
-    list ports 'eth4'
-    list ports 'eth5'
-
-
-config interface 'lan'
-    option device 'br-lan'
-    option proto 'static'
-    option ipaddr '${LAN_IP}'
-    option netmask '255.255.255.0'
-    option ip6assign '64'
-
-
-config interface 'wan'
-    option device 'eth0'
-    option proto 'pppoe'
-    option username '${WAN1_USER}'
-    option password '${WAN1_PASS}'
-    option ipv6 '1'
-
-
-config interface 'wan6'
-    option device '@wan'
-    option proto 'dhcpv6'
-    option reqaddress 'try'
-    option reqprefix 'auto'
-
-
-config interface 'wanb'
-    option device 'eth1'
-    option proto 'pppoe'
-    option username '${WAN2_USER}'
-    option password '${WAN2_PASS}'
-    option ipv6 '1'
-
-
-config interface 'wanb6'
-    option device '@wanb'
-    option proto 'dhcpv6'
-    option reqaddress 'try'
-    option reqprefix 'auto'
-EOF
+          {
+            printf '%s\n' \
+              "config interface 'loopback'" \
+              "    option device 'lo'" \
+              "    option proto 'static'" \
+              "    option ipaddr '127.0.0.1'" \
+              "    option netmask '255.0.0.0'" \
+              "" \
+              "config device" \
+              "    option name 'br-lan'" \
+              "    option type 'bridge'" \
+              "    list ports 'eth2'" \
+              "    list ports 'eth3'" \
+              "    list ports 'eth4'" \
+              "    list ports 'eth5'" \
+              "" \
+              "config interface 'lan'" \
+              "    option device 'br-lan'" \
+              "    option proto 'static'" \
+              "    option ipaddr '${LAN_IP}'" \
+              "    option netmask '255.255.255.0'" \
+              "    option ip6assign '64'" \
+              "" \
+              "config interface 'wan'" \
+              "    option device 'eth0'" \
+              "    option proto 'pppoe'" \
+              "    option username '${WAN1_USER}'" \
+              "    option password '${WAN1_PASS}'" \
+              "    option ipv6 '1'" \
+              "" \
+              "config interface 'wan6'" \
+              "    option device '@wan'" \
+              "    option proto 'dhcpv6'" \
+              "    option reqaddress 'try'" \
+              "    option reqprefix 'auto'" \
+              "" \
+              "config interface 'wanb'" \
+              "    option device 'eth1'" \
+              "    option proto 'pppoe'" \
+              "    option username '${WAN2_USER}'" \
+              "    option password '${WAN2_PASS}'" \
+              "    option ipv6 '1'" \
+              "" \
+              "config interface 'wanb6'" \
+              "    option device '@wanb'" \
+              "    option proto 'dhcpv6'" \
+              "    option reqaddress 'try'" \
+              "    option reqprefix 'auto'"
+          } > imagebuilder/files/etc/config/network
 
 
           # ------------------------------------------------------
-          # DHCP / IPv6
+          # dhcp
           # ------------------------------------------------------
 
-          cat > imagebuilder/files/etc/config/dhcp <<'EOF'
-config dnsmasq
-    option domainneeded '1'
-    option boguspriv '1'
-    option localise_queries '1'
-    option rebind_protection '1'
-    option local '/lan/'
-    option domain 'lan'
-    option expandhosts '1'
-    option authoritative '1'
-    option readethers '1'
-    option leasefile '/tmp/dhcp.leases'
-    option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
-
-
-config dhcp 'lan'
-    option interface 'lan'
-    option start '100'
-    option limit '150'
-    option leasetime '12h'
-    option dhcpv4 'server'
-    option dhcpv6 'server'
-    option ra 'server'
-    option ra_management '1'
-
-
-config dhcp 'wan'
-    option interface 'wan'
-    option ignore '1'
-
-
-config dhcp 'wanb'
-    option interface 'wanb'
-    option ignore '1'
-
-
-config odhcpd 'odhcpd'
-    option maindhcp '0'
-    option leasefile '/tmp/hosts/odhcpd'
-    option leasetrigger '/usr/sbin/odhcpd-update'
-    option loglevel '4'
-EOF
+          {
+            printf '%s\n' \
+              "config dnsmasq" \
+              "    option domainneeded '1'" \
+              "    option boguspriv '1'" \
+              "    option localise_queries '1'" \
+              "    option rebind_protection '1'" \
+              "    option local '/lan/'" \
+              "    option domain 'lan'" \
+              "    option expandhosts '1'" \
+              "    option authoritative '1'" \
+              "    option readethers '1'" \
+              "    option leasefile '/tmp/dhcp.leases'" \
+              "    option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'" \
+              "" \
+              "config dhcp 'lan'" \
+              "    option interface 'lan'" \
+              "    option start '100'" \
+              "    option limit '150'" \
+              "    option leasetime '12h'" \
+              "    option dhcpv4 'server'" \
+              "    option dhcpv6 'server'" \
+              "    option ra 'server'" \
+              "    option ra_management '1'" \
+              "" \
+              "config dhcp 'wan'" \
+              "    option interface 'wan'" \
+              "    option ignore '1'" \
+              "" \
+              "config dhcp 'wanb'" \
+              "    option interface 'wanb'" \
+              "    option ignore '1'" \
+              "" \
+              "config odhcpd 'odhcpd'" \
+              "    option maindhcp '0'" \
+              "    option leasefile '/tmp/hosts/odhcpd'" \
+              "    option leasetrigger '/usr/sbin/odhcpd-update'" \
+              "    option loglevel '4'"
+          } > imagebuilder/files/etc/config/dhcp
 
 
           # ------------------------------------------------------
           # 默认中文
           # ------------------------------------------------------
 
-          cat > imagebuilder/files/etc/uci-defaults/99-default-language <<'EOF'
-#!/bin/sh
-
-uci -q set luci.main.lang='zh_cn'
-uci -q commit luci
-
-exit 0
-EOF
+          {
+            printf '%s\n' \
+              '#!/bin/sh' \
+              "" \
+              "uci -q set luci.main.lang='zh_cn'" \
+              "uci -q commit luci" \
+              "" \
+              "exit 0"
+          } > imagebuilder/files/etc/uci-defaults/99-default-language
 
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
 
+          echo
+          echo "Custom files:"
+          find imagebuilder/files \
+            -type f \
+            -print
+
+
       # ==========================================================
-      # 用户软件包列表
+      # Load custom package list
       # ==========================================================
 
       - name: Load custom package list
@@ -661,28 +630,18 @@ EOF
 
           source shell/apk-custom-packages.sh
 
-          printf '%s\n' "${CUSTOM_PACKAGES:-}" \
-            | tr ' ' '\n' \
-            | sed '/^[[:space:]]*$/d' \
+          printf '%s\n' "${CUSTOM_PACKAGES:-}" |
+            tr ' ' '\n' |
+            sed '/^[[:space:]]*$/d' \
             > /tmp/custom-packages
 
           echo
-          echo "Custom package list:"
+          echo "Custom packages:"
           cat /tmp/custom-packages
 
 
       # ==========================================================
-      # 最终包列表
-      #
-      # IPv6：
-      # 不安装不存在的 "ipv6" 包
-      #
-      # 使用：
-      # luci-proto-ipv6
-      # odhcp6c
-      # odhcpd-ipv6only
-      #
-      # 配合 files/etc/config/network + dhcp
+      # Build final package list
       # ==========================================================
 
       - name: Build final package list
@@ -700,54 +659,44 @@ EOF
 
 
           # ------------------------------------------------------
-          # OpenWrt 官方包
+          # Official OpenWrt packages
+          #
+          # 注意：
+          # 不再加入不存在的：
+          #   ipv6
+          #   kmod-ipv6
           # ------------------------------------------------------
 
-          cat >> selected-packages.txt <<'EOF'
-luci
-luci-i18n-base-zh-cn
-
-ppp
-ppp-mod-pppoe
-kmod-pppoe
-
-luci-proto-ppp
-luci-proto-ipv6
-
-odhcp6c
-odhcpd-ipv6only
-
-mwan3
-luci-app-mwan3
-luci-i18n-mwan3-zh-cn
-
-luci-app-ttyd
-luci-i18n-ttyd-zh-cn
-
-luci-app-upnp
-luci-i18n-upnp-zh-cn
-
-luci-app-openclash
-
-luci-app-passwall
-luci-i18n-passwall-zh-cn
-EOF
+          printf '%s\n' \
+            "luci" \
+            "luci-i18n-base-zh-cn" \
+            "ppp" \
+            "ppp-mod-pppoe" \
+            "kmod-pppoe" \
+            "luci-proto-ppp" \
+            "luci-proto-ipv6" \
+            "odhcp6c" \
+            "odhcpd-ipv6only" \
+            "mwan3" \
+            "luci-app-mwan3" \
+            "luci-i18n-mwan3-zh-cn" \
+            "luci-app-ttyd" \
+            "luci-i18n-ttyd-zh-cn" \
+            "luci-app-upnp" \
+            "luci-i18n-upnp-zh-cn" \
+            "luci-app-openclash" \
+            "luci-app-passwall" \
+            "luci-i18n-passwall-zh-cn" \
+            >> selected-packages.txt
 
 
           # ------------------------------------------------------
-          # 用户清单
+          # User packages
           # ------------------------------------------------------
 
-          while IFS= read -r PACKAGE; do
-            [ -z "${PACKAGE}" ] && continue
+          cat /tmp/custom-packages \
+            >> selected-packages.txt
 
-            echo "${PACKAGE}" >> selected-packages.txt
-          done < /tmp/custom-packages
-
-
-          # ------------------------------------------------------
-          # 去重
-          # ------------------------------------------------------
 
           sort -u \
             selected-packages.txt \
@@ -755,8 +704,8 @@ EOF
 
 
           # ------------------------------------------------------
-          # 检查目前没有可靠 APK 来源的包
-          # 使用 grep -Fx，不再使用会产生 sed 地址错误的写法。
+          # Optional packages which are not present in
+          # wukongdaily x86 repository
           # ------------------------------------------------------
 
           OPTIONAL_PACKAGES="
@@ -786,17 +735,14 @@ luci-i18n-timewol-zh-cn
               grep -q .
             then
 
-              echo
-              echo "Found local APK:"
-              echo "${PACKAGE}"
+              echo "Found local APK: ${PACKAGE}"
 
               continue
             fi
 
 
-            echo
-            echo "Missing APK:"
-            echo "${PACKAGE}"
+            echo "${PACKAGE}" \
+              >> missing-packages.txt
 
 
             TMP_FILE="$(mktemp)"
@@ -810,10 +756,6 @@ luci-i18n-timewol-zh-cn
             mv \
               "${TMP_FILE}" \
               selected-packages.txt
-
-
-            echo "${PACKAGE}" \
-              >> missing-packages.txt
 
           done
 
@@ -830,7 +772,6 @@ luci-i18n-timewol-zh-cn
 
           cat selected-packages.txt
 
-
           echo
           echo "=========================================="
           echo "Missing packages"
@@ -844,7 +785,7 @@ luci-i18n-timewol-zh-cn
 
 
       # ==========================================================
-      # 检查核心第三方 APK
+      # Verify required third-party packages
       # ==========================================================
 
       - name: Verify required third-party packages
@@ -877,16 +818,10 @@ luci-app-openclash
               -quit |
               grep -q .
             then
-
               echo "OK: ${PACKAGE}"
-
             else
-
-              echo "ERROR: Required APK missing:"
-              echo "${PACKAGE}"
-
+              echo "ERROR: Required APK missing: ${PACKAGE}"
               FAILED=1
-
             fi
 
           done
@@ -898,13 +833,7 @@ luci-app-openclash
 
 
       # ==========================================================
-      # 构建
-      #
-      # 不再：
-      # make package_list
-      # make manifest
-      #
-      # 直接 make image。
+      # Build
       # ==========================================================
 
       - name: Build UEFI image
@@ -913,23 +842,19 @@ luci-app-openclash
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            "${GITHUB_WORKSPACE}/output"
-
+          mkdir -p "${GITHUB_WORKSPACE}/output"
 
           PACKAGES="$(
             tr '\n' ' ' \
               < "${GITHUB_WORKSPACE}/selected-packages.txt"
           )"
 
-
           echo
           echo "=========================================="
           echo "Building OpenWrt"
           echo "=========================================="
 
-          echo
-          echo "OpenWrt:"
+          echo "Version:"
           echo "${OPENWRT_VERSION}"
 
           echo
@@ -939,7 +864,6 @@ luci-app-openclash
           echo
           echo "Packages:"
           echo "${PACKAGES}"
-
 
           make image \
             PROFILE="generic" \
@@ -966,32 +890,25 @@ luci-app-openclash
             head -n 1
           )"
 
-
           if [ -z "${IMAGE}" ]; then
-
             echo "ERROR: UEFI image not found."
 
-            echo
-            echo "Available output:"
             find output \
               -type f \
               -print
 
             exit 1
-
           fi
 
-
           FINAL="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
-
 
           mv \
             "${IMAGE}" \
             "${FINAL}"
 
+          echo "UEFI_IMAGE=${FINAL}" >> "${GITHUB_ENV}"
 
-          echo "UEFI_IMAGE=${FINAL}" \
-            >> "${GITHUB_ENV}"
+          ls -lh "${FINAL}"
 
 
       # ==========================================================
@@ -1010,7 +927,6 @@ luci-app-openclash
             "${UEFI_IMAGE}" \
             > /tmp/openwrt.raw
 
-
           qemu-img convert \
             -p \
             -f raw \
@@ -1019,14 +935,10 @@ luci-app-openclash
             /tmp/openwrt.raw \
             "${QCOW2}"
 
-
           rm -f /tmp/openwrt.raw
-
 
           test -s "${QCOW2}"
 
-          echo
-          echo "QCOW2:"
           ls -lh "${QCOW2}"
 
 
@@ -1057,52 +969,37 @@ luci-app-openclash
         run: |
           set -euo pipefail
 
-          cat > output/build-info.txt <<EOF
-OpenWrt Custom ImageBuilder Build
-
-OpenWrt:
-${OPENWRT_VERSION}
-
-Target:
-x86-64
-
-ImageBuilder:
-Official OpenWrt
-
-RootFS:
-${ROOTFS_SIZE}
-
-RootFS partition:
-${ROOTFS_PARTSIZE} MB
-
-Build date:
-${BUILD_DATE}
-
-Build time:
-${BUILD_TIME}
-
-LAN:
-${LAN_IP}
-
-Network:
-eth0 = WAN / PPPoE
-eth1 = WANB / PPPoE
-eth2 = LAN
-eth3 = LAN
-eth4 = LAN
-eth5 = LAN
-
-IPv6:
-Enabled
-
-Images:
-UEFI
-QCOW2
-EOF
+          {
+            printf '%s\n' \
+              "OpenWrt Custom ImageBuilder Build" \
+              "" \
+              "OpenWrt: ${OPENWRT_VERSION}" \
+              "Target: x86-64" \
+              "ImageBuilder: Official OpenWrt" \
+              "RootFS: ${ROOTFS_SIZE}" \
+              "RootFS partition: ${ROOTFS_PARTSIZE} MB" \
+              "Build date: ${BUILD_DATE}" \
+              "Build time: ${BUILD_TIME}" \
+              "LAN: ${LAN_IP}" \
+              "" \
+              "Network:" \
+              "eth0 = WAN / PPPoE" \
+              "eth1 = WANB / PPPoE" \
+              "eth2 = LAN" \
+              "eth3 = LAN" \
+              "eth4 = LAN" \
+              "eth5 = LAN" \
+              "" \
+              "IPv6: Enabled" \
+              "" \
+              "Images:" \
+              "UEFI" \
+              "QCOW2"
+          } > output/build-info.txt
 
 
       # ==========================================================
-      # 保存包列表
+      # Save package lists
       # ==========================================================
 
       - name: Save package lists
@@ -1120,7 +1017,7 @@ EOF
 
 
       # ==========================================================
-      # 最终验证
+      # Verify output
       # ==========================================================
 
       - name: Verify output
@@ -1132,7 +1029,6 @@ EOF
 
           QCOW2_FILE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
-
           test -s "${UEFI_FILE}"
           test -s "${QCOW2_FILE}"
           test -s output/sha256sums.txt
@@ -1140,10 +1036,9 @@ EOF
           test -s output/selected-packages.txt
           test -s output/missing-packages.txt
 
-
           echo
           echo "=========================================="
-          echo "Final output"
+          echo "Final files"
           echo "=========================================="
 
           ls -lh output
@@ -1157,7 +1052,6 @@ EOF
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         run: |
           set -euo pipefail
 
@@ -1165,44 +1059,36 @@ EOF
 
           TITLE="OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${BUILD_DATE}"
 
-
-          cat > release-notes.md <<EOF
-# OpenWrt ${OPENWRT_VERSION} x86-64
-
-## Build
-
-- OpenWrt: \`${OPENWRT_VERSION}\`
-- Target: \`x86-64\`
-- ImageBuilder: Official OpenWrt
-- RootFS: \`${ROOTFS_SIZE}\`
-- Build date: \`${BUILD_DATE}\`
-
-## Network
-
-- \`eth0\` → WAN / PPPoE
-- \`eth1\` → WANB / PPPoE
-- \`eth2\` → LAN
-- \`eth3\` → LAN
-- \`eth4\` → LAN
-- \`eth5\` → LAN
-
-- LAN IP: \`${LAN_IP}\`
-- IPv6: Enabled
-
-## Images
-
-- UEFI
-- QCOW2
-
-## Package status
-
-See:
-
-- \`selected-packages.txt\`
-- \`missing-packages.txt\`
-
-EOF
-
+          {
+            printf '%s\n' \
+              "# OpenWrt ${OPENWRT_VERSION} x86-64" \
+              "" \
+              "## Build" \
+              "" \
+              "- OpenWrt: \`${OPENWRT_VERSION}\`" \
+              "- Target: \`x86-64\`" \
+              "- ImageBuilder: Official OpenWrt" \
+              "- RootFS: \`${ROOTFS_SIZE}\`" \
+              "- Build date: \`${BUILD_DATE}\`" \
+              "" \
+              "## Network" \
+              "" \
+              "- \`eth0\` → WAN / PPPoE" \
+              "- \`eth1\` → WANB / PPPoE" \
+              "- \`eth2\` → LAN" \
+              "- \`eth3\` → LAN" \
+              "- \`eth4\` → LAN" \
+              "- \`eth5\` → LAN" \
+              "- LAN IP: \`${LAN_IP}\`" \
+              "- IPv6: Enabled" \
+              "" \
+              "## Images" \
+              "" \
+              "- UEFI" \
+              "- QCOW2" \
+              "" \
+              "See \`selected-packages.txt\` and \`missing-packages.txt\` for package status."
+          } > release-notes.md
 
           gh release create \
             "${TAG}" \
@@ -1214,11 +1100,3 @@ EOF
             output/missing-packages.txt \
             --title "${TITLE}" \
             --notes-file release-notes.md
-
-
-          echo
-          echo "=========================================="
-          echo "Release created"
-          echo "=========================================="
-
-          echo "${TAG}"
