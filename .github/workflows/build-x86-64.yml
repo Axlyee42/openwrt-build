@@ -3,6 +3,7 @@ name: Build OpenWrt x86-64
 on:
   workflow_dispatch:
     inputs:
+
       openwrt_version:
         description: "OpenWrt 25.12.x 版本，留空自动使用最新版本"
         required: false
@@ -10,7 +11,7 @@ on:
         type: string
 
       rootfs_size:
-        description: "固件 RootFS 大小"
+        description: "固件大小"
         required: true
         default: "4G"
         type: choice
@@ -53,9 +54,6 @@ jobs:
 
     runs-on: ubuntu-24.04
 
-    env:
-      TZ: Asia/Shanghai
-
     steps:
 
       # ==========================================================
@@ -63,13 +61,13 @@ jobs:
       # ==========================================================
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
 
       # ==========================================================
-      # Resolve OpenWrt version
+      # 确定 OpenWrt 版本
       # ==========================================================
 
       - name: Resolve OpenWrt version
@@ -119,8 +117,8 @@ jobs:
             exit 1
           fi
 
-          BUILD_DATE="$(date +%Y%m%d)"
-          BUILD_TIME="$(date +%H%M%S)"
+          BUILD_DATE="$(TZ=Asia/Shanghai date +%Y%m%d)"
+          BUILD_TIME="$(TZ=Asia/Shanghai date +%H%M%S)"
 
           echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "OPENWRT_COMMIT=${COMMIT}" >> "${GITHUB_ENV}"
@@ -137,69 +135,68 @@ jobs:
 
 
       # ==========================================================
-      # Resolve build options
+      # RootFS 大小
       # ==========================================================
 
-      - name: Resolve build options
+      - name: Configure RootFS
         shell: bash
-        env:
-          ROOTFS_INPUT: ${{ inputs.rootfs_size }}
-          LAN_IP_INPUT: ${{ inputs.lan_ip }}
-          UEFI_INPUT: ${{ inputs.uefi }}
-          QCOW2_INPUT: ${{ inputs.qcow2 }}
-
         run: |
           set -euo pipefail
 
-          ROOTFS_SIZE="${ROOTFS_INPUT:-4G}"
-          LAN_IP="${LAN_IP_INPUT:-192.168.1.2}"
-          UEFI="${UEFI_INPUT:-true}"
-          QCOW2="${QCOW2_INPUT:-true}"
+          SIZE="${{ inputs.rootfs_size }}"
 
-          case "${ROOTFS_SIZE}" in
+          if [ -z "${SIZE}" ]; then
+            SIZE="4G"
+          fi
+
+          case "${SIZE}" in
             1G)
-              ROOTFS_PARTSIZE=1024
+              PARTSIZE=1024
               ;;
             2G)
-              ROOTFS_PARTSIZE=2048
+              PARTSIZE=2048
               ;;
             3G)
-              ROOTFS_PARTSIZE=3072
+              PARTSIZE=3072
               ;;
             4G)
-              ROOTFS_PARTSIZE=4096
+              PARTSIZE=4096
               ;;
             *)
-              echo "ERROR: Invalid RootFS size: ${ROOTFS_SIZE}"
+              echo "ERROR: Invalid RootFS size: ${SIZE}"
               exit 1
               ;;
           esac
 
-          if ! printf '%s\n' "${LAN_IP}" | grep -Eq \
-            '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-            echo "ERROR: Invalid LAN IP: ${LAN_IP}"
-            exit 1
-          fi
+          echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
+          echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "ROOTFS_SIZE=${ROOTFS_SIZE}" >> "${GITHUB_ENV}"
-          echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}" >> "${GITHUB_ENV}"
-          echo "LAN_IP=${LAN_IP}" >> "${GITHUB_ENV}"
-          echo "BUILD_UEFI=${UEFI}" >> "${GITHUB_ENV}"
-          echo "BUILD_QCOW2=${QCOW2}" >> "${GITHUB_ENV}"
-
-          echo
-          echo "=========================================="
-          echo "Build options"
-          echo "=========================================="
-          echo "RootFS : ${ROOTFS_SIZE}"
-          echo "LAN IP : ${LAN_IP}"
-          echo "UEFI   : ${UEFI}"
-          echo "QCOW2  : ${QCOW2}"
-          echo "=========================================="
+          echo "RootFS size: ${SIZE}"
+          echo "RootFS partition: ${PARTSIZE} MB"
 
 
       # ==========================================================
-      # Install dependencies
+      # LAN IP
+      # ==========================================================
+
+      - name: Configure LAN IP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAN_IP="${{ inputs.lan_ip }}"
+
+          if [ -z "${LAN_IP}" ]; then
+            LAN_IP="192.168.1.2"
+          fi
+
+          echo "LAN_IP=${LAN_IP}" >> "${GITHUB_ENV}"
+
+          echo "LAN IP: ${LAN_IP}"
+
+
+      # ==========================================================
+      # 安装编译依赖
       # ==========================================================
 
       - name: Install build dependencies
@@ -239,8 +236,7 @@ jobs:
             libxml-parser-perl \
             libelf-dev \
             ecj \
-            fastjar \
-            ccache
+            fastjar
 
 
       # ==========================================================
@@ -248,33 +244,35 @@ jobs:
       # ==========================================================
 
       - name: Clone OpenWrt
+        shell: bash
         run: |
           set -euo pipefail
 
           git clone \
-            --depth 1 \
-            --branch "v${OPENWRT_VERSION}" \
+            --depth=1 \
             https://github.com/openwrt/openwrt.git \
             openwrt
 
           cd openwrt
 
-          git fetch --depth 1 origin \
+          git fetch \
+            --depth=1 \
+            origin \
             "refs/tags/v${OPENWRT_VERSION}"
 
           git checkout \
-            "${OPENWRT_COMMIT}"
+            "v${OPENWRT_VERSION}"
 
           echo
           echo "OpenWrt source:"
-          git describe --always --tags
+          git describe --tags --always
 
 
       # ==========================================================
-      # Configure PassWall feeds
+      # PassWall feeds
       # ==========================================================
 
-      - name: Configure third-party feeds
+      - name: Configure PassWall feeds
         working-directory: openwrt
         run: |
           set -euo pipefail
@@ -284,14 +282,24 @@ jobs:
           src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main
           src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main
 
+          EOF
+
+
+      # ==========================================================
+      # Bandix feeds
+      # ==========================================================
+
+      - name: Configure Bandix feeds
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+
+          cat >> feeds.conf.default <<'EOF'
+
           src-git bandix https://github.com/timsaya/openwrt-bandix.git;main
           src-git bandix_luci https://github.com/timsaya/luci-app-bandix.git;main
 
           EOF
-
-          echo
-          echo "Third-party feeds configured:"
-          tail -10 feeds.conf.default
 
 
       # ==========================================================
@@ -317,93 +325,54 @@ jobs:
 
           ./scripts/feeds install -a
 
-          # PassWall 的依赖包优先使用 PassWall feed
-          ./scripts/feeds install -a -f -p passwall_packages
-
-          # PassWall LuCI
-          ./scripts/feeds install luci-app-passwall
-
-          # Bandix backend/frontend
-          ./scripts/feeds install bandix
-          ./scripts/feeds install luci-app-bandix
-
 
       # ==========================================================
-      # Add Aurora
+      # 添加 Aurora
+      #
+      # 注意：
+      # luci-theme-aurora 本身就是完整 package 仓库
+      # 根目录 Makefile 即 package Makefile
+      #
+      # luci-app-aurora-config 是独立仓库
       # ==========================================================
 
-      - name: Add Aurora
+      - name: Add Aurora packages
         working-directory: openwrt
         run: |
           set -euo pipefail
 
-          rm -rf /tmp/aurora
+          echo
+          echo "=========================================="
+          echo "Adding Aurora packages"
+          echo "=========================================="
+
+          rm -rf \
+            package/luci-theme-aurora \
+            package/luci-app-aurora-config
 
           git clone \
-            --depth 1 \
+            --depth=1 \
             https://github.com/eamonxg/luci-theme-aurora.git \
-            /tmp/aurora
+            package/luci-theme-aurora
 
-          mkdir -p package/custom
+          git clone \
+            --depth=1 \
+            https://github.com/eamonxg/luci-app-aurora-config.git \
+            package/luci-app-aurora-config
 
           echo
-          echo "Aurora package structure:"
-          find /tmp/aurora \
-            -maxdepth 3 \
-            -name Makefile \
-            -print
+          echo "Aurora theme:"
+          test -f package/luci-theme-aurora/Makefile
+          echo "OK"
 
-          FOUND=0
-
-          while IFS= read -r MAKEFILE; do
-
-            PKG_NAME="$(
-              awk -F ':=' \
-                '/^[[:space:]]*PKG_NAME[[:space:]]*:=/ {
-                  print $2
-                  exit
-                }' \
-                "${MAKEFILE}" |
-              tr -d '[:space:]'
-            )"
-
-            if [ -z "${PKG_NAME}" ]; then
-              continue
-            fi
-
-            PACKAGE_DIR="$(dirname "${MAKEFILE}")"
-
-            case "${PKG_NAME}" in
-              luci-theme-aurora|luci-app-aurora-config)
-
-                echo "Installing Aurora package: ${PKG_NAME}"
-
-                rm -rf \
-                  "package/custom/${PKG_NAME}"
-
-                cp -a \
-                  "${PACKAGE_DIR}" \
-                  "package/custom/${PKG_NAME}"
-
-                FOUND=1
-                ;;
-            esac
-
-          done < <(
-            find /tmp/aurora \
-              -type f \
-              -name Makefile
-          )
-
-          if [ "${FOUND}" -eq 0 ]; then
-            echo
-            echo "ERROR: Aurora packages were not found."
-            exit 1
-          fi
+          echo
+          echo "Aurora config:"
+          test -f package/luci-app-aurora-config/Makefile
+          echo "OK"
 
 
       # ==========================================================
-      # Add OpenClash
+      # OpenClash
       # ==========================================================
 
       - name: Add OpenClash
@@ -411,44 +380,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf /tmp/openclash
+          echo
+          echo "=========================================="
+          echo "Adding OpenClash"
+          echo "=========================================="
+
+          rm -rf package/luci-app-openclash
 
           git clone \
-            --depth 1 \
+            --depth=1 \
             https://github.com/vernesong/OpenClash.git \
-            /tmp/openclash
+            package/luci-app-openclash
 
-          if [ ! -f \
-            /tmp/openclash/luci-app-openclash/Makefile ]; then
+          test -d package/luci-app-openclash
 
-            echo
-            echo "ERROR:"
-            echo "OpenClash luci-app-openclash Makefile not found."
-
-            exit 1
-          fi
-
-          mkdir -p package/custom
-
-          rm -rf \
-            package/custom/luci-app-openclash
-
-          cp -a \
-            /tmp/openclash/luci-app-openclash \
-            package/custom/luci-app-openclash
-
-          echo
-          echo "OpenClash package installed."
-
-          find \
-            package/custom/luci-app-openclash \
-            -maxdepth 2 \
-            -name Makefile \
-            -print
+          echo "OpenClash source added."
 
 
       # ==========================================================
-      # Add luci-app-run
+      # luci-app-run
       # ==========================================================
 
       - name: Add luci-app-run
@@ -456,129 +406,38 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf /tmp/luci-app-run
+          echo
+          echo "=========================================="
+          echo "Adding luci-app-run"
+          echo "=========================================="
+
+          rm -rf package/luci-app-run
 
           git clone \
-            --depth 1 \
-            --branch master \
+            --depth=1 \
             https://github.com/wukongdaily/luci-app-run.git \
-            /tmp/luci-app-run
+            package/luci-app-run
 
-          mkdir -p package/custom
+          test -d package/luci-app-run
 
-          FOUND=0
-
-          while IFS= read -r MAKEFILE; do
-
-            PKG_NAME="$(
-              awk -F ':=' \
-                '/^[[:space:]]*PKG_NAME[[:space:]]*:=/ {
-                  print $2
-                  exit
-                }' \
-                "${MAKEFILE}" |
-              tr -d '[:space:]'
-            )"
-
-            if [ -z "${PKG_NAME}" ]; then
-              continue
-            fi
-
-            if [ "${PKG_NAME}" = "luci-app-run" ]; then
-
-              PACKAGE_DIR="$(dirname "${MAKEFILE}")"
-
-              rm -rf \
-                package/custom/luci-app-run
-
-              cp -a \
-                "${PACKAGE_DIR}" \
-                package/custom/luci-app-run
-
-              FOUND=1
-
-            fi
-
-          done < <(
-            find /tmp/luci-app-run \
-              -type f \
-              -name Makefile
-          )
-
-          # 当前仓库就是一个直接可作为 package 使用的目录。
-          if [ "${FOUND}" -eq 0 ] && \
-             [ -f /tmp/luci-app-run/Makefile ]; then
-
-            mkdir -p \
-              package/custom/luci-app-run
-
-            cp -a \
-              /tmp/luci-app-run/. \
-              package/custom/luci-app-run/
-
-            FOUND=1
-          fi
-
-          if [ "${FOUND}" -eq 0 ]; then
-            echo
-            echo "ERROR: luci-app-run package not found."
-            exit 1
-          fi
-
-          echo
-          echo "luci-app-run installed."
+          echo "luci-app-run source added."
 
 
       # ==========================================================
-      # Build OpenClash po2lmo
+      # Refresh package metadata
       # ==========================================================
 
-      - name: Build OpenClash po2lmo
+      - name: Refresh package metadata
         working-directory: openwrt
         run: |
           set -euo pipefail
 
-          TOOL_DIR="package/custom/luci-app-openclash/tools/po2lmo"
-
-          if [ ! -d "${TOOL_DIR}" ]; then
-            echo
-            echo "ERROR:"
-            echo "OpenClash po2lmo source not found."
-
-            exit 1
-          fi
-
-          cd "${TOOL_DIR}"
-
-          make -j"$(nproc)"
-
-          if [ ! -f src/po2lmo ]; then
-            echo
-            echo "ERROR:"
-            echo "src/po2lmo was not built."
-
-            find . \
-              -maxdepth 3 \
-              -type f \
-              -name po2lmo \
-              -print
-
-            exit 1
-          fi
-
-          sudo install \
-            -m 0755 \
-            src/po2lmo \
-            /usr/local/bin/po2lmo
-
-          command -v po2lmo
-
-          echo
-          echo "po2lmo installed successfully."
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
 
       # ==========================================================
-      # Generate base configuration
+      # 生成基础配置
       # ==========================================================
 
       - name: Generate OpenWrt configuration
@@ -595,18 +454,16 @@ jobs:
           CONFIG_TARGET_IMAGES_GZIP=y
           CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 
-          CONFIG_GRUB_IMAGES=y
-          CONFIG_GRUB_EFI_IMAGES=y
-
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          CONFIG_PACKAGE_luci-proto-ipv6=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
 
           CONFIG_PACKAGE_ppp=y
           CONFIG_PACKAGE_ppp-mod-pppoe=y
           CONFIG_PACKAGE_kmod-pppoe=y
-
-          CONFIG_PACKAGE_luci-proto-ppp=y
-          CONFIG_PACKAGE_luci-proto-ipv6=y
 
           CONFIG_PACKAGE_ipv6=y
           CONFIG_PACKAGE_kmod-ipv6=y
@@ -629,14 +486,8 @@ jobs:
           CONFIG_PACKAGE_luci-app-autoreboot=y
           CONFIG_PACKAGE_luci-i18n-autoreboot-zh-cn=y
 
-          CONFIG_PACKAGE_luci-i18n-timewol-zh-cn=y
-
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-
-          CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
-
-          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_luci-app-filebrowser-go=y
+          CONFIG_PACKAGE_luci-i18n-filebrowser-go-zh-cn=y
 
           CONFIG_PACKAGE_luci-theme-aurora=y
           CONFIG_PACKAGE_luci-app-aurora-config=y
@@ -648,138 +499,73 @@ jobs:
 
           CONFIG_PACKAGE_luci-app-run=y
 
-          CONFIG_PACKAGE_luci-app-filebrowser-go=y
-          CONFIG_PACKAGE_luci-i18n-filebrowser-go-zh-cn=y
+          CONFIG_PACKAGE_luci-app-openclash=y
+
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
+
+          CONFIG_PACKAGE_luci-i18n-timewol-zh-cn=y
           EOF
 
           make defconfig
 
-          echo
-          echo "Configuration generated."
-
 
       # ==========================================================
-      # Verify important packages after defconfig
+      # 检查关键包
+      #
+      # 不再使用 grep "define Package/xxx"
+      # 因为 feeds / package 的 Makefile 结构不同
+      #
+      # 直接检查最终 .config
       # ==========================================================
 
-      - name: Verify package selection
+      - name: Verify selected packages
         working-directory: openwrt
+        shell: bash
         run: |
           set -euo pipefail
 
           echo
           echo "=========================================="
-          echo "Selected package status"
+          echo "Verifying selected packages"
           echo "=========================================="
 
-          PACKAGES="
-          luci
-          luci-ssl
-          ppp
-          ppp-mod-pppoe
-          kmod-pppoe
-          luci-proto-ppp
-          luci-proto-ipv6
-          ipv6
-          odhcp6c
-          odhcpd-ipv6only
-          mwan3
-          luci-app-mwan3
-          luci-app-upnp
-          luci-app-ttyd
-          luci-app-vlmcsd
-          luci-app-autoreboot
-          luci-app-passwall
-          luci-app-openclash
-          luci-theme-aurora
-          luci-app-aurora-config
-          bandix
-          luci-app-bandix
-          luci-app-run
-          luci-app-filebrowser-go
-          "
+          check_config() {
+            PACKAGE="$1"
 
-          MISSING=0
-
-          : > selected-packages.txt
-          : > missing-packages.txt
-
-          for PACKAGE in ${PACKAGES}; do
-
-            if grep -qx \
-              "CONFIG_PACKAGE_${PACKAGE}=y" \
-              .config; then
-
+            if grep -qx "CONFIG_PACKAGE_${PACKAGE}=y" .config; then
               echo "OK: ${PACKAGE}"
-              echo "${PACKAGE}" >> selected-packages.txt
-
             else
-
-              echo "MISSING: ${PACKAGE}"
-              echo "${PACKAGE}" >> missing-packages.txt
-              MISSING=1
-
+              echo "ERROR: ${PACKAGE} was not selected."
+              return 1
             fi
+          }
 
-          done
-
-          echo
-          echo "=========================================="
-          echo "Selected packages"
-          echo "=========================================="
-
-          cat selected-packages.txt
-
-          echo
-          echo "=========================================="
-          echo "Missing packages"
-          echo "=========================================="
-
-          if [ -s missing-packages.txt ]; then
-            cat missing-packages.txt
-          else
-            echo "None"
-          fi
-
-          # 这里只对核心第三方包做失败判断。
-          # 某些 LuCI 中文翻译包可能由 LuCI feed 动态生成，
-          # 不因为翻译包名称变化而误判整个构建。
-          CORE_PACKAGES="
-          luci
-          luci-app-passwall
-          luci-app-openclash
-          luci-theme-aurora
-          luci-app-aurora-config
-          bandix
-          luci-app-bandix
-          luci-app-run
-          luci-app-filebrowser-go
-          "
-
-          CORE_MISSING=0
-
-          for PACKAGE in ${CORE_PACKAGES}; do
-
-            if ! grep -qx \
-              "CONFIG_PACKAGE_${PACKAGE}=y" \
-              .config; then
-
-              echo "ERROR: Core package not selected: ${PACKAGE}"
-              CORE_MISSING=1
-
-            fi
-
-          done
-
-          if [ "${CORE_MISSING}" -ne 0 ]; then
-            echo
-            echo "ERROR: One or more core packages are unavailable."
-            exit 1
-          fi
+          check_config luci
+          check_config luci-ssl
+          check_config ppp
+          check_config ppp-mod-pppoe
+          check_config kmod-pppoe
+          check_config luci-proto-ipv6
+          check_config odhcp6c
+          check_config mwan3
+          check_config luci-app-mwan3
+          check_config luci-app-upnp
+          check_config luci-app-ttyd
+          check_config luci-app-vlmcsd
+          check_config luci-app-autoreboot
+          check_config luci-app-filebrowser-go
+          check_config luci-theme-aurora
+          check_config luci-app-aurora-config
+          check_config bandix
+          check_config luci-app-bandix
+          check_config luci-app-run
+          check_config luci-app-openclash
+          check_config luci-app-passwall
 
 
       # ==========================================================
-      # Generate network configuration
+      # 网络配置
       # ==========================================================
 
       - name: Generate network configuration
@@ -793,23 +579,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${WAN1_USER}" ] || \
-             [ -z "${WAN1_PASS}" ]; then
-
-            echo
-            echo "ERROR:"
-            echo "WAN1_USER / WAN1_PASS GitHub Secrets are missing."
-
+          if [ -z "${WAN1_USER}" ]; then
+            echo "ERROR: WAN1_USER is empty."
             exit 1
           fi
 
-          if [ -z "${WAN2_USER}" ] || \
-             [ -z "${WAN2_PASS}" ]; then
+          if [ -z "${WAN1_PASS}" ]; then
+            echo "ERROR: WAN1_PASS is empty."
+            exit 1
+          fi
 
-            echo
-            echo "ERROR:"
-            echo "WAN2_USER / WAN2_PASS GitHub Secrets are missing."
+          if [ -z "${WAN2_USER}" ]; then
+            echo "ERROR: WAN2_USER is empty."
+            exit 1
+          fi
 
+          if [ -z "${WAN2_PASS}" ]; then
+            echo "ERROR: WAN2_PASS is empty."
             exit 1
           fi
 
@@ -821,9 +607,6 @@ jobs:
               option proto 'static'
               option ipaddr '127.0.0.1'
               option netmask '255.0.0.0'
-
-          config globals 'globals'
-              option ula_prefix 'auto'
 
           config device
               option name 'br-lan'
@@ -845,7 +628,7 @@ jobs:
               option proto 'pppoe'
               option username '${WAN1_USER}'
               option password '${WAN1_PASS}'
-              option ipv6 'auto'
+              option ipv6 '1'
 
           config interface 'wan6'
               option device '@wan'
@@ -858,7 +641,7 @@ jobs:
               option proto 'pppoe'
               option username '${WAN2_USER}'
               option password '${WAN2_PASS}'
-              option ipv6 'auto'
+              option ipv6 '1'
 
           config interface 'wanb6'
               option device '@wanb'
@@ -869,7 +652,7 @@ jobs:
 
 
       # ==========================================================
-      # Generate DHCP / IPv6 configuration
+      # DHCP / IPv6 RA
       # ==========================================================
 
       - name: Generate DHCP configuration
@@ -911,14 +694,6 @@ jobs:
               option interface 'wanb'
               option ignore '1'
 
-          config dhcp 'wan6'
-              option interface 'wan6'
-              option ignore '1'
-
-          config dhcp 'wanb6'
-              option interface 'wanb6'
-              option ignore '1'
-
           config odhcpd 'odhcpd'
               option maindhcp '0'
               option leasefile '/tmp/hosts/odhcpd'
@@ -928,7 +703,7 @@ jobs:
 
 
       # ==========================================================
-      # Default language
+      # 默认简体中文
       # ==========================================================
 
       - name: Set default language
@@ -947,12 +722,32 @@ jobs:
           exit 0
           EOF
 
-          chmod +x \
-            files/etc/uci-defaults/99-default-language
+          chmod +x files/etc/uci-defaults/99-default-language
 
 
       # ==========================================================
-      # Create build information
+      # 设置 Aurora 为默认主题
+      # ==========================================================
+
+      - name: Set Aurora as default theme
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+
+          cat > files/etc/uci-defaults/98-default-theme <<'EOF'
+          #!/bin/sh
+
+          uci -q set luci.main.mediaurlbase='/luci-static/aurora'
+          uci -q commit luci
+
+          exit 0
+          EOF
+
+          chmod +x files/etc/uci-defaults/98-default-theme
+
+
+      # ==========================================================
+      # 固件信息
       # ==========================================================
 
       - name: Create build information
@@ -960,8 +755,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            files/etc/openwrt-custom
+          mkdir -p files/etc/openwrt-custom
 
           cat > files/etc/openwrt-custom/build-info <<EOF
           OpenWrt Custom Build
@@ -1011,27 +805,7 @@ jobs:
 
 
       # ==========================================================
-      # Show repository configuration
-      #
-      # 注意：
-      # 不再读取 repositories.conf
-      # ==========================================================
-
-      - name: Show configured feeds
-        working-directory: openwrt
-        run: |
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Configured feeds"
-          echo "=========================================="
-
-          cat feeds.conf.default
-
-
-      # ==========================================================
-      # Download source packages
+      # 下载源码包
       # ==========================================================
 
       - name: Download packages
@@ -1045,7 +819,7 @@ jobs:
 
 
       # ==========================================================
-      # Build OpenWrt
+      # 编译
       # ==========================================================
 
       - name: Build OpenWrt
@@ -1059,31 +833,32 @@ jobs:
 
 
       # ==========================================================
-      # Prepare release
+      # 准备 Release
       # ==========================================================
 
-      - name: Prepare release directory
+      - name: Prepare release
         run: |
           set -euo pipefail
 
           rm -rf release
           mkdir -p release
 
-          echo
-          echo "OpenWrt images:"
+          IMAGE_DIR="openwrt/bin/targets/x86/64"
 
-          find openwrt/bin/targets/x86/64 \
+          echo
+          echo "Available images:"
+          find "${IMAGE_DIR}" \
             -maxdepth 1 \
             -type f \
             -print
 
 
       # ==========================================================
-      # Copy UEFI image
+      # UEFI
       # ==========================================================
 
       - name: Copy UEFI image
-        if: env.BUILD_UEFI == 'true'
+        if: inputs.uefi
         run: |
           set -euo pipefail
 
@@ -1091,16 +866,13 @@ jobs:
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*combined-efi.img.gz' |
+              -name '*ext4-combined-efi.img.gz' |
             head -1
           )"
 
           if [ -z "${IMAGE}" ]; then
-            echo
             echo "ERROR: UEFI image not found."
 
-            echo
-            echo "Available images:"
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
@@ -1109,25 +881,17 @@ jobs:
             exit 1
           fi
 
-          OUTPUT="release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
-
           cp \
             "${IMAGE}" \
-            "${OUTPUT}"
-
-          test -s "${OUTPUT}"
-
-          echo
-          echo "UEFI image:"
-          ls -lh "${OUTPUT}"
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
 
       # ==========================================================
-      # Create raw temporary image for QCOW2 conversion
+      # QCOW2
       # ==========================================================
 
-      - name: Prepare QCOW2 source
-        if: env.BUILD_QCOW2 == 'true'
+      - name: Create QCOW2
+        if: inputs.qcow2
         run: |
           set -euo pipefail
 
@@ -1135,108 +899,24 @@ jobs:
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
-              -name '*combined-efi.img.gz' |
+              -name '*ext4-combined-efi.img.gz' |
             head -1
           )"
 
           if [ -z "${IMAGE}" ]; then
-            echo "ERROR: UEFI image not found for QCOW2."
+            echo "ERROR: UEFI image not found."
             exit 1
           fi
 
           gzip -dc \
             "${IMAGE}" \
-            > openwrt-uefi.raw
-
-          test -s openwrt-uefi.raw
-
-          echo
-          echo "Raw source image:"
-          ls -lh openwrt-uefi.raw
-
-
-      # ==========================================================
-      # Create QCOW2
-      # ==========================================================
-
-      - name: Create QCOW2
-        if: env.BUILD_QCOW2 == 'true'
-        run: |
-          set -euo pipefail
-
-          OUTPUT="release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
+            > openwrt.raw
 
           qemu-img convert \
             -f raw \
             -O qcow2 \
-            -o compression_type=zstd \
-            openwrt-uefi.raw \
-            "${OUTPUT}"
-
-          test -s "${OUTPUT}"
-
-          echo
-          echo "QCOW2 image:"
-          ls -lh "${OUTPUT}"
-
-
-      # ==========================================================
-      # Remove temporary raw image
-      # ==========================================================
-
-      - name: Remove temporary files
-        run: |
-          set -euo pipefail
-
-          rm -f openwrt-uefi.raw
-
-
-      # ==========================================================
-      # Verify release files
-      # ==========================================================
-
-      - name: Verify release files
-        run: |
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Release files"
-          echo "=========================================="
-
-          if [ ! -d release ]; then
-            echo "ERROR: release directory does not exist."
-            exit 1
-          fi
-
-          FILE_COUNT=0
-
-          for FILE in release/*; do
-
-            if [ ! -f "${FILE}" ]; then
-              continue
-            fi
-
-            SIZE="$(stat -c '%s' "${FILE}")"
-
-            if [ "${SIZE}" -le 0 ]; then
-              echo "ERROR: Empty file:"
-              echo "${FILE}"
-              exit 1
-            fi
-
-            echo
-            echo "OK:"
-            ls -lh "${FILE}"
-
-            FILE_COUNT=$((FILE_COUNT + 1))
-
-          done
-
-          if [ "${FILE_COUNT}" -eq 0 ]; then
-            echo "ERROR: No release files were generated."
-            exit 1
-          fi
+            openwrt.raw \
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
 
       # ==========================================================
@@ -1244,22 +924,16 @@ jobs:
       # ==========================================================
 
       - name: Generate SHA256
-        working-directory: release
         run: |
           set -euo pipefail
 
-          sha256sum \
-            *.img.gz \
-            *.qcow2 \
-            > sha256sums
+          cd release
 
-          test -s sha256sums
-
-          cat sha256sums
+          sha256sum * > sha256sums
 
 
       # ==========================================================
-      # Release information
+      # Release 信息
       # ==========================================================
 
       - name: Create release information
@@ -1304,7 +978,7 @@ jobs:
           IPv6:
           Enabled
 
-          Image formats:
+          Output:
 
           UEFI
           QCOW2
@@ -1314,14 +988,49 @@ jobs:
 
 
       # ==========================================================
+      # 已选择的软件包
+      # ==========================================================
+
+      - name: Create package list
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+
+          grep '^CONFIG_PACKAGE_.*=y$' .config \
+            | sed 's/^CONFIG_PACKAGE_//' \
+            | sed 's/=y$//' \
+            | sort \
+            > ../release/selected-packages.txt
+
+
+      # ==========================================================
+      # 显示 Release 文件
+      # ==========================================================
+
+      - name: Show release files
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Release files"
+          echo "=========================================="
+
+          ls -lh release
+
+
+      # ==========================================================
       # GitHub Release
       # ==========================================================
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
+
         with:
           tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
+
           name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
+
           body: |
             # OpenWrt ${{ env.OPENWRT_VERSION }} x86-64
 
@@ -1340,6 +1049,7 @@ jobs:
             - `eth3` → LAN
             - `eth4` → LAN
             - `eth5` → LAN
+
             - LAN IP: `${{ env.LAN_IP }}`
             - IPv6: Enabled
 
@@ -1369,12 +1079,7 @@ jobs:
             - Autoreboot
 
           files: |
-            release/*.img.gz
-            release/*.qcow2
-            release/sha256sums
-            release/build-info.txt
-            release/selected-packages.txt
-            release/missing-packages.txt
+            release/*
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
