@@ -1,0 +1,111 @@
+name: Check OpenWrt upstream
+
+on:
+  schedule:
+    # 每天北京时间 10:30
+    - cron: "30 2 * * *"
+
+  workflow_dispatch:
+
+
+permissions:
+  contents: write
+
+
+jobs:
+
+  check:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+
+      - name: Check latest OpenWrt 25.12.x
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LATEST="$(
+            git ls-remote \
+              --tags \
+              https://github.com/openwrt/openwrt.git \
+              'refs/tags/v25.12.*' |
+            sed 's#.*refs/tags/v##' |
+            grep -E '^25\.12\.[0-9]+$' |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "${LATEST}" ]; then
+            echo "ERROR: Cannot determine latest OpenWrt 25.12.x."
+            exit 1
+          fi
+
+          CURRENT=""
+
+          if [ -f openwrt-version ]; then
+            CURRENT="$(tr -d '[:space:]' < openwrt-version)"
+          fi
+
+          echo "Latest:  ${LATEST}"
+          echo "Current: ${CURRENT:-none}"
+
+          if [ "${LATEST}" = "${CURRENT}" ]; then
+            echo "OPENWRT_CHANGED=false" >> "${GITHUB_OUTPUT}"
+
+            echo
+            echo "No new OpenWrt release."
+            exit 0
+          fi
+
+          echo "${LATEST}" > openwrt-version
+
+          echo "OPENWRT_CHANGED=true" >> "${GITHUB_OUTPUT}"
+          echo "OPENWRT_VERSION=${LATEST}" >> "${GITHUB_OUTPUT}"
+
+
+      - name: Commit new OpenWrt version
+        if: steps.check.outputs.OPENWRT_CHANGED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add openwrt-version
+
+          git commit \
+            -m "chore: update OpenWrt version to ${{ steps.check.outputs.OPENWRT_VERSION }}"
+
+          git push
+
+
+      - name: Trigger ImageBuilder
+        if: steps.check.outputs.OPENWRT_CHANGED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        run: |
+          set -euo pipefail
+
+          gh api \
+            --method POST \
+            "/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type="openwrt-release" \
+            -f "client_payload[openwrt_version]=${{ steps.check.outputs.OPENWRT_VERSION }}"
+
+          echo
+          echo "ImageBuilder build triggered."
