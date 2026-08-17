@@ -1,0 +1,670 @@
+name: Build OpenWrt x86-64
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      openwrt_version:
+        description: "OpenWrt 25.12.x 版本，留空自动使用最新版本"
+        required: false
+        default: ""
+        type: string
+
+      rootfs_size:
+        description: "RootFS 大小"
+        required: true
+        default: "4G"
+        type: choice
+        options:
+          - "1G"
+          - "2G"
+          - "3G"
+          - "4G"
+
+      lan_ip:
+        description: "LAN 管理 IP"
+        required: true
+        default: "192.168.1.2"
+        type: string
+
+      uefi:
+        description: "生成 UEFI 固件"
+        required: true
+        default: true
+        type: boolean
+
+      qcow2:
+        description: "生成 QCOW2 虚拟机镜像"
+        required: true
+        default: true
+        type: boolean
+
+  repository_dispatch:
+    types:
+      - openwrt-release
+
+
+permissions:
+  contents: write
+
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+
+      # ==========================================================
+      # Checkout
+      # ==========================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+
+      # ==========================================================
+      # 解析 OpenWrt 版本
+      # ==========================================================
+
+      - name: Resolve OpenWrt version
+        id: version
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.openwrt_version }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
+
+        run: |
+          set -euo pipefail
+
+          VERSION="${MANUAL_VERSION:-}"
+
+          if [ -z "${VERSION}" ]; then
+            VERSION="${DISPATCH_VERSION:-}"
+          fi
+
+          if [ -z "${VERSION}" ]; then
+            echo "Detecting latest OpenWrt 25.12.x..."
+
+            VERSION="$(
+              git ls-remote \
+                --tags \
+                https://github.com/openwrt/openwrt.git \
+                'refs/tags/v25.12.*' |
+              sed 's#.*refs/tags/v##' |
+              grep -E '^25\.12\.[0-9]+$' |
+              sort -V |
+              tail -n 1
+            )"
+          fi
+
+          if ! printf '%s\n' "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
+            echo "ERROR: Invalid OpenWrt version: ${VERSION}"
+            exit 1
+          fi
+
+          echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "BUILD_DATE=$(date -u +%Y%m%d)" >> "${GITHUB_ENV}"
+          echo "BUILD_TIME=$(date -u +%H%M%S)" >> "${GITHUB_ENV}"
+
+          echo
+          echo "=========================================="
+          echo "OpenWrt version : ${VERSION}"
+          echo "Target          : x86-64"
+          echo "Build date      : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "=========================================="
+
+
+      # ==========================================================
+      # RootFS 大小
+      # ==========================================================
+
+      - name: Resolve RootFS size
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIZE="${{ inputs.rootfs_size }}"
+
+          if [ -z "${SIZE}" ]; then
+            SIZE="4G"
+          fi
+
+          case "${SIZE}" in
+            1G)
+              PARTSIZE=1024
+              ;;
+            2G)
+              PARTSIZE=2048
+              ;;
+            3G)
+              PARTSIZE=3072
+              ;;
+            4G)
+              PARTSIZE=4096
+              ;;
+            *)
+              echo "ERROR: Invalid RootFS size: ${SIZE}"
+              exit 1
+              ;;
+          esac
+
+          echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
+          echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
+
+          echo "RootFS: ${SIZE}"
+          echo "Partition: ${PARTSIZE} MB"
+
+
+      # ==========================================================
+      # 下载 OpenWrt 官方 ImageBuilder
+      # ==========================================================
+
+      - name: Download OpenWrt ImageBuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+
+          echo
+          echo "Downloading:"
+          echo "${URL}"
+
+          wget \
+            --progress=bar:force \
+            -O imagebuilder.tar.zst \
+            "${URL}"
+
+          mkdir -p imagebuilder
+
+          tar \
+            --zstd \
+            -xf imagebuilder.tar.zst \
+            -C imagebuilder \
+            --strip-components=1
+
+          echo
+          echo "ImageBuilder:"
+          ls -lah imagebuilder
+
+
+      # ==========================================================
+      # 检查 ImageBuilder
+      # ==========================================================
+
+      - name: Check ImageBuilder
+        working-directory: imagebuilder
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "ImageBuilder information"
+          echo "=========================================="
+
+          make info
+
+
+      # ==========================================================
+      # 准备自定义文件
+      # ==========================================================
+
+      - name: Prepare custom files
+        shell: bash
+        env:
+          LAN_IP: ${{ inputs.lan_ip }}
+
+          WAN1_USER: ${{ secrets.WAN1_USER }}
+          WAN1_PASS: ${{ secrets.WAN1_PASS }}
+
+          WAN2_USER: ${{ secrets.WAN2_USER }}
+          WAN2_PASS: ${{ secrets.WAN2_PASS }}
+
+        run: |
+          set -euo pipefail
+
+          if [ -z "${WAN1_USER}" ] || [ -z "${WAN1_PASS}" ]; then
+            echo "ERROR: WAN1_USER / WAN1_PASS secrets are missing."
+            exit 1
+          fi
+
+          if [ -z "${WAN2_USER}" ] || [ -z "${WAN2_PASS}" ]; then
+            echo "ERROR: WAN2_USER / WAN2_PASS secrets are missing."
+            exit 1
+          fi
+
+          if [ -z "${LAN_IP}" ]; then
+            echo "ERROR: LAN IP is empty."
+            exit 1
+          fi
+
+          mkdir -p imagebuilder/files/etc/uci-defaults
+
+          cat > imagebuilder/files/etc/uci-defaults/99-custom-network <<EOF
+          #!/bin/sh
+
+          LAN_IP="${LAN_IP}"
+
+          WAN1_USER="${WAN1_USER}"
+          WAN1_PASS="${WAN1_PASS}"
+
+          WAN2_USER="${WAN2_USER}"
+          WAN2_PASS="${WAN2_PASS}"
+
+          # ======================================================
+          # LAN
+          # ======================================================
+
+          uci -q set network.lan.device='br-lan'
+          uci -q set network.lan.proto='static'
+          uci -q set network.lan.ipaddr="\${LAN_IP}"
+          uci -q set network.lan.netmask='255.255.255.0'
+          uci -q set network.lan.ip6assign='64'
+
+
+          # ======================================================
+          # WAN
+          # eth0 -> WAN
+          # ======================================================
+
+          uci -q set network.wan.device='eth0'
+          uci -q set network.wan.proto='pppoe'
+          uci -q set network.wan.username="\${WAN1_USER}"
+          uci -q set network.wan.password="\${WAN1_PASS}"
+          uci -q set network.wan.ipv6='1'
+
+
+          # ======================================================
+          # WAN IPv6
+          # ======================================================
+
+          uci -q set network.wan6.device='@wan'
+          uci -q set network.wan6.proto='dhcpv6'
+          uci -q set network.wan6.reqaddress='try'
+          uci -q set network.wan6.reqprefix='auto'
+
+
+          # ======================================================
+          # WANB
+          # eth1 -> WANB
+          # ======================================================
+
+          uci -q set network.wanb.device='eth1'
+          uci -q set network.wanb.proto='pppoe'
+          uci -q set network.wanb.username="\${WAN2_USER}"
+          uci -q set network.wanb.password="\${WAN2_PASS}"
+          uci -q set network.wanb.ipv6='1'
+
+
+          # ======================================================
+          # WANB IPv6
+          # ======================================================
+
+          uci -q set network.wanb6.device='@wanb'
+          uci -q set network.wanb6.proto='dhcpv6'
+          uci -q set network.wanb6.reqaddress='try'
+          uci -q set network.wanb6.reqprefix='auto'
+
+
+          # ======================================================
+          # IPv6 RA / DHCPv6
+          # ======================================================
+
+          uci -q set dhcp.lan.dhcpv6='server'
+          uci -q set dhcp.lan.ra='server'
+          uci -q set dhcp.lan.ra_management='1'
+
+
+          # ======================================================
+          # 默认中文
+          # ======================================================
+
+          uci -q set luci.main.lang='zh_cn'
+
+
+          # ======================================================
+          # Commit
+          # ======================================================
+
+          uci -q commit network
+          uci -q commit dhcp
+          uci -q commit luci
+
+          exit 0
+          EOF
+
+          chmod +x imagebuilder/files/etc/uci-defaults/99-custom-network
+
+          echo
+          echo "Custom files:"
+          find imagebuilder/files -type f -print
+
+
+      # ==========================================================
+      # 第三方 APK
+      # ==========================================================
+
+      - name: Load custom APK package list
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f shell/apk-custom-packages.sh ]; then
+            echo "ERROR: shell/apk-custom-packages.sh not found."
+            exit 1
+          fi
+
+          source shell/apk-custom-packages.sh
+
+          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+            echo "ERROR: CUSTOM_PACKAGES is empty."
+            exit 1
+          fi
+
+          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" \
+            >> "${GITHUB_ENV}"
+
+          echo
+          echo "=========================================="
+          echo "Custom packages"
+          echo "=========================================="
+
+          echo "${CUSTOM_PACKAGES}"
+
+
+      # ==========================================================
+      # 添加第三方 APK Repository
+      #
+      # 注意：
+      # 第三方 APK 必须匹配 x86_64 + OpenWrt 25.12 ABI。
+      # ==========================================================
+
+      - name: Configure third-party APK repositories
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Repository configuration"
+          echo "=========================================="
+
+          echo
+          echo "Current repositories:"
+          cat repositories.conf
+
+          echo
+          echo "Third-party repository configuration will be"
+          echo "handled by the package preparation script."
+
+
+      # ==========================================================
+      # 构建前检查
+      # ==========================================================
+
+      - name: Verify requested packages
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "=========================================="
+          echo "Checking package availability"
+          echo "=========================================="
+
+          make manifest \
+            PROFILE="generic" \
+            PACKAGES="${CUSTOM_PACKAGES}" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            2>&1 | tee ../package-manifest.txt
+
+
+      # ==========================================================
+      # 构建 UEFI Image
+      # ==========================================================
+
+      - name: Build UEFI image
+        if: inputs.uefi
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p ../release
+
+          make image \
+            PROFILE="generic" \
+            PACKAGES="${CUSTOM_PACKAGES}" \
+            FILES="files" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            BIN_DIR="../release"
+
+
+      # ==========================================================
+      # 构建完成后查找 UEFI
+      # ==========================================================
+
+      - name: Prepare UEFI image
+        if: inputs.uefi
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$(
+            find release \
+              -type f \
+              -name '*ext4-combined-efi.img.gz' |
+            head -n 1
+          )"
+
+          if [ -z "${IMAGE}" ]; then
+            echo "ERROR: UEFI image was not generated."
+
+            echo
+            echo "Available files:"
+            find release -type f -maxdepth 2 -print
+
+            exit 1
+          fi
+
+          NEW_NAME="OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
+
+          mv "${IMAGE}" "release/${NEW_NAME}"
+
+          echo "UEFI_IMAGE=${NEW_NAME}" >> "${GITHUB_ENV}"
+
+
+      # ==========================================================
+      # QCOW2
+      # ==========================================================
+
+      - name: Create QCOW2
+        if: inputs.qcow2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "release/${UEFI_IMAGE}" ]; then
+            echo "ERROR: UEFI image does not exist."
+            exit 1
+          fi
+
+          gzip -dc \
+            "release/${UEFI_IMAGE}" \
+            > openwrt.raw
+
+          qemu-img convert \
+            -f raw \
+            -O qcow2 \
+            -o compression_type=zstd \
+            openwrt.raw \
+            "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
+
+          rm -f openwrt.raw
+
+
+      # ==========================================================
+      # SHA256
+      # ==========================================================
+
+      - name: Generate SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd release
+
+          sha256sum \
+            *.img.gz \
+            *.qcow2 \
+            > sha256sums
+
+
+      # ==========================================================
+      # Build information
+      # ==========================================================
+
+      - name: Create build information
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > release/build-info.txt <<EOF
+          ==========================================
+          OpenWrt Custom ImageBuilder Build
+          ==========================================
+
+          OpenWrt:
+          ${OPENWRT_VERSION}
+
+          Target:
+          x86-64
+
+          Profile:
+          generic
+
+          RootFS:
+          ${ROOTFS_SIZE}
+
+          Build Date:
+          ${BUILD_DATE}
+
+          Build Time:
+          ${BUILD_TIME} UTC
+
+
+          Network
+          ==========================================
+
+          eth0 = WAN
+          PPPoE
+
+          eth1 = WANB
+          PPPoE
+
+          eth2~eth5 = LAN
+
+          LAN IP:
+          ${{ inputs.lan_ip }}
+
+          IPv6:
+          Enabled
+
+
+          Image
+          ==========================================
+
+          UEFI:
+          ${{ inputs.uefi }}
+
+          QCOW2:
+          ${{ inputs.qcow2 }}
+
+
+          Packages
+          ==========================================
+
+          ${CUSTOM_PACKAGES}
+
+
+          ==========================================
+          EOF
+
+
+      # ==========================================================
+      # 保存软件包清单
+      # ==========================================================
+
+      - name: Save package manifest
+        shell: bash
+        run: |
+          cp package-manifest.txt release/selected-packages.txt
+
+
+      # ==========================================================
+      # 显示最终文件
+      # ==========================================================
+
+      - name: Show release files
+        shell: bash
+        run: |
+          echo
+          echo "=========================================="
+          echo "Release files"
+          echo "=========================================="
+
+          ls -lh release
+
+
+      # ==========================================================
+      # GitHub Release
+      # ==========================================================
+
+      - name: Create GitHub Release
+        if: ${{ success() }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
+          name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
+          body: |
+            # OpenWrt ${{ env.OPENWRT_VERSION }} x86-64
+
+            ## Build
+
+            - OpenWrt: `${{ env.OPENWRT_VERSION }}`
+            - Target: `x86-64`
+            - Profile: `generic`
+            - RootFS: `${{ env.ROOTFS_SIZE }}`
+            - Build date: `${{ env.BUILD_DATE }}`
+
+            ## Network
+
+            - `eth0` → WAN / PPPoE
+            - `eth1` → WANB / PPPoE
+            - `eth2` → LAN
+            - `eth3` → LAN
+            - `eth4` → LAN
+            - `eth5` → LAN
+            - LAN IP: `${{ inputs.lan_ip }}`
+            - IPv6: Enabled
+
+            ## Images
+
+            - UEFI
+            - QCOW2
+
+            ## Packages
+
+            ```
+            ${{ env.CUSTOM_PACKAGES }}
+            ```
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
