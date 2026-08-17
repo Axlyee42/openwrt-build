@@ -11,7 +11,7 @@ on:
         type: string
 
       rootfs_size:
-        description: "固件大小"
+        description: "固件 RootFS 大小"
         required: true
         default: "4G"
         type: choice
@@ -61,8 +61,10 @@ on:
     types:
       - openwrt-release
 
+
 permissions:
   contents: write
+
 
 jobs:
 
@@ -93,13 +95,16 @@ jobs:
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
 
         run: |
+          set -euo pipefail
 
-          set -e
+          echo "=========================================="
+          echo "Resolving OpenWrt version"
+          echo "=========================================="
 
-          VERSION="${MANUAL_VERSION}"
+          VERSION="${MANUAL_VERSION:-}"
 
           if [ -z "${VERSION}" ]; then
-            VERSION="${DISPATCH_VERSION}"
+            VERSION="${DISPATCH_VERSION:-}"
           fi
 
           if [ -z "${VERSION}" ]; then
@@ -107,22 +112,23 @@ jobs:
             echo "Detecting latest OpenWrt 25.12.x..."
 
             VERSION="$(
-              git ls-remote \
-                --tags \
+              git ls-remote --tags \
                 https://github.com/openwrt/openwrt.git \
                 'refs/tags/v25.12.*' |
               sed 's#.*refs/tags/v##' |
               grep -E '^25\.12\.[0-9]+$' |
               sort -V |
-              tail -1
-            )
+              tail -n 1
+            )"
 
           fi
 
-          if ! echo "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
+          if ! printf '%s\n' "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
             echo "ERROR: Invalid OpenWrt version: ${VERSION}"
             exit 1
           fi
+
+          echo "OpenWrt version: ${VERSION}"
 
           COMMIT="$(
             git ls-remote \
@@ -132,29 +138,34 @@ jobs:
           )"
 
           if [ -z "${COMMIT}" ]; then
-            echo "ERROR: Cannot find OpenWrt commit."
+            echo "ERROR: Cannot find OpenWrt commit for ${VERSION}"
             exit 1
           fi
 
-          echo "OPENWRT_VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "OPENWRT_COMMIT=${COMMIT}" >> "$GITHUB_ENV"
+          BUILD_DATE="$(date -u +%Y%m%d)"
+          BUILD_TIME="$(date -u +%H%M%S)"
 
-          echo "BUILD_DATE=$(date -u +%Y%m%d)" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date -u +%H%M%S)" >> "$GITHUB_ENV"
+          {
+            echo "OPENWRT_VERSION=${VERSION}"
+            echo "OPENWRT_COMMIT=${COMMIT}"
+            echo "BUILD_DATE=${BUILD_DATE}"
+            echo "BUILD_TIME=${BUILD_TIME}"
+          } >> "${GITHUB_ENV}"
 
           echo
           echo "=========================================="
           echo "OpenWrt version : ${VERSION}"
           echo "OpenWrt commit  : ${COMMIT}"
-          echo "Build date      : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Build date      : ${BUILD_DATE}"
+          echo "Build time      : ${BUILD_TIME} UTC"
           echo "=========================================="
 
 
       # ==========================================================
-      # RootFS
+      # RootFS 大小
       # ==========================================================
 
-      - name: Configure RootFS
+      - name: Configure RootFS size
         shell: bash
         run: |
 
@@ -183,14 +194,17 @@ jobs:
               ;;
 
             *)
-              echo "ERROR: Invalid RootFS size."
+              echo "ERROR: Invalid RootFS size: ${SIZE}"
               exit 1
               ;;
 
           esac
 
-          echo "ROOTFS_SIZE=${SIZE}" >> "$GITHUB_ENV"
-          echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "$GITHUB_ENV"
+          echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
+          echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
+
+          echo "RootFS: ${SIZE}"
+          echo "RootFS partition: ${PARTSIZE} MiB"
 
 
       # ==========================================================
@@ -198,7 +212,10 @@ jobs:
       # ==========================================================
 
       - name: Install build dependencies
+        shell: bash
         run: |
+
+          set -e
 
           sudo apt-get update
 
@@ -233,7 +250,9 @@ jobs:
             libxml-parser-perl \
             libelf-dev \
             ecj \
-            fastjar
+            fastjar \
+            ruby \
+            ruby-dev
 
 
       # ==========================================================
@@ -241,34 +260,40 @@ jobs:
       # ==========================================================
 
       - name: Clone OpenWrt
+        shell: bash
         run: |
 
+          set -e
+
           git clone \
+            --depth=1 \
+            --branch="v${OPENWRT_VERSION}" \
             https://github.com/openwrt/openwrt.git \
             openwrt
 
           cd openwrt
 
-          git checkout "${OPENWRT_COMMIT}"
+          git fetch --depth=1 origin \
+            "refs/tags/v${OPENWRT_VERSION}"
+
+          git checkout \
+            "${OPENWRT_COMMIT}"
+
+          echo
+          echo "OpenWrt source:"
+          git describe --tags --always
 
 
       # ==========================================================
-      # 配置第三方 feeds
-      #
-      # PassWall 官方推荐：
-      #
-      # passwall_packages
-      # passwall_luci
-      #
-      # Bandix：
-      #
-      # bandix
-      # bandix_luci
+      # 添加第三方 feeds
       # ==========================================================
 
       - name: Configure third-party feeds
         working-directory: openwrt
+        shell: bash
         run: |
+
+          set -e
 
           cat >> feeds.conf.default <<'EOF'
 
@@ -278,7 +303,13 @@ jobs:
           src-git bandix https://github.com/timsaya/openwrt-bandix.git;main
           src-git bandix_luci https://github.com/timsaya/luci-app-bandix.git;main
 
+          src-git sbwml https://github.com/sbwml/openwrt_pkgs.git;main
+
           EOF
+
+          echo
+          echo "Third-party feeds:"
+          tail -n 20 feeds.conf.default
 
 
       # ==========================================================
@@ -287,6 +318,7 @@ jobs:
 
       - name: Update feeds
         working-directory: openwrt
+        shell: bash
         run: |
 
           set -e
@@ -296,54 +328,56 @@ jobs:
 
       # ==========================================================
       # 安装 feeds
-      #
-      # PassWall 使用强制安装
-      # 防止 OpenWrt 自带 package 与 PassWall package 冲突
       # ==========================================================
 
       - name: Install feeds
         working-directory: openwrt
+        shell: bash
         run: |
 
           set -e
-
-          echo
-          echo "=========================================="
-          echo "Installing PassWall packages"
-          echo "=========================================="
-
-          ./scripts/feeds install -a -f -p passwall_packages
-
-          echo
-          echo "=========================================="
-          echo "Installing PassWall LuCI"
-          echo "=========================================="
-
-          ./scripts/feeds install -a -f -p passwall_luci
-
-          echo
-          echo "=========================================="
-          echo "Installing all other feeds"
-          echo "=========================================="
 
           ./scripts/feeds install -a
 
 
       # ==========================================================
-      # 添加第三方 package
+      # 添加自定义软件包
       #
-      # Aurora
       # OpenClash
+      # Aurora
+      # Aurora Config
       # luci-app-run
       # ==========================================================
 
       - name: Add custom packages
         working-directory: openwrt
+        shell: bash
         run: |
 
           set -e
 
           mkdir -p package/custom
+
+          echo
+          echo "=========================================="
+          echo "Adding OpenClash"
+          echo "=========================================="
+
+          rm -rf /tmp/openclash
+
+          git clone \
+            --depth=1 \
+            https://github.com/vernesong/OpenClash.git \
+            /tmp/openclash
+
+          if [ ! -f /tmp/openclash/luci-app-openclash/Makefile ]; then
+            echo "ERROR: OpenClash Makefile not found."
+            exit 1
+          fi
+
+          cp -a \
+            /tmp/openclash/luci-app-openclash \
+            package/custom/
 
 
           echo
@@ -351,12 +385,65 @@ jobs:
           echo "Adding Aurora"
           echo "=========================================="
 
-          rm -rf package/custom/luci-theme-aurora
+          rm -rf /tmp/aurora
 
           git clone \
             --depth=1 \
             https://github.com/eamonxg/luci-theme-aurora.git \
+            /tmp/aurora
+
+          if [ ! -f /tmp/aurora/Makefile ]; then
+            echo "ERROR: Aurora Makefile not found."
+            exit 1
+          fi
+
+          cp -a \
+            /tmp/aurora \
             package/custom/luci-theme-aurora
+
+
+          echo
+          echo "=========================================="
+          echo "Adding Aurora Config"
+          echo "=========================================="
+
+          rm -rf /tmp/aurora-config
+
+          git clone \
+            --depth=1 \
+            https://github.com/eamonxg/luci-app-aurora-config.git \
+            /tmp/aurora-config
+
+          if [ -f /tmp/aurora-config/Makefile ]; then
+
+            cp -a \
+              /tmp/aurora-config \
+              package/custom/luci-app-aurora-config
+
+          else
+
+            CONFIG_DIR="$(
+              find /tmp/aurora-config \
+                -mindepth 1 \
+                -maxdepth 3 \
+                -type f \
+                -name Makefile \
+                -print |
+              head -n 1
+            )"
+
+            if [ -z "${CONFIG_DIR}" ]; then
+              echo "ERROR: Aurora Config Makefile not found."
+              exit 1
+            fi
+
+            CONFIG_DIR="$(dirname "${CONFIG_DIR}")"
+
+            cp -a \
+              "${CONFIG_DIR}" \
+              package/custom/luci-app-aurora-config
+
+          fi
 
 
           echo
@@ -364,30 +451,48 @@ jobs:
           echo "Adding luci-app-run"
           echo "=========================================="
 
-          rm -rf package/custom/luci-app-run
+          rm -rf /tmp/luci-app-run
 
           git clone \
             --depth=1 \
             https://github.com/wukongdaily/luci-app-run.git \
-            package/custom/luci-app-run
+            /tmp/luci-app-run
+
+          if [ -f /tmp/luci-app-run/Makefile ]; then
+
+            cp -a \
+              /tmp/luci-app-run \
+              package/custom/luci-app-run
+
+          else
+
+            RUN_DIR="$(
+              find /tmp/luci-app-run \
+                -mindepth 1 \
+                -maxdepth 3 \
+                -type f \
+                -name Makefile \
+                -print |
+              head -n 1
+            )"
+
+            if [ -z "${RUN_DIR}" ]; then
+              echo "ERROR: luci-app-run Makefile not found."
+              exit 1
+            fi
+
+            RUN_DIR="$(dirname "${RUN_DIR}")"
+
+            cp -a \
+              "${RUN_DIR}" \
+              package/custom/luci-app-run
+
+          fi
 
 
           echo
           echo "=========================================="
-          echo "Adding OpenClash"
-          echo "=========================================="
-
-          rm -rf package/custom/luci-app-openclash
-
-          git clone \
-            --depth=1 \
-            https://github.com/vernesong/OpenClash.git \
-            package/custom/luci-app-openclash
-
-
-          echo
-          echo "=========================================="
-          echo "Custom packages"
+          echo "Custom package Makefiles"
           echo "=========================================="
 
           find package/custom \
@@ -397,12 +502,15 @@ jobs:
 
 
       # ==========================================================
-      # 基础配置
+      # 生成基础配置
       # ==========================================================
 
-      - name: Generate base configuration
+      - name: Generate OpenWrt configuration
         working-directory: openwrt
+        shell: bash
         run: |
+
+          set -e
 
           cat > .config <<EOF
 
@@ -419,7 +527,6 @@ jobs:
           CONFIG_PACKAGE_luci-ssl=y
 
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-
           CONFIG_PACKAGE_luci-proto-ipv6=y
           CONFIG_PACKAGE_luci-proto-ppp=y
 
@@ -428,13 +535,27 @@ jobs:
           CONFIG_PACKAGE_kmod-pppoe=y
 
           CONFIG_PACKAGE_ipv6=y
-          CONFIG_PACKAGE_kmod-ipv6=y
           CONFIG_PACKAGE_odhcp6c=y
           CONFIG_PACKAGE_odhcpd-ipv6only=y
 
           CONFIG_PACKAGE_mwan3=y
           CONFIG_PACKAGE_luci-app-mwan3=y
           CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-vlmcsd=y
+          CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-autoreboot=y
+          CONFIG_PACKAGE_luci-i18n-autoreboot-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-filebrowser-go=y
+          CONFIG_PACKAGE_luci-i18n-filebrowser-go-zh-cn=y
 
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
@@ -443,192 +564,169 @@ jobs:
 
           CONFIG_PACKAGE_luci-theme-aurora=y
           CONFIG_PACKAGE_luci-app-aurora-config=y
-          CONFIG_PACKAGE_luci-i18n-aurora-config-zh-cn=y
 
+          CONFIG_PACKAGE_bandix=y
           CONFIG_PACKAGE_luci-app-bandix=y
           CONFIG_PACKAGE_luci-i18n-bandix-zh-cn=y
 
           CONFIG_PACKAGE_luci-app-run=y
 
-          CONFIG_PACKAGE_luci-app-filebrowser-go=y
-          CONFIG_PACKAGE_luci-i18n-filebrowser-go-zh-cn=y
-
-          CONFIG_PACKAGE_luci-i18n-timewol-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-autoreboot-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
-
-          CONFIG_PACKAGE_ttyd=y
-          CONFIG_PACKAGE_miniupnpd=y
-          CONFIG_PACKAGE_vlmcsd=y
-
           EOF
 
+
+          # BIOS
 
           if [ "${{ inputs.bios }}" = "true" ]; then
             echo "CONFIG_GRUB_IMAGES=y" >> .config
           fi
 
 
+          # UEFI
+
           if [ "${{ inputs.uefi }}" = "true" ]; then
             echo "CONFIG_GRUB_EFI_IMAGES=y" >> .config
           fi
+
+
+          echo
+          echo "=========================================="
+          echo "Running make defconfig"
+          echo "=========================================="
 
 
           make defconfig
 
 
       # ==========================================================
-      # 检查关键 package
-      #
-      # 注意：
-      # 不再用 grep package/feeds 的方式判断
-      #
-      # 使用 scripts/feeds search
+      # 显示最终配置
       # ==========================================================
 
-      - name: Verify packages
+      - name: Show selected packages
         working-directory: openwrt
+        shell: bash
+        run: |
+
+          echo
+          echo "=========================================="
+          echo "Selected packages"
+          echo "=========================================="
+
+          grep '^CONFIG_PACKAGE_' .config |
+            grep '=y' |
+            sort
+
+
+      # ==========================================================
+      # 检查关键软件包是否进入最终配置
+      #
+      # 注意：
+      # 不再 grep Package/xxx
+      # 不再依赖 shell/apk-custom-packages.sh
+      # ==========================================================
+
+      - name: Verify selected packages
+        working-directory: openwrt
+        shell: bash
         run: |
 
           set -e
 
-          echo
-          echo "=========================================="
-          echo "Verifying packages"
-          echo "=========================================="
-
-
-          check_feed_package() {
+          check_config() {
 
             PACKAGE="$1"
-            FEED="$2"
 
-            echo
-            echo "Checking ${PACKAGE} (${FEED})..."
-
-            if ./scripts/feeds search "${PACKAGE}" 2>/dev/null | \
-              grep -q "${PACKAGE}"; then
+            if grep -qx \
+              "CONFIG_PACKAGE_${PACKAGE}=y" \
+              .config; then
 
               echo "OK: ${PACKAGE}"
 
             else
 
-              echo "ERROR: ${PACKAGE} not found in ${FEED}"
-
-              echo
-              echo "Feed status:"
-              ./scripts/feeds list | grep "${FEED}" || true
+              echo "ERROR: ${PACKAGE} was not selected."
 
               return 1
 
             fi
-
           }
 
 
-          check_feed_package luci-app-passwall passwall_luci
-          check_feed_package luci-app-bandix bandix_luci
-
           echo
-          echo "Checking OpenClash..."
-
-          if [ -f package/custom/luci-app-openclash/luci-app-openclash/Makefile ]; then
-            echo "OK: OpenClash"
-          elif find package/custom/luci-app-openclash \
-            -name Makefile \
-            -print -quit | grep -q .; then
-            echo "OK: OpenClash"
-          else
-            echo "ERROR: OpenClash Makefile not found."
-            exit 1
-          fi
+          echo "=========================================="
+          echo "Verifying selected packages"
+          echo "=========================================="
 
 
-          echo
-          echo "Checking Aurora..."
-
-          if find package/custom/luci-theme-aurora \
-            -name Makefile \
-            -print -quit | grep -q .; then
-
-            echo "OK: Aurora"
-
-          else
-
-            echo "ERROR: Aurora Makefile not found."
-            exit 1
-
-          fi
-
-
-          echo
-          echo "Checking luci-app-run..."
-
-          if find package/custom/luci-app-run \
-            -name Makefile \
-            -print -quit | grep -q .; then
-
-            echo "OK: luci-app-run"
-
-          else
-
-            echo "ERROR: luci-app-run Makefile not found."
-            exit 1
-
-          fi
-
-
-          echo
-          echo "Checking FileBrowser Go..."
-
-          if ./scripts/feeds search luci-app-filebrowser-go 2>/dev/null | \
-            grep -q luci-app-filebrowser-go; then
-
-            echo "OK: luci-app-filebrowser-go"
-
-          else
-
-            echo "WARNING: luci-app-filebrowser-go not found."
-
-          fi
+          check_config luci
+          check_config luci-i18n-base-zh-cn
+          check_config luci-app-mwan3
+          check_config luci-app-upnp
+          check_config luci-app-ttyd
+          check_config luci-app-vlmcsd
+          check_config luci-app-autoreboot
+          check_config luci-app-filebrowser-go
+          check_config luci-app-passwall
+          check_config luci-app-openclash
+          check_config luci-theme-aurora
+          check_config luci-app-aurora-config
+          check_config bandix
+          check_config luci-app-bandix
+          check_config luci-app-run
 
 
       # ==========================================================
       # 网络配置
+      #
+      # eth0 = WAN
+      # eth1 = WANB
+      # eth2~eth5 = LAN
+      #
+      # PPPoE 账号密码来自 GitHub Secrets
       # ==========================================================
 
       - name: Generate network configuration
         env:
-
           WAN1_USER: ${{ secrets.WAN1_USER }}
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
 
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
 
+          LAN_IP: ${{ inputs.lan_ip }}
+
+        shell: bash
         run: |
 
-          set -e
+          set -euo pipefail
 
-          if [ -z "${WAN1_USER}" ] || [ -z "${WAN1_PASS}" ]; then
-            echo "ERROR: WAN1_USER / WAN1_PASS is not configured."
+          if [ -z "${WAN1_USER}" ]; then
+            echo "ERROR: WAN1_USER secret is empty."
             exit 1
           fi
 
-          if [ -z "${WAN2_USER}" ] || [ -z "${WAN2_PASS}" ]; then
-            echo "ERROR: WAN2_USER / WAN2_PASS is not configured."
+          if [ -z "${WAN1_PASS}" ]; then
+            echo "ERROR: WAN1_PASS secret is empty."
             exit 1
           fi
 
-          LAN_IP="${{ inputs.lan_ip }}"
+          if [ -z "${WAN2_USER}" ]; then
+            echo "ERROR: WAN2_USER secret is empty."
+            exit 1
+          fi
+
+          if [ -z "${WAN2_PASS}" ]; then
+            echo "ERROR: WAN2_PASS secret is empty."
+            exit 1
+          fi
 
           if [ -z "${LAN_IP}" ]; then
             LAN_IP="192.168.1.2"
           fi
 
-          mkdir -p openwrt/files/etc/config
+
+          mkdir -p \
+            openwrt/files/etc/config
+
 
           cat > openwrt/files/etc/config/network <<EOF
 
@@ -689,13 +787,18 @@ jobs:
 
 
       # ==========================================================
-      # DHCP / IPv6
+      # DHCP / IPv6 RA
       # ==========================================================
 
       - name: Generate DHCP configuration
+        shell: bash
         run: |
 
-          mkdir -p openwrt/files/etc/config
+          set -e
+
+          mkdir -p \
+            openwrt/files/etc/config
+
 
           cat > openwrt/files/etc/config/dhcp <<'EOF'
 
@@ -748,36 +851,44 @@ jobs:
       # ==========================================================
 
       - name: Set default language
+        shell: bash
         run: |
 
-          mkdir -p openwrt/files/etc/uci-defaults
+          set -e
+
+          mkdir -p \
+            openwrt/files/etc/uci-defaults
+
 
           cat > openwrt/files/etc/uci-defaults/99-default-language <<'EOF'
-
           #!/bin/sh
 
           uci -q set luci.main.lang='zh_cn'
           uci -q commit luci
 
           exit 0
-
           EOF
+
 
           chmod +x \
             openwrt/files/etc/uci-defaults/99-default-language
 
 
       # ==========================================================
-      # 写入固件信息
+      # 写入构建信息
       # ==========================================================
 
       - name: Create build information
+        shell: bash
         run: |
 
-          mkdir -p openwrt/files/etc/openwrt-custom
+          set -e
+
+          mkdir -p \
+            openwrt/files/etc/openwrt-custom
+
 
           cat > openwrt/files/etc/openwrt-custom/build-info <<EOF
-
           OpenWrt Custom Build
 
           OpenWrt Version:
@@ -798,7 +909,7 @@ jobs:
           Build Time:
           ${BUILD_TIME} UTC
 
-          LAN:
+          LAN IP:
           ${{ inputs.lan_ip }}
 
           eth0:
@@ -822,16 +933,21 @@ jobs:
           IPv6:
           Enabled
 
+          Language:
+          zh_cn
           EOF
 
 
       # ==========================================================
-      # 下载
+      # 下载源码包
       # ==========================================================
 
       - name: Download packages
         working-directory: openwrt
+        shell: bash
         run: |
+
+          set -e
 
           make download \
             -j"$(nproc)" \
@@ -844,7 +960,10 @@ jobs:
 
       - name: Build OpenWrt
         working-directory: openwrt
+        shell: bash
         run: |
+
+          set -e
 
           make \
             -j"$(nproc)" \
@@ -852,23 +971,50 @@ jobs:
 
 
       # ==========================================================
+      # 显示生成的镜像
+      # ==========================================================
+
+      - name: Show generated images
+        shell: bash
+        run: |
+
+          echo
+          echo "=========================================="
+          echo "Generated OpenWrt images"
+          echo "=========================================="
+
+          find openwrt/bin/targets/x86/64 \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' |
+            sort
+
+
+      # ==========================================================
       # 准备 Release
       # ==========================================================
 
       - name: Prepare release directory
+        shell: bash
         run: |
 
+          set -e
+
           rm -rf release
+
           mkdir -p release
 
 
       # ==========================================================
-      # BIOS
+      # BIOS 镜像
       # ==========================================================
 
       - name: Copy BIOS image
         if: inputs.bios
+        shell: bash
         run: |
+
+          set -e
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
@@ -876,8 +1022,9 @@ jobs:
               -type f \
               -name '*ext4-combined.img.gz' \
               ! -name '*efi*' |
-            head -1
+            head -n 1
           )"
+
 
           if [ -z "${IMAGE}" ]; then
 
@@ -892,25 +1039,30 @@ jobs:
 
           fi
 
+
           cp "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-BIOS.img.gz"
 
 
       # ==========================================================
-      # UEFI
+      # UEFI 镜像
       # ==========================================================
 
       - name: Copy UEFI image
         if: inputs.uefi
+        shell: bash
         run: |
+
+          set -e
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
               -name '*ext4-combined-efi.img.gz' |
-            head -1
+            head -n 1
           )"
+
 
           if [ -z "${IMAGE}" ]; then
 
@@ -925,30 +1077,36 @@ jobs:
 
           fi
 
+
           cp "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
 
       # ==========================================================
-      # RAW
+      # 准备 RAW
       # ==========================================================
 
       - name: Prepare raw image
         if: inputs.qcow2 || inputs.vmdk || inputs.raw
+        shell: bash
         run: |
+
+          set -e
 
           IMAGE="$(
             find openwrt/bin/targets/x86/64 \
               -maxdepth 1 \
               -type f \
               -name '*ext4-combined-efi.img.gz' |
-            head -1
+            head -n 1
           )"
+
 
           if [ -z "${IMAGE}" ]; then
             echo "ERROR: UEFI image not found."
             exit 1
           fi
+
 
           gzip -dc \
             "${IMAGE}" \
@@ -961,11 +1119,15 @@ jobs:
 
       - name: Create QCOW2
         if: inputs.qcow2
+        shell: bash
         run: |
+
+          set -e
 
           qemu-img convert \
             -f raw \
             -O qcow2 \
+            -o compression_type=zstd \
             openwrt.raw \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
@@ -976,7 +1138,10 @@ jobs:
 
       - name: Create VMDK
         if: inputs.vmdk
+        shell: bash
         run: |
+
+          set -e
 
           qemu-img convert \
             -f raw \
@@ -991,7 +1156,10 @@ jobs:
 
       - name: Create RAW
         if: inputs.raw
+        shell: bash
         run: |
+
+          set -e
 
           cp \
             openwrt.raw \
@@ -1003,7 +1171,10 @@ jobs:
       # ==========================================================
 
       - name: Generate SHA256
+        shell: bash
         run: |
+
+          set -e
 
           cd release
 
@@ -1015,10 +1186,10 @@ jobs:
       # ==========================================================
 
       - name: Create release information
+        shell: bash
         run: |
 
           cat > release/build-info.txt <<EOF
-
           ==========================================
           OpenWrt Custom Build
           ==========================================
@@ -1041,7 +1212,9 @@ jobs:
           Build time:
           ${BUILD_TIME} UTC
 
-          Network:
+          ==========================================
+          Network
+          ==========================================
 
           eth0 = WAN / PPPoE
           eth1 = WANB / PPPoE
@@ -1050,22 +1223,41 @@ jobs:
           eth4 = LAN
           eth5 = LAN
 
-          LAN:
+          LAN IP:
           ${{ inputs.lan_ip }}
 
           IPv6:
           Enabled
 
           ==========================================
+          Software
+          ==========================================
 
+          LuCI
+          Simplified Chinese
+          PassWall
+          OpenClash
+          Aurora
+          Aurora Config
+          Bandix
+          luci-app-run
+          FileBrowser Go
+          mwan3
+          ttyd
+          UPnP
+          VLMCSd
+          Autoreboot
+
+          ==========================================
           EOF
 
 
       # ==========================================================
-      # 显示最终文件
+      # 显示 Release 文件
       # ==========================================================
 
       - name: Show release files
+        shell: bash
         run: |
 
           echo
@@ -1095,6 +1287,7 @@ jobs:
             ## Build information
 
             - OpenWrt: `${{ env.OPENWRT_VERSION }}`
+            - Commit: `${{ env.OPENWRT_COMMIT }}`
             - Target: `x86-64`
             - RootFS: `${{ env.ROOTFS_SIZE }}`
             - Build date: `${{ env.BUILD_DATE }}`
@@ -1123,12 +1316,9 @@ jobs:
             - luci-app-run
             - FileBrowser Go
             - mwan3
-            - PPPoE
-            - IPv6
             - ttyd
             - UPnP
             - VLMCSd
-            - Timewol
             - Autoreboot
 
           files: |
