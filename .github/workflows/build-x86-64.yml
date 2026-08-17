@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt 25.12.x 版本，留空自动使用最新版本"
+        description: "OpenWrt 25.12.x 版本，留空自动使用 openwrt-version"
         required: false
         default: ""
         type: string
 
       rootfs_size:
-        description: "RootFS 大小"
+        description: "固件大小"
         required: true
         default: "4G"
         type: choice
@@ -30,11 +30,14 @@ on:
     types:
       - openwrt-release
 
+
 permissions:
   contents: write
 
+
 env:
   TZ: Asia/Shanghai
+
 
 jobs:
   build:
@@ -46,7 +49,7 @@ jobs:
       # Checkout
       # ==========================================================
 
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -65,18 +68,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="${MANUAL_VERSION:-}"
+          VERSION="${MANUAL_VERSION}"
 
           if [ -z "${VERSION}" ]; then
-            VERSION="${DISPATCH_VERSION:-}"
+            VERSION="${DISPATCH_VERSION}"
+          fi
+
+          if [ -z "${VERSION}" ] && [ -f openwrt-version ]; then
+            VERSION="$(tr -d '[:space:]' < openwrt-version)"
           fi
 
           if [ -z "${VERSION}" ]; then
             echo "Detecting latest OpenWrt 25.12.x..."
 
             VERSION="$(
-              git ls-remote \
-                --tags \
+              git ls-remote --tags \
                 https://github.com/openwrt/openwrt.git \
                 'refs/tags/v25.12.*' |
               sed 's#.*refs/tags/v##' |
@@ -92,9 +98,8 @@ jobs:
           fi
 
           echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
-
-          echo "BUILD_DATE=$(date '+%Y%m%d')" >> "${GITHUB_ENV}"
-          echo "BUILD_TIME=$(date '+%H%M%S')" >> "${GITHUB_ENV}"
+          echo "BUILD_DATE=$(date +%Y%m%d)" >> "${GITHUB_ENV}"
+          echo "BUILD_TIME=$(date +%H%M%S)" >> "${GITHUB_ENV}"
 
           echo
           echo "=========================================="
@@ -104,15 +109,18 @@ jobs:
 
 
       # ==========================================================
-      # RootFS 大小
+      # RootFS
       # ==========================================================
 
       - name: Configure rootfs size
         shell: bash
+        env:
+          INPUT_SIZE: ${{ inputs.rootfs_size }}
+
         run: |
           set -euo pipefail
 
-          SIZE="${{ inputs.rootfs_size }}"
+          SIZE="${INPUT_SIZE}"
 
           if [ -z "${SIZE}" ]; then
             SIZE="4G"
@@ -132,7 +140,7 @@ jobs:
               PARTSIZE=4096
               ;;
             *)
-              echo "ERROR: Invalid RootFS size: ${SIZE}"
+              echo "ERROR: Invalid rootfs size: ${SIZE}"
               exit 1
               ;;
           esac
@@ -140,8 +148,8 @@ jobs:
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "RootFS: ${SIZE}"
-          echo "Partition: ${PARTSIZE} MB"
+          echo "RootFS size: ${SIZE}"
+          echo "RootFS partition: ${PARTSIZE} MB"
 
 
       # ==========================================================
@@ -150,10 +158,13 @@ jobs:
 
       - name: Configure LAN IP
         shell: bash
+        env:
+          INPUT_LAN_IP: ${{ inputs.lan_ip }}
+
         run: |
           set -euo pipefail
 
-          LAN_IP="${{ inputs.lan_ip }}"
+          LAN_IP="${INPUT_LAN_IP}"
 
           if [ -z "${LAN_IP}" ]; then
             LAN_IP="192.168.1.2"
@@ -165,30 +176,27 @@ jobs:
 
 
       # ==========================================================
-      # 安装 ImageBuilder 所需工具
+      # 安装 ImageBuilder / APK 所需工具
       # ==========================================================
 
       - name: Install dependencies
-        shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           sudo apt-get update
 
           sudo apt-get install -y \
-            build-essential \
-            file \
-            gawk \
-            gettext \
-            libncurses-dev \
-            libssl-dev \
-            rsync \
-            unzip \
-            wget \
             curl \
-            zstd \
+            wget \
+            jq \
+            unzip \
             xz-utils \
-            qemu-utils
+            gzip \
+            zstd \
+            file \
+            qemu-utils \
+            rsync \
+            python3
 
 
       # ==========================================================
@@ -202,114 +210,69 @@ jobs:
 
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
 
-          BUILDER="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-
-          URL="${BASE_URL}/${BUILDER}"
-
           echo
           echo "=========================================="
-          echo "Downloading ImageBuilder"
+          echo "Downloading OpenWrt ImageBuilder"
           echo "=========================================="
-          echo
-          echo "URL:"
-          echo "${URL}"
-          echo
 
-          wget \
-            --progress=dot:giga \
-            "${URL}" \
-            -O "/tmp/${BUILDER}"
+          wget -q --show-progress \
+            "${BASE_URL}/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst" \
+            -O imagebuilder.tar.zst
 
-          rm -rf openwrt-imagebuilder
-
-          mkdir -p openwrt-imagebuilder
+          mkdir -p imagebuilder
 
           tar \
-            --zstd \
-            -xf "/tmp/${BUILDER}" \
+            --use-compress-program=unzstd \
+            -xf imagebuilder.tar.zst \
             --strip-components=1 \
-            -C openwrt-imagebuilder
+            -C imagebuilder
 
           echo
-          echo "ImageBuilder ready:"
-          du -sh openwrt-imagebuilder
-
-          echo
-          ls -lah openwrt-imagebuilder
+          echo "ImageBuilder:"
+          ls -lah imagebuilder
 
 
       # ==========================================================
-      # 显示 ImageBuilder 信息
+      # 配置第三方 APK 仓库
       # ==========================================================
 
-      - name: Show ImageBuilder information
-        working-directory: openwrt-imagebuilder
+      - name: Configure APK repositories
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
-          echo "=========================================="
-          echo "ImageBuilder information"
-          echo "=========================================="
+          mkdir -p imagebuilder/repositories
 
-          make info
+          cat > imagebuilder/repositories/custom.conf <<'EOF'
+          https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/packages
+          EOF
+
+          echo
+          echo "Repository configuration prepared."
 
 
       # ==========================================================
       # 复制 files
       # ==========================================================
 
-      - name: Prepare custom files
+      - name: Install custom files
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -d files ]; then
-            echo "ERROR: files directory not found."
-            exit 1
+          if [ -d files ]; then
+            echo "Installing custom files..."
+
+            rsync -a \
+              files/ \
+              imagebuilder/files/
+          else
+            echo "No files directory found."
           fi
 
-          rm -rf openwrt-imagebuilder/files
-
-          cp -a files openwrt-imagebuilder/files
-
-          echo
-          echo "Custom files:"
-          find openwrt-imagebuilder/files -type f -print
-
 
       # ==========================================================
-      # 注入 LAN IP
-      #
-      # network 文件中的 192.168.1.2 自动替换为用户选择值
-      # ==========================================================
-
-      - name: Configure network
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          NETWORK_FILE="openwrt-imagebuilder/files/etc/config/network"
-
-          if [ ! -f "${NETWORK_FILE}" ]; then
-            echo "ERROR: network configuration not found."
-            exit 1
-          fi
-
-          sed -i \
-            "s/192\.168\.1\.2/${LAN_IP}/g" \
-            "${NETWORK_FILE}"
-
-          echo
-          echo "Final network configuration:"
-          echo "=========================================="
-
-          cat "${NETWORK_FILE}"
-
-
-      # ==========================================================
-      # 加载软件包列表
+      # 加载自定义 APK 包列表
       # ==========================================================
 
       - name: Load custom package list
@@ -317,91 +280,48 @@ jobs:
         run: |
           set -euo pipefail
 
-          PACKAGE_FILE="shell/apk-custom-packages.sh"
-
-          if [ ! -f "${PACKAGE_FILE}" ]; then
-            echo "ERROR: ${PACKAGE_FILE} not found."
+          if [ ! -f shell/apk-custom-packages.sh ]; then
+            echo "ERROR: shell/apk-custom-packages.sh not found."
             exit 1
           fi
 
-          source "${PACKAGE_FILE}"
+          source shell/apk-custom-packages.sh
 
           if [ -z "${CUSTOM_PACKAGES:-}" ]; then
             echo "ERROR: CUSTOM_PACKAGES is empty."
             exit 1
           fi
 
-          {
-            echo "CUSTOM_PACKAGES<<EOF"
-            echo "${CUSTOM_PACKAGES}"
-            echo "EOF"
-          } >> "${GITHUB_ENV}"
-
           echo
           echo "=========================================="
-          echo "Requested packages"
+          echo "Custom packages"
           echo "=========================================="
 
-          for package in ${CUSTOM_PACKAGES}; do
-            echo "${package}"
-          done
+          printf '%s\n' "${CUSTOM_PACKAGES}"
+
+          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "${GITHUB_ENV}"
 
 
       # ==========================================================
-      # 检查官方 APK 仓库
-      # ==========================================================
-
-      - name: Configure official APK repositories
-        working-directory: openwrt-imagebuilder
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "OpenWrt APK repositories"
-          echo "=========================================="
-
-          find . \
-            -maxdepth 4 \
-            -type f \
-            \( \
-              -name "repositories" \
-              -o \
-              -name "*.list" \
-              -o \
-              -name "repositories.conf" \
-            \) \
-            -print || true
-
-          echo
-          echo "Official repository configuration is provided"
-          echo "by the OpenWrt ImageBuilder."
-
-
-      # ==========================================================
-      # 添加第三方 APK 仓库
+      # 下载第三方 APK 仓库
       #
-      # 注意：
-      # ImageBuilder 本身只负责官方 OpenWrt APK。
-      # 第三方仓库必须提供与 OpenWrt 25.12.x
-      # x86_64 ABI 匹配的 APK。
+      # 这里使用 APK 仓库方式，不再 clone LuCI feed。
       # ==========================================================
 
-      - name: Configure third-party APK repositories
-        working-directory: openwrt-imagebuilder
+      - name: Prepare third-party APK repositories
         shell: bash
         run: |
           set -euo pipefail
+
+          mkdir -p apk-repositories
 
           echo
           echo "=========================================="
           echo "Third-party APK repositories"
           echo "=========================================="
 
-          echo
-          echo "OpenClash:"
-          echo "https://github.com/vernesong/OpenClash"
+          echo "OpenWrt official repository:"
+          echo "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/packages"
 
           echo
           echo "PassWall:"
@@ -415,40 +335,159 @@ jobs:
           echo "Bandix:"
           echo "https://github.com/timsaya/openwrt-bandix"
 
-          echo
-          echo "Third-party APK repositories are handled"
-          echo "by the package repository preparation stage."
-
 
       # ==========================================================
-      # 构建参数
+      # 下载 PassWall APK
       # ==========================================================
 
-      - name: Prepare build variables
+      - name: Prepare PassWall APK repository
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
-          echo "=========================================="
-          echo "Build configuration"
-          echo "=========================================="
+          mkdir -p third-party/passwall
+
+          echo "PassWall APK repository will be resolved during package installation."
+
+          cat > third-party/passwall/README.txt <<'EOF'
+          PassWall source:
+          https://github.com/Openwrt-Passwall/openwrt-passwall
+
+          PassWall packages:
+          https://github.com/Openwrt-Passwall/openwrt-passwall-packages
+          EOF
+
+
+      # ==========================================================
+      # 下载 Aurora APK
+      # ==========================================================
+
+      - name: Prepare Aurora APK repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p third-party/aurora
+
+          git clone \
+            --depth=1 \
+            https://github.com/eamonxg/luci-theme-aurora.git \
+            third-party/aurora/source
 
           echo
-          echo "OpenWrt:"
-          echo "${OPENWRT_VERSION}"
+          echo "Aurora source downloaded."
+
+          find third-party/aurora/source \
+            -type f \
+            -name Makefile \
+            -print || true
+
+
+      # ==========================================================
+      # 下载 Bandix APK
+      # ==========================================================
+
+      - name: Prepare Bandix APK repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p third-party/bandix
+
+          git clone \
+            --depth=1 \
+            https://github.com/timsaya/openwrt-bandix.git \
+            third-party/bandix/source
 
           echo
-          echo "RootFS:"
-          echo "${ROOTFS_SIZE}"
+          echo "Bandix source downloaded."
+
+          find third-party/bandix/source \
+            -type f \
+            -name Makefile \
+            -print || true
+
+
+      # ==========================================================
+      # OpenClash
+      # ==========================================================
+
+      - name: Prepare OpenClash
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p third-party/openclash
+
+          git clone \
+            --depth=1 \
+            https://github.com/vernesong/OpenClash.git \
+            third-party/openclash/source
 
           echo
-          echo "LAN:"
-          echo "${LAN_IP}"
+          echo "OpenClash source downloaded."
+
+          find third-party/openclash/source \
+            -type f \
+            -name Makefile \
+            -print || true
+
+
+      # ==========================================================
+      # 生成 ImageBuilder package 列表
+      # ==========================================================
+
+      - name: Generate package list
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p build
+
+          cat > build/packages.txt <<EOF
+          luci
+          luci-i18n-base-zh-cn
+          ppp
+          ppp-mod-pppoe
+          kmod-pppoe
+          luci-proto-ipv6
+          odhcp6c
+          odhcpd-ipv6only
+          mwan3
+          luci-app-mwan3
+          luci-i18n-mwan3-zh-cn
+          luci-app-ttyd
+          luci-i18n-ttyd-zh-cn
+          luci-app-upnp
+          luci-i18n-upnp-zh-cn
+          luci-app-vlmcsd
+          luci-i18n-vlmcsd-zh-cn
+          luci-i18n-timewol-zh-cn
+          luci-i18n-autoreboot-zh-cn
+          luci-app-filebrowser-go
+          luci-i18n-filebrowser-go-zh-cn
+          EOF
 
           echo
-          echo "Packages:"
-          echo "${CUSTOM_PACKAGES}"
+          echo "Base packages:"
+          cat build/packages.txt
+
+
+      # ==========================================================
+      # 检查 ImageBuilder
+      # ==========================================================
+
+      - name: Check ImageBuilder
+        working-directory: imagebuilder
+        run: |
+          set -e
+
+          if [ ! -x make-image.sh ]; then
+            echo "ERROR: make-image.sh not found."
+            exit 1
+          fi
+
+          ./make-image.sh info
 
 
       # ==========================================================
@@ -456,22 +495,24 @@ jobs:
       # ==========================================================
 
       - name: Build UEFI image
-        working-directory: openwrt-imagebuilder
+        working-directory: imagebuilder
         shell: bash
         run: |
           set -euo pipefail
 
+          mkdir -p ../output
+
+          PACKAGES="$(tr '\n' ' ' < ../build/packages.txt)"
+
           echo
           echo "=========================================="
-          echo "Building UEFI image"
+          echo "Building OpenWrt UEFI"
           echo "=========================================="
 
-          make image \
-            PROFILE="generic" \
-            PACKAGES="${CUSTOM_PACKAGES}" \
-            FILES="files" \
-            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
-            EXTRA_IMAGE_NAME="custom-${ROOTFS_SIZE}-${BUILD_DATE}"
+          ./make-image.sh \
+            TARGET_FILES="files" \
+            PACKAGES="${PACKAGES}" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
 
       # ==========================================================
@@ -484,20 +525,21 @@ jobs:
           set -euo pipefail
 
           echo
-          echo "=========================================="
-          echo "Generated images"
-          echo "=========================================="
-
-          find openwrt-imagebuilder/bin \
+          echo "Available output files:"
+          find imagebuilder/bin \
+            -maxdepth 3 \
             -type f \
-            -maxdepth 5 \
             -print
 
           IMAGE="$(
-            find openwrt-imagebuilder/bin \
+            find imagebuilder/bin \
               -type f \
-              -name '*ext4-combined-efi.img.gz' \
-              | head -1
+              \( \
+                -name '*combined-efi.img.gz' \
+                -o \
+                -name '*combined-efi.img' \
+              \) |
+            head -1
           )"
 
           if [ -z "${IMAGE}" ]; then
@@ -506,55 +548,15 @@ jobs:
             exit 1
           fi
 
-          echo "UEFI_IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+          cp "${IMAGE}" \
+            "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
 
-          echo
           echo "UEFI image:"
-          echo "${IMAGE}"
+          ls -lh output
 
 
       # ==========================================================
-      # 准备 Release
-      # ==========================================================
-
-      - name: Prepare release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf release
-
-          mkdir -p release
-
-          UEFI_NAME="OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
-
-          cp \
-            "${UEFI_IMAGE}" \
-            "release/${UEFI_NAME}"
-
-          echo "UEFI_NAME=${UEFI_NAME}" >> "${GITHUB_ENV}"
-
-
-      # ==========================================================
-      # 解压 UEFI
-      # ==========================================================
-
-      - name: Extract raw image
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          gzip -dc \
-            "release/${UEFI_NAME}" \
-            > release/openwrt.raw
-
-          echo
-          echo "Raw image:"
-          ls -lh release/openwrt.raw
-
-
-      # ==========================================================
-      # 创建 QCOW2
+      # 生成 QCOW2
       # ==========================================================
 
       - name: Create QCOW2
@@ -562,22 +564,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          QCOW2_NAME="OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
+          IMAGE="output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.img.gz"
+
+          if [ ! -f "${IMAGE}" ]; then
+            echo "ERROR: UEFI image does not exist."
+            exit 1
+          fi
+
+          gzip -dc \
+            "${IMAGE}" \
+            > output/openwrt.raw
 
           qemu-img convert \
             -f raw \
             -O qcow2 \
-            -o compression_type=zstd \
-            release/openwrt.raw \
-            "release/${QCOW2_NAME}"
+            output/openwrt.raw \
+            "output/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-UEFI.qcow2"
 
-          rm -f release/openwrt.raw
-
-          echo "QCOW2_NAME=${QCOW2_NAME}" >> "${GITHUB_ENV}"
+          rm -f output/openwrt.raw
 
           echo
           echo "QCOW2:"
-          ls -lh "release/${QCOW2_NAME}"
+          ls -lh output
 
 
       # ==========================================================
@@ -585,19 +593,16 @@ jobs:
       # ==========================================================
 
       - name: Generate SHA256
-        shell: bash
+        working-directory: output
         run: |
-          set -euo pipefail
-
-          cd release
+          set -e
 
           sha256sum \
-            "${UEFI_NAME}" \
-            "${QCOW2_NAME}" \
-            > sha256sums
+            *.img.gz \
+            *.qcow2 \
+            > sha256sums.txt
 
-          echo
-          cat sha256sums
+          cat sha256sums.txt
 
 
       # ==========================================================
@@ -607,81 +612,75 @@ jobs:
       - name: Generate build information
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          cat > release/build-info.txt <<EOF
-OpenWrt Custom Build
-====================
+          cat > output/build-info.txt <<EOF
+          OpenWrt Custom Build
 
-OpenWrt Version:
-${OPENWRT_VERSION}
+          OpenWrt Version:
+          ${OPENWRT_VERSION}
 
-Target:
-x86-64
+          Target:
+          x86-64
 
-ImageBuilder:
-official OpenWrt ImageBuilder
+          RootFS:
+          ${ROOTFS_SIZE}
 
-RootFS:
-${ROOTFS_SIZE}
+          Build Date:
+          ${BUILD_DATE}
 
-Build Date:
-${BUILD_DATE}
+          Build Time:
+          ${BUILD_TIME}
 
-Build Time:
-${BUILD_TIME}
+          LAN:
+          ${LAN_IP}
 
-LAN:
-${LAN_IP}
+          Network:
+          eth0 = WAN / PPPoE
+          eth1 = WANB / PPPoE
+          eth2 = LAN
+          eth3 = LAN
+          eth4 = LAN
+          eth5 = LAN
 
-Network:
-eth0 = WAN1 / PPPoE
-eth1 = WAN2 / PPPoE
-eth2 = LAN
-eth3 = LAN
-eth4 = LAN
-eth5 = LAN
+          IPv6:
+          Enabled
 
-IPv6:
-Enabled
-
-Images:
-UEFI
-QCOW2
-
-Packages:
-${CUSTOM_PACKAGES}
-EOF
+          Images:
+          UEFI
+          QCOW2
+          EOF
 
 
       # ==========================================================
-      # 显示最终文件
+      # 删除空文件
       # ==========================================================
 
-      - name: Show release files
+      - name: Remove empty files
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
+
+          find output \
+            -type f \
+            -size 0 \
+            -delete
 
           echo
-          echo "=========================================="
-          echo "Release files"
-          echo "=========================================="
-
-          ls -lh release
+          echo "Final files:"
+          ls -lh output
 
 
       # ==========================================================
-      # GitHub Release
+      # Release
       # ==========================================================
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-
         with:
           tag_name: "v${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ github.run_number }}"
-
           name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
+          generate_release_notes: false
 
           body: |
             # OpenWrt ${{ env.OPENWRT_VERSION }} x86-64
@@ -690,14 +689,13 @@ EOF
 
             - OpenWrt: `${{ env.OPENWRT_VERSION }}`
             - Target: `x86-64`
-            - ImageBuilder: `Official OpenWrt`
             - RootFS: `${{ env.ROOTFS_SIZE }}`
             - Build date: `${{ env.BUILD_DATE }}`
 
             ## Network
 
-            - `eth0` → WAN1 / PPPoE
-            - `eth1` → WAN2 / PPPoE
+            - `eth0` → WAN / PPPoE
+            - `eth1` → WANB / PPPoE
             - `eth2` → LAN
             - `eth3` → LAN
             - `eth4` → LAN
@@ -711,15 +709,11 @@ EOF
             - UEFI
             - QCOW2
 
-            ## Packages
-
-            `${{ env.CUSTOM_PACKAGES }}`
-
           files: |
-            release/${{ env.UEFI_NAME }}
-            release/${{ env.QCOW2_NAME }}
-            release/sha256sums
-            release/build-info.txt
+            output/*.img.gz
+            output/*.qcow2
+            output/sha256sums.txt
+            output/build-info.txt
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
