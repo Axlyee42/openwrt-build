@@ -144,6 +144,9 @@ jobs:
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
+          echo "RootFS: ${SIZE}"
+          echo "Partition: ${PARTSIZE} MB"
+
 
       # ==========================================================
       # LAN
@@ -170,7 +173,7 @@ jobs:
 
 
       # ==========================================================
-      # PPPoE
+      # PPPoE secrets
       # ==========================================================
 
       - name: Validate PPPoE secrets
@@ -195,6 +198,8 @@ jobs:
               exit 1
             fi
           done
+
+          echo "PPPoE secrets are configured."
 
 
       # ==========================================================
@@ -227,7 +232,7 @@ jobs:
 
 
       # ==========================================================
-      # Download official ImageBuilder
+      # Official ImageBuilder
       # ==========================================================
 
       - name: Download official ImageBuilder
@@ -247,6 +252,7 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
+
           mkdir -p imagebuilder
 
           tar \
@@ -274,7 +280,7 @@ jobs:
 
 
       # ==========================================================
-      # PassWall
+      # PassWall repository
       # ==========================================================
 
       - name: Configure PassWall repository
@@ -353,6 +359,7 @@ jobs:
           set -euo pipefail
 
           rm -rf imagebuilder/packages
+
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
@@ -377,7 +384,7 @@ jobs:
 
 
       # ==========================================================
-      # OpenClash
+      # OpenClash APK
       # ==========================================================
 
       - name: Prepare OpenClash APK
@@ -430,7 +437,7 @@ jobs:
 
 
       # ==========================================================
-      # Download official SDK
+      # Official OpenWrt SDK
       # ==========================================================
 
       - name: Download official OpenWrt SDK
@@ -466,6 +473,7 @@ jobs:
             -O openwrt-sdk.tar.zst
 
           rm -rf sdk
+
           mkdir -p sdk
 
           tar \
@@ -477,7 +485,7 @@ jobs:
 
 
       # ==========================================================
-      # SDK official feeds
+      # Update official SDK feeds
       # ==========================================================
 
       - name: Update SDK feeds
@@ -490,10 +498,10 @@ jobs:
 
 
       # ==========================================================
-      # Download sbwml packages
+      # sbwml
       # ==========================================================
 
-      - name: Download sbwml package source
+      - name: Download sbwml packages
         shell: bash
         run: |
           set -euo pipefail
@@ -513,10 +521,7 @@ jobs:
 
 
       # ==========================================================
-      # Import sbwml packages
-      #
-      # backend → package/third-party
-      # LuCI → feeds/luci/applications
+      # Import sbwml
       # ==========================================================
 
       - name: Import sbwml packages
@@ -557,15 +562,17 @@ jobs:
 
 
       # ==========================================================
-      # VIKING TimeWOL
+      # VIKINGYFY
       #
-      # 当前 main 已经没有 luci-app-timewol。
+      # 关键修复：
       #
-      # VIKING 自己的 OpenWRT-CI 仍引用这个包，
-      # 因此这里从 git 历史中找最后一个存在该目录的 commit。
+      # 不再 --depth=1
+      #
+      # 因为 luci-app-timewol 已不在当前 main，
+      # 必须从完整 Git 历史中找最后一个存在它的 commit。
       # ==========================================================
 
-      - name: Download VIKING TimeWOL source history
+      - name: Download VIKINGYFY package history
         shell: bash
         run: |
           set -euo pipefail
@@ -575,6 +582,9 @@ jobs:
           git clone \
             https://github.com/VIKINGYFY/packages.git \
             viking-pkgs
+
+          echo
+          echo "Searching VIKING history for luci-app-timewol..."
 
           TIMEWOL_COMMIT="$(
             git -C viking-pkgs \
@@ -587,10 +597,22 @@ jobs:
 
           if [ -z "${TIMEWOL_COMMIT}" ]; then
             echo
-            echo "ERROR: luci-app-timewol was not found in VIKING history."
+            echo "ERROR:"
+            echo "luci-app-timewol was not found anywhere in VIKING history."
+
+            echo
+            echo "Available related packages:"
+            find viking-pkgs \
+              -maxdepth 2 \
+              -type d \
+              -iname '*timewol*' \
+              -print ||
+              true
+
             exit 1
           fi
 
+          echo
           echo "TimeWOL historical commit:"
           echo "${TIMEWOL_COMMIT}"
 
@@ -599,10 +621,10 @@ jobs:
 
 
       # ==========================================================
-      # Import historical TimeWOL
+      # Extract historical TimeWOL
       # ==========================================================
 
-      - name: Import historical TimeWOL package
+      - name: Import historical TimeWOL
         shell: bash
         run: |
           set -euo pipefail
@@ -613,6 +635,7 @@ jobs:
           mkdir -p \
             sdk/feeds/luci/applications
 
+
           git -C viking-pkgs \
             archive \
             "${VIKING_TIMEWOL_COMMIT}" \
@@ -621,6 +644,7 @@ jobs:
             -x \
             -C sdk/feeds/luci/applications
 
+
           if [ ! -f sdk/feeds/luci/applications/luci-app-timewol/Makefile ]; then
             echo "ERROR: TimeWOL Makefile was not extracted."
             exit 1
@@ -628,7 +652,8 @@ jobs:
 
           echo
           echo "TimeWOL source:"
-          find sdk/feeds/luci/applications/luci-app-timewol \
+          find \
+            sdk/feeds/luci/applications/luci-app-timewol \
             -maxdepth 3 \
             -type f \
             -print |
@@ -636,7 +661,7 @@ jobs:
 
 
       # ==========================================================
-      # Install LuCI feed packages
+      # Install feeds
       # ==========================================================
 
       - name: Install SDK feed packages
@@ -647,8 +672,6 @@ jobs:
 
           ./scripts/feeds install -a
 
-          echo
-          echo "Checking custom LuCI package links:"
 
           for PACKAGE in \
             luci-app-filebrowser-go \
@@ -660,7 +683,7 @@ jobs:
             if [ -d "package/feeds/luci/${PACKAGE}" ]; then
               echo "OK: ${PACKAGE}"
             else
-              echo "ERROR: ${PACKAGE} was not installed into feeds."
+              echo "ERROR: ${PACKAGE} was not linked by feeds."
               exit 1
             fi
 
@@ -685,7 +708,7 @@ jobs:
 
 
       # ==========================================================
-      # Build FileBrowser Go
+      # Build FileBrowser
       # ==========================================================
 
       - name: Build FileBrowser Go
@@ -778,13 +801,15 @@ jobs:
             wc -l
           )"
 
+          echo
+          echo "SDK APK count: ${SDK_APK_COUNT}"
+
           if [ "${SDK_APK_COUNT}" -eq 0 ]; then
             echo "ERROR: SDK generated zero APK files."
             exit 1
           fi
 
 
-          # 删除已有的同名第三方 APK
           for PACKAGE in \
             filebrowser \
             luci-app-filebrowser-go \
@@ -797,11 +822,13 @@ jobs:
             luci-app-timewol \
             luci-i18n-timewol-zh-cn
           do
+
             find imagebuilder/packages \
               -maxdepth 1 \
               -type f \
               -name "${PACKAGE}-*.apk" \
               -delete
+
           done
 
 
@@ -812,8 +839,7 @@ jobs:
 
 
           echo
-          echo "ImageBuilder packages after SDK build:"
-
+          echo "ImageBuilder local APK:"
           find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
@@ -864,13 +890,14 @@ jobs:
 
           done
 
+
           if [ "${FAILED}" -ne 0 ]; then
             exit 1
           fi
 
 
       # ==========================================================
-      # Prepare custom files
+      # Custom files
       # ==========================================================
 
       - name: Prepare custom files
@@ -893,9 +920,11 @@ jobs:
             exit 1
           fi
 
+
           mkdir -p \
             imagebuilder/files/etc/config \
             imagebuilder/files/etc/uci-defaults
+
 
           if [ -d files ]; then
             rsync -a \
@@ -959,7 +988,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # DHCP / IPv6
+          # DHCP
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -1003,7 +1032,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # 默认中文
+          # Default Chinese
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -1020,7 +1049,7 @@ jobs:
 
 
       # ==========================================================
-      # Load custom packages
+      # User package list
       # ==========================================================
 
       - name: Load custom package list
@@ -1112,7 +1141,7 @@ jobs:
 
 
       # ==========================================================
-      # Verify required APK
+      # Verify all third-party APK
       # ==========================================================
 
       - name: Verify required APK packages
@@ -1166,7 +1195,7 @@ jobs:
 
 
       # ==========================================================
-      # ImageBuilder
+      # Build UEFI
       # ==========================================================
 
       - name: Build UEFI image
@@ -1190,10 +1219,6 @@ jobs:
 
           echo "OpenWrt: ${OPENWRT_VERSION}"
           echo "RootFS: ${ROOTFS_PARTSIZE} MB"
-
-          echo
-          echo "Packages:"
-          echo "${PACKAGES}"
 
           make image \
             PROFILE="generic" \
@@ -1236,8 +1261,7 @@ jobs:
             "${IMAGE}" \
             "${FINAL}"
 
-          echo "UEFI_IMAGE=${FINAL}" \
-            >> "${GITHUB_ENV}"
+          echo "UEFI_IMAGE=${FINAL}" >> "${GITHUB_ENV}"
 
 
       # ==========================================================
@@ -1410,7 +1434,7 @@ jobs:
             "- UEFI" \
             "- QCOW2" \
             "" \
-            "Additional SDK-built packages:" \
+            "## Additional SDK packages" \
             "" \
             "- FileBrowser Go" \
             "- VLMCSd" \
