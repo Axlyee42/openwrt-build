@@ -61,6 +61,7 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
           DISPATCH_VERSION: ${{ github.event.client_payload.openwrt_version }}
+
         run: |
           set -euo pipefail
 
@@ -115,6 +116,7 @@ jobs:
         shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
+
         run: |
           set -euo pipefail
 
@@ -154,6 +156,7 @@ jobs:
         shell: bash
         env:
           INPUT_LAN_IP: ${{ inputs.lan_ip }}
+
         run: |
           set -euo pipefail
 
@@ -182,6 +185,7 @@ jobs:
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
+
         run: |
           set -euo pipefail
 
@@ -250,7 +254,6 @@ jobs:
             -O "${ARCHIVE}"
 
           rm -rf imagebuilder
-
           mkdir -p imagebuilder
 
           tar \
@@ -355,7 +358,6 @@ jobs:
           set -euo pipefail
 
           rm -rf imagebuilder/packages
-
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
@@ -470,6 +472,7 @@ jobs:
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
+
         run: |
           set -euo pipefail
 
@@ -491,7 +494,6 @@ jobs:
               files/ \
               imagebuilder/files/
           fi
-
 
           # ------------------------------------------------------
           # network
@@ -548,7 +550,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # dhcp
+          # DHCP
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -607,7 +609,6 @@ jobs:
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
-
           echo
           echo "Custom files:"
           find imagebuilder/files \
@@ -616,7 +617,7 @@ jobs:
 
 
       # ==========================================================
-      # Load custom package list
+      # Load custom packages
       # ==========================================================
 
       - name: Load custom package list
@@ -642,7 +643,7 @@ jobs:
 
 
       # ==========================================================
-      # Final package list
+      # Build final package list
       # ==========================================================
 
       - name: Build final package list
@@ -659,7 +660,13 @@ jobs:
             missing-packages.txt
 
 
+          # ------------------------------------------------------
           # 官方 OpenWrt 包
+          #
+          # 注意：
+          # 不再加入 ipv6 / kmod-ipv6。
+          # ------------------------------------------------------
+
           printf '%s\n' \
             "luci" \
             "luci-i18n-base-zh-cn" \
@@ -683,13 +690,16 @@ jobs:
             >> selected-packages.txt
 
 
+          # ------------------------------------------------------
           # 用户清单
+          # ------------------------------------------------------
+
           while IFS= read -r PACKAGE; do
             [ -z "${PACKAGE}" ] && continue
 
             case "${PACKAGE}" in
               ipv6|kmod-ipv6)
-                echo "Ignoring invalid package: ${PACKAGE}"
+                echo "Ignoring unavailable package: ${PACKAGE}"
                 echo "${PACKAGE}" >> missing-packages.txt
                 ;;
               *)
@@ -708,18 +718,15 @@ jobs:
           # 当前没有本地 APK 的可选包
           # ------------------------------------------------------
 
-          OPTIONAL_PACKAGES="
-luci-app-filebrowser-go
-luci-i18n-filebrowser-go-zh-cn
-luci-app-vlmcsd
-luci-i18n-vlmcsd-zh-cn
-luci-app-autoreboot
-luci-i18n-autoreboot-zh-cn
-luci-i18n-timewol-zh-cn
-"
-
-
-          for PACKAGE in ${OPTIONAL_PACKAGES}; do
+          for PACKAGE in \
+            luci-app-filebrowser-go \
+            luci-i18n-filebrowser-go-zh-cn \
+            luci-app-vlmcsd \
+            luci-i18n-vlmcsd-zh-cn \
+            luci-app-autoreboot \
+            luci-i18n-autoreboot-zh-cn \
+            luci-i18n-timewol-zh-cn
+          do
 
             if ! grep -Fxq "${PACKAGE}" selected-packages.txt; then
               continue
@@ -789,21 +796,19 @@ luci-i18n-timewol-zh-cn
         run: |
           set -euo pipefail
 
-          REQUIRED_PACKAGES="
-luci-theme-aurora
-luci-app-aurora-config
-luci-i18n-aurora-config-zh-cn
-bandix
-luci-app-bandix
-luci-i18n-bandix-zh-cn
-luci-app-run
-luci-app-openclash
-"
-
-
           FAILED=0
 
-          for PACKAGE in ${REQUIRED_PACKAGES}; do
+          for PACKAGE in \
+            luci-theme-aurora \
+            luci-app-aurora-config \
+            luci-i18n-aurora-config-zh-cn \
+            bandix \
+            luci-app-bandix \
+            luci-i18n-bandix-zh-cn \
+            luci-app-run \
+            luci-app-openclash
+          do
+
             if find imagebuilder/packages \
               -maxdepth 1 \
               -type f \
@@ -817,6 +822,7 @@ luci-app-openclash
               echo "ERROR: Required APK missing: ${PACKAGE}"
               FAILED=1
             fi
+
           done
 
           if [ "${FAILED}" -ne 0 ]; then
@@ -825,7 +831,7 @@ luci-app-openclash
 
 
       # ==========================================================
-      # Build
+      # Build image
       # ==========================================================
 
       - name: Build UEFI image
@@ -847,8 +853,12 @@ luci-app-openclash
           echo "Building OpenWrt"
           echo "=========================================="
 
-          echo "OpenWrt: ${OPENWRT_VERSION}"
-          echo "RootFS: ${ROOTFS_PARTSIZE} MB"
+          echo "OpenWrt:"
+          echo "${OPENWRT_VERSION}"
+
+          echo
+          echo "RootFS:"
+          echo "${ROOTFS_PARTSIZE} MB"
 
           echo
           echo "Packages:"
@@ -864,7 +874,7 @@ luci-app-openclash
 
 
       # ==========================================================
-      # UEFI
+      # UEFI image
       # ==========================================================
 
       - name: Prepare UEFI image
@@ -950,7 +960,7 @@ luci-app-openclash
 
 
       # ==========================================================
-      # Build info
+      # Build information
       # ==========================================================
 
       - name: Create build information
@@ -1033,13 +1043,14 @@ luci-app-openclash
 
 
       # ==========================================================
-      # GitHub Release
+      # Release
       # ==========================================================
 
       - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         run: |
           set -euo pipefail
 
