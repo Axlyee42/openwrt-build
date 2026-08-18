@@ -4,15 +4,20 @@ set -euo pipefail
 
 # ==========================================================
 # OpenWrt 25.12.x
-# Custom packages
+# Custom Packages
 #
-# 本脚本只负责：
+# 本脚本负责：
 #   1. 添加第三方 package
-#   2. 不负责生成 .config
-#   3. 不负责验证 CONFIG_PACKAGE
-#   4. 不因为可选第三方包缺失而误判整个编译失败
+#   2. 添加第三方 LuCI App
+#   3. 添加第三方 App 所需要的后端依赖
 #
-# OpenWrt 25.12+ 使用 APK
+# 不负责：
+#   - 生成 .config
+#   - 设置 CONFIG_PACKAGE_xxx
+#   - 设置网络
+#   - 设置默认语言
+#
+# 这些由 build-x86-64.yml 负责
 # ==========================================================
 
 
@@ -20,22 +25,29 @@ OPENWRT_DIR="${OPENWRT_DIR:-$(pwd)}"
 
 cd "${OPENWRT_DIR}"
 
-
 CUSTOM_DIR="${OPENWRT_DIR}/package/custom"
 
 mkdir -p "${CUSTOM_DIR}"
+
+TMP_DIR="${RUNNER_TEMP:-/tmp}/openwrt-custom-packages"
+
+rm -rf "${TMP_DIR}"
+
+mkdir -p "${TMP_DIR}"
 
 
 echo
 echo "=========================================="
 echo "OpenWrt Custom Packages"
 echo "=========================================="
-echo
+
 echo "OpenWrt directory:"
 echo "${OPENWRT_DIR}"
+
 echo
 echo "Custom package directory:"
 echo "${CUSTOM_DIR}"
+
 echo
 
 
@@ -50,8 +62,11 @@ clone_repo() {
 
     echo
     echo "------------------------------------------"
-    echo "Installing: ${DEST}"
-    echo "Source: ${URL}"
+    echo "Clone:"
+    echo "${URL}"
+    echo
+    echo "Destination:"
+    echo "${DEST}"
     echo "------------------------------------------"
 
     rm -rf "${DEST}"
@@ -60,7 +75,6 @@ clone_repo() {
         --depth=1 \
         "${URL}" \
         "${DEST}"
-
 }
 
 
@@ -71,14 +85,16 @@ copy_package() {
 
     echo
     echo "------------------------------------------"
-    echo "Copying package"
-    echo "Source: ${SRC}"
-    echo "Destination: ${DEST}"
+    echo "Copy package:"
+    echo "${SRC}"
+    echo
+    echo "Destination:"
+    echo "${DEST}"
     echo "------------------------------------------"
 
     if [ ! -d "${SRC}" ]; then
 
-        echo "WARNING: source directory does not exist:"
+        echo "WARNING: package directory not found:"
         echo "${SRC}"
 
         return 0
@@ -90,25 +106,11 @@ copy_package() {
     cp -a \
         "${SRC}" \
         "${DEST}"
-
 }
 
 
 # ==========================================================
-# 临时第三方仓库
-# ==========================================================
-
-TMP_DIR="${RUNNER_TEMP:-/tmp}/openwrt-custom-packages"
-
-rm -rf "${TMP_DIR}"
-
-mkdir -p "${TMP_DIR}"
-
-
-# ==========================================================
 # 1. Aurora
-#
-# luci-theme-aurora
 # ==========================================================
 
 clone_repo \
@@ -118,8 +120,6 @@ clone_repo \
 
 # ==========================================================
 # 2. Aurora Config
-#
-# luci-app-aurora-config
 # ==========================================================
 
 clone_repo \
@@ -129,8 +129,6 @@ clone_repo \
 
 # ==========================================================
 # 3. Shadcn
-#
-# luci-theme-shadcn
 # ==========================================================
 
 clone_repo \
@@ -140,8 +138,6 @@ clone_repo \
 
 # ==========================================================
 # 4. OpenClash
-#
-# luci-app-openclash
 # ==========================================================
 
 clone_repo \
@@ -159,15 +155,7 @@ clone_repo \
 
 
 # ==========================================================
-# 6. Bandix
-#
-# Backend:
-#   openwrt-bandix
-#
-# LuCI:
-#   luci-app-bandix
-#
-# 两个项目需要配套
+# 6. Bandix Backend
 # ==========================================================
 
 clone_repo \
@@ -175,24 +163,17 @@ clone_repo \
     "${CUSTOM_DIR}/openwrt-bandix"
 
 
+# ==========================================================
+# 7. Bandix LuCI
+# ==========================================================
+
 clone_repo \
     "https://github.com/timsaya/luci-app-bandix.git" \
     "${CUSTOM_DIR}/luci-app-bandix"
 
 
 # ==========================================================
-# 7. sbwml/openwrt_pkgs
-#
-# 用于获取：
-#
-# luci-app-filebrowser-go
-# luci-app-vlmcsd
-# luci-app-timewol
-# luci-app-autoreboot
-#
-# 如果上游目录结构发生变化：
-# 只输出 WARNING
-# 不直接让整个编译失败
+# 8. 下载 sbwml/openwrt_pkgs
 # ==========================================================
 
 echo
@@ -207,31 +188,131 @@ git clone \
     "${TMP_DIR}/openwrt_pkgs"
 
 
+SBWML="${TMP_DIR}/openwrt_pkgs"
+
+
 # ==========================================================
-# 8. FileBrowser Go
+# 9. 查找 FileBrowser 后端
+#
+# luci-app-filebrowser-go
+#        ↓
+# filebrowser
 # ==========================================================
 
 echo
 echo "=========================================="
-echo "FileBrowser Go"
+echo "FileBrowser"
 echo "=========================================="
 
 
-if [ -d "${TMP_DIR}/openwrt_pkgs/luci-app-filebrowser-go" ]; then
+FILEBROWSER_FOUND=""
+
+
+for DIR in \
+    "${SBWML}/filebrowser" \
+    "${SBWML}/package/filebrowser" \
+    "${SBWML}/packages/filebrowser" \
+    "${SBWML}/luci-app-filebrowser-go/../filebrowser"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        FILEBROWSER_FOUND="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${FILEBROWSER_FOUND}" ]; then
+
+    echo "Found filebrowser:"
+    echo "${FILEBROWSER_FOUND}"
 
     copy_package \
-        "${TMP_DIR}/openwrt_pkgs/luci-app-filebrowser-go" \
-        "${CUSTOM_DIR}/luci-app-filebrowser-go"
+        "${FILEBROWSER_FOUND}" \
+        "${CUSTOM_DIR}/filebrowser"
 
 else
 
-    echo "WARNING: luci-app-filebrowser-go was not found."
+    echo
+    echo "ERROR: filebrowser backend was not found."
+    echo
+    echo "Searching repository..."
+    echo
+
+    find "${SBWML}" \
+        -type f \
+        -name Makefile \
+        -print \
+        | grep -i filebrowser \
+        || true
+
+    echo
+    echo "The package luci-app-filebrowser-go depends on:"
+    echo "filebrowser"
+    echo
+    echo "Build cannot continue safely."
+
+    exit 1
 
 fi
 
 
 # ==========================================================
-# 9. VLMCSd
+# 10. FileBrowser LuCI
+# ==========================================================
+
+echo
+echo "=========================================="
+echo "luci-app-filebrowser-go"
+echo "=========================================="
+
+
+FILEBROWSER_LUCI=""
+
+
+for DIR in \
+    "${SBWML}/luci-app-filebrowser-go" \
+    "${SBWML}/package/luci-app-filebrowser-go" \
+    "${SBWML}/packages/luci-app-filebrowser-go"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        FILEBROWSER_LUCI="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${FILEBROWSER_LUCI}" ]; then
+
+    copy_package \
+        "${FILEBROWSER_LUCI}" \
+        "${CUSTOM_DIR}/luci-app-filebrowser-go"
+
+else
+
+    echo
+    echo "ERROR: luci-app-filebrowser-go was not found."
+
+    exit 1
+
+fi
+
+
+# ==========================================================
+# 11. 查找 VLMCSd 后端
+#
+# luci-app-vlmcsd
+#        ↓
+#      vlmcsd
 # ==========================================================
 
 echo
@@ -240,29 +321,110 @@ echo "VLMCSd"
 echo "=========================================="
 
 
-if [ -d "${TMP_DIR}/openwrt_pkgs/luci-app-vlmcsd" ]; then
+VLMCS_FOUND=""
+
+
+for DIR in \
+    "${SBWML}/vlmcsd" \
+    "${SBWML}/package/vlmcsd" \
+    "${SBWML}/packages/vlmcsd" \
+    "${SBWML}/luci-app-vlmcsd/../vlmcsd"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        VLMCS_FOUND="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${VLMCS_FOUND}" ]; then
+
+    echo "Found vlmcsd:"
+    echo "${VLMCS_FOUND}"
 
     copy_package \
-        "${TMP_DIR}/openwrt_pkgs/luci-app-vlmcsd" \
-        "${CUSTOM_DIR}/luci-app-vlmcsd"
+        "${VLMCS_FOUND}" \
+        "${CUSTOM_DIR}/vlmcsd"
 
 else
 
-    echo "WARNING: luci-app-vlmcsd was not found."
+    echo
+    echo "ERROR: vlmcsd backend was not found."
+    echo
+    echo "Searching repository..."
+    echo
+
+    find "${SBWML}" \
+        -type f \
+        -name Makefile \
+        -print \
+        | grep -Ei 'vlmcs|kms' \
+        || true
+
+    echo
+    echo "The package luci-app-vlmcsd depends on:"
+    echo "vlmcsd"
+    echo
+    echo "Build cannot continue safely."
+
+    exit 1
 
 fi
 
 
 # ==========================================================
-# 10. Timewol
-#
-# 不同版本仓库可能存在：
-#
-# luci-app-timewol
-#
-# 或：
-#
-# luci-app-control-timewol
+# 12. VLMCSd LuCI
+# ==========================================================
+
+echo
+echo "=========================================="
+echo "luci-app-vlmcsd"
+echo "=========================================="
+
+
+VLMCS_LUCI=""
+
+
+for DIR in \
+    "${SBWML}/luci-app-vlmcsd" \
+    "${SBWML}/package/luci-app-vlmcsd" \
+    "${SBWML}/packages/luci-app-vlmcsd"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        VLMCS_LUCI="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${VLMCS_LUCI}" ]; then
+
+    copy_package \
+        "${VLMCS_LUCI}" \
+        "${CUSTOM_DIR}/luci-app-vlmcsd"
+
+else
+
+    echo
+    echo "ERROR: luci-app-vlmcsd was not found."
+
+    exit 1
+
+fi
+
+
+# ==========================================================
+# 13. Timewol
 # ==========================================================
 
 echo
@@ -271,19 +433,34 @@ echo "Timewol"
 echo "=========================================="
 
 
-if [ -d "${TMP_DIR}/openwrt_pkgs/luci-app-timewol" ]; then
+TIMEWOL_FOUND=""
+
+
+for DIR in \
+    "${SBWML}/luci-app-timewol" \
+    "${SBWML}/package/luci-app-timewol" \
+    "${SBWML}/packages/luci-app-timewol" \
+    "${SBWML}/luci-app-control-timewol" \
+    "${SBWML}/package/luci-app-control-timewol" \
+    "${SBWML}/packages/luci-app-control-timewol"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        TIMEWOL_FOUND="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${TIMEWOL_FOUND}" ]; then
 
     copy_package \
-        "${TMP_DIR}/openwrt_pkgs/luci-app-timewol" \
+        "${TIMEWOL_FOUND}" \
         "${CUSTOM_DIR}/luci-app-timewol"
-
-
-elif [ -d "${TMP_DIR}/openwrt_pkgs/luci-app-control-timewol" ]; then
-
-    copy_package \
-        "${TMP_DIR}/openwrt_pkgs/luci-app-control-timewol" \
-        "${CUSTOM_DIR}/luci-app-timewol"
-
 
 else
 
@@ -293,7 +470,7 @@ fi
 
 
 # ==========================================================
-# 11. Autoreboot
+# 14. Autoreboot
 # ==========================================================
 
 echo
@@ -302,23 +479,41 @@ echo "Autoreboot"
 echo "=========================================="
 
 
-if [ -d "${TMP_DIR}/openwrt_pkgs/luci-app-autoreboot" ]; then
+AUTOREBOOT_FOUND=""
+
+
+for DIR in \
+    "${SBWML}/luci-app-autoreboot" \
+    "${SBWML}/package/luci-app-autoreboot" \
+    "${SBWML}/packages/luci-app-autoreboot"
+do
+
+    if [ -d "${DIR}" ] && [ -f "${DIR}/Makefile" ]; then
+
+        AUTOREBOOT_FOUND="${DIR}"
+
+        break
+
+    fi
+
+done
+
+
+if [ -n "${AUTOREBOOT_FOUND}" ]; then
 
     copy_package \
-        "${TMP_DIR}/openwrt_pkgs/luci-app-autoreboot" \
+        "${AUTOREBOOT_FOUND}" \
         "${CUSTOM_DIR}/luci-app-autoreboot"
 
 else
 
-    echo "WARNING: luci-app-autoreboot was not found."
+    echo "WARNING: Autoreboot package was not found."
 
 fi
 
 
 # ==========================================================
-# 12. 清理第三方源码中的 Git 信息
-#
-# 减少最终构建目录体积
+# 15. 清理 Git
 # ==========================================================
 
 echo
@@ -335,40 +530,94 @@ find "${CUSTOM_DIR}" \
 
 
 # ==========================================================
-# 13. 显示最终 package
+# 16. 检查所有 Makefile
 # ==========================================================
 
 echo
 echo "=========================================="
-echo "Installed custom packages"
+echo "Installed Custom Packages"
 echo "=========================================="
 
 
 find "${CUSTOM_DIR}" \
     -maxdepth 2 \
     -type f \
-    -name "Makefile" \
+    -name Makefile \
     -print \
     | sort
 
 
-echo
-echo "=========================================="
-echo "Custom package tree"
-echo "=========================================="
-
-
-find "${CUSTOM_DIR}" \
-    -maxdepth 2 \
-    -type d \
-    | sort
-
+# ==========================================================
+# 17. 最终依赖检查
+#
+# 重点确认：
+#
+# filebrowser
+# vlmcsd
+# ==========================================================
 
 echo
 echo "=========================================="
-echo "Custom packages completed"
+echo "Checking required backend packages"
 echo "=========================================="
-echo
 
+
+if [ ! -f "${CUSTOM_DIR}/filebrowser/Makefile" ]; then
+
+    echo "ERROR: filebrowser Makefile is missing."
+
+    exit 1
+
+fi
+
+
+if [ ! -f "${CUSTOM_DIR}/vlmcsd/Makefile" ]; then
+
+    echo "ERROR: vlmcsd Makefile is missing."
+
+    exit 1
+
+fi
+
+
+if [ ! -f "${CUSTOM_DIR}/luci-app-filebrowser-go/Makefile" ]; then
+
+    echo "ERROR: luci-app-filebrowser-go Makefile is missing."
+
+    exit 1
+
+fi
+
+
+if [ ! -f "${CUSTOM_DIR}/luci-app-vlmcsd/Makefile" ]; then
+
+    echo "ERROR: luci-app-vlmcsd Makefile is missing."
+
+    exit 1
+
+fi
+
+
+echo
+echo "OK: filebrowser"
+echo "OK: luci-app-filebrowser-go"
+echo "OK: vlmcsd"
+echo "OK: luci-app-vlmcsd"
+
+
+# ==========================================================
+# 18. 完成
+# ==========================================================
+
+echo
+echo "=========================================="
+echo "Custom package preparation completed"
+echo "=========================================="
+
+echo
+echo "Custom packages are located at:"
+echo "${CUSTOM_DIR}"
+
+echo
 
 exit 0
