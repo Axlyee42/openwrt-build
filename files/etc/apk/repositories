@@ -1,0 +1,12 @@
+https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/base/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/luci/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/packages/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/routing/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/telephony/packages.adb
+https://downloads.openwrt.org/releases/25.12.5/packages/x86_64/video/packages.adb
+
+https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_packages/packages.adb
+https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_luci/packages.adb
+
+https://openwrt.eamonxg.fun/packages/packages.adb
