@@ -201,10 +201,6 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${IMAGEBUILDER_DIR}"
-          # These four LuCI translation packages are not present in the
-          # current OpenWrt 25.12/wukongdaily x86 APK repositories. Keep them
-          # out of the ImageBuilder world set rather than making the build
-          # fail after the package index has been generated.
           BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
           PACKAGES="$(printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${PACKAGES}"
@@ -240,3 +236,25 @@ jobs:
           name: openwrt-x86-64-${{ env.FILESYSTEM }}
           path: release/
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ success() && github.event_name == 'workflow_dispatch' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64-build-${{ github.run_number }}
+          name: OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 Build ${{ github.run_number }}
+          body: |
+            Automated OpenWrt x86-64 build.
+
+            - Version: ${{ env.OPENWRT_VERSION }}
+            - Filesystem: ${{ env.FILESYSTEM }}
+            - Rootfs size: ${{ env.ROOTFS_SIZE }}
+            - UEFI: ${{ env.BUILD_UEFI }}
+            - QCOW2: ${{ env.BUILD_QCOW2 }}
+            - Git commit: ${{ github.sha }}
+            - Workflow run: ${{ github.run_number }}
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+          prerelease: false
