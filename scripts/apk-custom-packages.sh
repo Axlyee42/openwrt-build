@@ -1,90 +1,46 @@
 #!/usr/bin/env bash
 #
-# OpenWrt 25.12.x x86-64 third-party APK integration.
+# OpenWrt x86-64 ImageBuilder third-party APK packages
 #
-# Modelled after wukongdaily/ImmortalWrt-ImageBuilder:
-#   1. clone the prebuilt APK/run repository
-#   2. unpack .run bundles
-#   3. collect x86 APKs
-#   4. keep only the newest version of each requested package
-#   5. place them in ImageBuilder/packages
+# Responsibilities:
+#   1. Clone the prebuilt x86 APK repository.
+#   2. Select the requested third-party packages.
+#   3. Deduplicate multiple versions of the same package.
+#   4. Copy the selected APKs into ImageBuilder/packages/.
+#   5. Write the package names for the workflow.
 #
-# The official OpenWrt 25.12 ImageBuilder automatically runs:
-#   apk mkndx ... packages.adb
-# when make image is executed. We therefore do NOT hand-create
-# packages.adb here.
+# This script does NOT:
+#   - compile packages
+#   - modify OpenWrt .config
+#   - run make image
+#   - modify LAN configuration
 #
 
 set -Eeuo pipefail
 
 IMAGEBUILDER_DIR="${IMAGEBUILDER_DIR:?IMAGEBUILDER_DIR is required}"
-
 APK_REPO="${APK_REPO:-https://github.com/wukongdaily/apk.git}"
-APK_BRANCH="${APK_BRANCH:-master}"
+APK_TMP="${RUNNER_TEMP:-/tmp}/wukongdaily-apk"
 
-WORK="${RUNNER_TEMP:-/tmp}/openwrt-third-party-apk"
-EXTRA="${WORK}/extra-packages"
-UNPACK="${EXTRA}/temp-unpack"
-PACKAGES_DIR="${IMAGEBUILDER_DIR}/packages"
+PACKAGE_DIR="${IMAGEBUILDER_DIR}/packages"
+PACKAGE_LIST="${IMAGEBUILDER_DIR}/.third-party-packages"
 
-rm -rf "${WORK}"
-mkdir -p "${EXTRA}" "${PACKAGES_DIR}"
+mkdir -p "${PACKAGE_DIR}"
 
-echo "============================================================"
-echo "Downloading third-party APK repository"
-echo "Repository: ${APK_REPO}"
-echo "Branch    : ${APK_BRANCH}"
-echo "============================================================"
+rm -f "${PACKAGE_LIST}"
+rm -rf "${APK_TMP}"
 
-git clone \
-  --depth=1 \
-  --single-branch \
-  --branch="${APK_BRANCH}" \
-  "${APK_REPO}" \
-  "${WORK}/repo"
-
-SRC="${WORK}/repo/run/x86"
-test -d "${SRC}" || {
-  echo "ERROR: ${SRC} does not exist."
-  exit 1
+log() {
+    printf '\033[1;32m[APK] %s\033[0m\n' "$*"
 }
 
-cp -a "${SRC}/." "${EXTRA}/"
+die() {
+    printf '\033[1;31m[APK] ERROR: %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
-rm -rf "${UNPACK}"
-mkdir -p "${UNPACK}"
-
-echo
-echo "Unpacking .run bundles..."
-
-shopt -s nullglob
-for run_file in "${EXTRA}"/*.run; do
-  echo "  -> $(basename "${run_file}")"
-  sh "${run_file}" --target "${UNPACK}" --noexec
-done
-
-# Collect every x86 APK supplied directly or by a .run bundle.
-mapfile -d '' ALL_APKS < <(
-  find "${EXTRA}" "${UNPACK}" \
-    -type f \
-    -name '*.apk' \
-    ! -path "${PACKAGES_DIR}/*" \
-    -print0
-)
-
-if (( ${#ALL_APKS[@]} == 0 )); then
-  echo "ERROR: No x86 APK files were found."
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Requested third-party package list.
-#
-# This is the package list from the user's previously verified x86 APK set.
-# vmlinux-btf is deliberately excluded: it is a kernel/build artifact,
-# not a normal third-party package to install through PACKAGES.
-# ---------------------------------------------------------------------------
-
+# Package names intentionally have no version suffix.
+# Dependencies which are also third-party packages are included explicitly.
 read -r -d '' REQUESTED_PACKAGES <<'EOF' || true
 bandix
 chinadns-ng
@@ -97,7 +53,6 @@ geoview
 hysteria
 ipt2socks
 lua-neturl
-
 luci-app-argon-config
 luci-app-aurora-config
 luci-app-bandix
@@ -117,7 +72,6 @@ luci-app-run
 luci-app-ssr-plus
 luci-app-store
 luci-app-taskplan
-
 luci-i18n-argon-config-zh-cn
 luci-i18n-aurora-config-zh-cn
 luci-i18n-bandix-zh-cn
@@ -134,12 +88,10 @@ luci-i18n-quickstart-zh-cn
 luci-i18n-rtp2httpd-zh-cn
 luci-i18n-ssr-plus-zh-cn
 luci-i18n-taskplan-zh-cn
-
 luci-lib-taskd
 luci-lib-xterm
 luci-theme-argon
 luci-theme-aurora
-
 lucky
 mosdns
 naiveproxy
@@ -147,13 +99,11 @@ nikki
 quickfile
 quickstart
 rtp2httpd
-
 shadowsocksr-libev-ssr-check
 shadowsocksr-libev-ssr-local
 shadowsocksr-libev-ssr-nat
 shadowsocksr-libev-ssr-redir
 shadowsocksr-libev-ssr-server
-
 sing-box
 taskd
 tcping
@@ -163,117 +113,124 @@ v2ray-geosite
 xray-core
 EOF
 
-# ---------------------------------------------------------------------------
-# Extract package metadata from APK .PKGINFO.
-# ---------------------------------------------------------------------------
+log "Cloning ${APK_REPO}"
+git clone --depth=1 "${APK_REPO}" "${APK_TMP}"
 
-declare -A BEST_FILE=()
-declare -A BEST_VER=()
+SRC="${APK_TMP}/run/x86"
+test -d "${SRC}" || die "APK repository does not contain run/x86"
 
-get_pkginfo() {
-  local file="$1"
-  tar -xOf "${file}" .PKGINFO 2>/dev/null || \
-  tar -xOf "${file}" .PKGINFO.gz 2>/dev/null || true
-}
+# Temporary staging area. We deliberately do not copy every APK into the
+# final repository because the source repository contains multiple versions
+# of some packages.
+STAGE="${APK_TMP}/selected"
+mkdir -p "${STAGE}"
 
-echo
-echo "Indexing discovered APKs..."
-
-for apk in "${ALL_APKS[@]}"; do
-  info="$(get_pkginfo "${apk}")"
-  pkg="$(printf '%s\n' "${info}" | awk -F= '$1=="pkgname"{print $2; exit}')"
-  ver="$(printf '%s\n' "${info}" | awk -F= '$1=="pkgver"{print $2; exit}')"
-
-  # Fallback to filename when .PKGINFO is unavailable.
-  if [[ -z "${pkg}" ]]; then
-    base="$(basename "${apk}" .apk)"
-    pkg="${base%%-[0-9]*}"
-  fi
-
-  if [[ -z "${ver}" ]]; then
-    ver="$(basename "${apk}" .apk | sed "s/^${pkg}-//")"
-  fi
-
-  [[ -n "${pkg}" ]] || continue
-
-  if [[ -z "${BEST_FILE[$pkg]:-}" ]]; then
-    BEST_FILE["${pkg}"]="${apk}"
-    BEST_VER["${pkg}"]="${ver}"
-    continue
-  fi
-
-  old="${BEST_VER[$pkg]}"
-
-  # apk's version comparator is preferable when available.
-  if command -v apk >/dev/null 2>&1; then
-    if apk version --test "${ver}" "${old}" 2>/dev/null | grep -q '^>'; then
-      BEST_FILE["${pkg}"]="${apk}"
-      BEST_VER["${pkg}"]="${ver}"
-    fi
-  else
-    if [[ "$(printf '%s\n' "${old}" "${ver}" | sort -V | tail -n1)" == "${ver}" \
-          && "${ver}" != "${old}" ]]; then
-      BEST_FILE["${pkg}"]="${apk}"
-      BEST_VER["${pkg}"]="${ver}"
-    fi
-  fi
-done
-
-# Copy exactly one newest APK for every requested package.
-rm -f "${PACKAGES_DIR}"/*.apk
-
-MISSING=()
-CUSTOM_PACKAGES=""
+log "Selecting requested packages"
 
 for pkg in ${REQUESTED_PACKAGES}; do
-  file="${BEST_FILE[$pkg]:-}"
+    candidates=()
 
-  if [[ -z "${file}" ]]; then
-    MISSING+=("${pkg}")
-    continue
-  fi
+    while IFS= read -r -d '' apk; do
+        pkgname="$(
+            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
+              awk -F' = ' '$1 == "pkgname" {print $2; exit}'
+        )"
 
-  cp -f "${file}" "${PACKAGES_DIR}/"
-  CUSTOM_PACKAGES+=" ${pkg}"
+        [[ "${pkgname}" == "${pkg}" ]] &&
+            candidates+=("${apk}")
+    done < <(
+        find "${SRC}" \
+            -type f \
+            -name '*.apk' \
+            -print0
+    )
+
+    if (( ${#candidates[@]} == 0 )); then
+        echo "ERROR: requested APK package is missing: ${pkg}" >&2
+        echo
+        echo "Available package names:"
+        find "${SRC}" \
+            -type f \
+            -name '*.apk' \
+            -print0 |
+        while IFS= read -r -d '' apk; do
+            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
+                awk -F' = ' '$1 == "pkgname" {print $2; exit}'
+        done |
+        sort -u
+        exit 1
+    fi
+
+    # Extract package version from .PKGINFO and select the greatest version.
+    best=""
+    best_ver=""
+
+    for apk in "${candidates[@]}"; do
+        ver="$(
+            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
+              awk -F' = ' '$1 == "pkgver" {print $2; exit}'
+        )"
+
+        if [[ -z "${best}" ]]; then
+            best="${apk}"
+            best_ver="${ver}"
+            continue
+        fi
+
+        # OpenWrt/Alpine-style package versions are close enough to version
+        # sorting for this repository. If sort cannot establish an order,
+        # keep the first candidate.
+        if [[ -n "${ver}" && -n "${best_ver}" ]]; then
+            newer="$(
+                printf '%s\n%s\n' "${best_ver}" "${ver}" |
+                  sort -V |
+                  tail -n 1
+            )"
+
+            if [[ "${newer}" == "${ver}" && "${ver}" != "${best_ver}" ]]; then
+                best="${apk}"
+                best_ver="${ver}"
+            fi
+        fi
+    done
+
+    cp -f "${best}" "${STAGE}/${pkg}.apk"
+
+    log "${pkg} -> $(basename "${best}")"
 done
 
-if (( ${#MISSING[@]} )); then
-  echo
-  echo "ERROR: requested third-party APK packages are missing."
-  echo
-  printf 'Missing packages:\n'
-  printf '  %s\n' "${MISSING[@]}"
-  echo
-  echo "This normally means the package is not currently supplied by"
-  echo "wukongdaily/apk under run/x86. No fake package entry is created."
-  echo
-  echo "Available discovered package names:"
-  printf '%s\n' "${!BEST_FILE[@]}" | sort
-  exit 1
-fi
+# Clean the ImageBuilder local repository and install exactly one version
+# of every requested third-party package.
+find "${PACKAGE_DIR}" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.apk' \
+    -delete
 
-CUSTOM_PACKAGES="$(printf '%s' "${CUSTOM_PACKAGES}" | xargs)"
+cp -f "${STAGE}"/*.apk "${PACKAGE_DIR}/"
 
-echo
-echo "============================================================"
-echo "Selected third-party APKs"
-echo "============================================================"
+# This file is consumed by the next workflow step. One package name per line.
+printf '%s\n' ${REQUESTED_PACKAGES} |
+    sort -u > "${PACKAGE_LIST}"
 
-for pkg in ${CUSTOM_PACKAGES}; do
-  printf '  %-42s %s\n' \
-    "${pkg}" \
-    "${BEST_VER[$pkg]}"
-done
+# Never let old/generated package indexes survive after replacing APKs.
+rm -f \
+    "${PACKAGE_DIR}/packages.adb" \
+    "${PACKAGE_DIR}/Packages" \
+    "${PACKAGE_DIR}/Packages.gz" \
+    "${PACKAGE_DIR}/Packages.sig"
+
+log "Third-party APK preparation completed."
 
 echo
-echo "Third-party APK count: $(printf '%s\n' ${CUSTOM_PACKAGES} | wc -l)"
+echo "Selected packages:"
+cat "${PACKAGE_LIST}"
 
-# Export for the next GitHub Actions step.
-if [[ -n "${GITHUB_ENV:-}" ]]; then
-  {
-    printf 'CUSTOM_PACKAGES=%s\n' "${CUSTOM_PACKAGES}"
-  } >> "${GITHUB_ENV}"
-fi
-
-# Also export for callers that source this script.
-export CUSTOM_PACKAGES
+echo
+echo "Selected APK files:"
+find "${PACKAGE_DIR}" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.apk' \
+    -printf '%f\n' |
+    sort
