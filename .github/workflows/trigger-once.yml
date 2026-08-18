@@ -12,7 +12,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-24.04
     steps:
-      - name: Dispatch build workflow
+      - name: Dispatch 4G formal build
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -21,20 +21,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --ref main \
             -f openwrt_version=25.12.5 \
-            -f lan_ip=192.168.1.2 \
-            -f rootfs_size=1G \
+            -f rootfs_size=4G \
             -f filesystem=ext4 \
-            -f qcow2=true
-
-      - name: Remove one-shot trigger
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" cleanup
-          cd cleanup
-          git rm .github/workflows/trigger-once.yml
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "ci: remove one-shot trigger"
-          git push
+            -f qcow2=true \
+            -f publish=true
