@@ -39,13 +39,13 @@ on:
         type: boolean
 
       qcow2:
-        description: "生成 QCOW2 镜像"
+        description: "生成 QCOW2 虚拟机镜像"
         required: true
         default: true
         type: boolean
 
       vmdk:
-        description: "生成 VMDK 镜像"
+        description: "生成 VMDK VMware 镜像"
         required: true
         default: false
         type: boolean
@@ -63,18 +63,18 @@ permissions:
   contents: write
 
 env:
-  OPENWRT_BRANCH: "25.12"
+  DEFAULT_OPENWRT_BRANCH: "25.12"
   DEFAULT_LAN_IP: "192.168.1.2"
   DEFAULT_ROOTFS_SIZE: "4G"
 
 jobs:
 
   # ==========================================================
-  # 检查 OpenWrt 25.12.x 最新版本
+  # 检查 OpenWrt 最新 25.12.x
   # ==========================================================
 
   check-update:
-    name: Check OpenWrt 25.12.x version
+    name: Check OpenWrt version
     runs-on: ubuntu-24.04
 
     outputs:
@@ -93,7 +93,7 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo "Checking OpenWrt 25.12.x"
+          echo "Checking latest OpenWrt 25.12.x"
           echo "=========================================="
 
           LATEST_VERSION="$(
@@ -101,17 +101,19 @@ jobs:
               --tags \
               --refs \
               https://github.com/openwrt/openwrt.git |
-            sed -n 's#.*refs/tags/v\(25\.12\.[0-9][0-9]*\)$#\1#p' |
+            sed -n \
+              -E \
+              's#.*refs/tags/v(25\.12\.[0-9]+)$#\1#p' |
             sort -V |
             tail -n 1
           )"
 
           if [ -z "${LATEST_VERSION}" ]; then
-            echo "ERROR: Cannot determine latest OpenWrt 25.12.x version."
+            echo "ERROR: Cannot determine latest OpenWrt 25.12.x"
             exit 1
           fi
 
-          echo "Latest OpenWrt version: ${LATEST_VERSION}"
+          echo "Latest version: ${LATEST_VERSION}"
 
           LAST_VERSION=""
 
@@ -134,7 +136,6 @@ jobs:
           echo "should_build=${SHOULD_BUILD}" >> "${GITHUB_OUTPUT}"
           echo "version=${LATEST_VERSION}" >> "${GITHUB_OUTPUT}"
 
-          echo
           echo "Should build: ${SHOULD_BUILD}"
 
 
@@ -163,7 +164,7 @@ jobs:
 
 
       # ======================================================
-      # 设置版本
+      # 设置 OpenWrt 版本
       # ======================================================
 
       - name: Set OpenWrt version
@@ -181,7 +182,8 @@ jobs:
             VERSION="${MANUAL_VERSION}"
           fi
 
-          if ! echo "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
+          if ! printf '%s\n' "${VERSION}" |
+            grep -Eq '^25\.12\.[0-9]+$'; then
             echo "ERROR: Invalid OpenWrt version: ${VERSION}"
             exit 1
           fi
@@ -192,7 +194,7 @@ jobs:
 
 
       # ======================================================
-      # RootFS 大小
+      # 设置固件大小
       # ======================================================
 
       - name: Set rootfs size
@@ -236,10 +238,10 @@ jobs:
 
 
       # ======================================================
-      # 构建工具
+      # 安装工具
       # ======================================================
 
-      - name: Install tools
+      - name: Install build tools
         shell: bash
         run: |
           set -euo pipefail
@@ -254,8 +256,8 @@ jobs:
             xz-utils \
             gzip \
             tar \
-            qemu-utils \
             unzip \
+            qemu-utils \
             file
 
 
@@ -297,7 +299,7 @@ jobs:
 
 
       # ======================================================
-      # 显示 ImageBuilder 信息
+      # ImageBuilder 信息
       # ======================================================
 
       - name: Show ImageBuilder information
@@ -310,271 +312,76 @@ jobs:
 
 
       # ======================================================
-      # 下载第三方 APK 仓库
-      # ======================================================
-
-      - name: Download third-party APK repository
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf third-party-apk
-
-          git clone \
-            --depth=1 \
-            https://github.com/wukongdaily/apk.git \
-            third-party-apk
-
-          if [ ! -d third-party-apk/run/x86 ]; then
-            echo "ERROR: third-party-apk/run/x86 does not exist."
-            exit 1
-          fi
-
-          echo "Third-party APK repository ready."
-
-
-      # ======================================================
-      # 解压第三方 RUN
-      # ======================================================
-
-      - name: Extract third-party APK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf packages
-          rm -rf extra-packages
-
-          mkdir -p packages
-          mkdir -p extra-packages
-
-          cp -a third-party-apk/run/x86/. extra-packages/
-
-          TEMP_DIR="${PWD}/extra-packages/temp-unpack"
-
-          rm -rf "${TEMP_DIR}"
-          mkdir -p "${TEMP_DIR}"
-
-          shopt -s nullglob
-
-          RUN_COUNT=0
-
-          for RUN_FILE in extra-packages/*.run; do
-
-            RUN_COUNT=$((RUN_COUNT + 1))
-
-            echo
-            echo "=========================================="
-            echo "Extracting: $(basename "${RUN_FILE}")"
-            echo "=========================================="
-
-            chmod +x "${RUN_FILE}"
-
-            rm -rf "${TEMP_DIR}"/*
-            mkdir -p "${TEMP_DIR}"
-
-            (
-              cd "${TEMP_DIR}"
-
-              sh "${GITHUB_WORKSPACE}/${RUN_FILE}" \
-                --target "${TEMP_DIR}" \
-                --noexec \
-                --keep
-            ) || {
-              echo "WARNING: Could not extract ${RUN_FILE}"
-              continue
-            }
-
-            find "${TEMP_DIR}" \
-              -type f \
-              -name "*.apk" \
-              -exec cp -f {} packages/ \;
-
-          done
-
-          echo
-          echo "RUN archives found: ${RUN_COUNT}"
-
-          # 某些仓库可能直接提供 APK
-          find extra-packages \
-            -type f \
-            -name "*.apk" \
-            -exec cp -f {} packages/ \;
-
-          echo
-          echo "=========================================="
-          echo "Collected APK files"
-          echo "=========================================="
-
-          APK_COUNT="$(
-            find packages \
-              -maxdepth 1 \
-              -type f \
-              -name "*.apk" |
-            wc -l
-          )"
-
-          echo "APK count: ${APK_COUNT}"
-
-          if [ "${APK_COUNT}" -eq 0 ]; then
-            echo "ERROR: No APK packages were found."
-            exit 1
-          fi
-
-          find packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
-
-
-      # ======================================================
-      # 检查第三方 APK
+      # 配置第三方 APK 软件源
       #
-      # 注意：
-      # 不把 CUSTOM_PACKAGES 写进 GITHUB_ENV。
-      # 避免 GitHub Actions 多行环境变量格式错误。
-      # ======================================================
-
-      - name: Verify third-party APK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          source "${GITHUB_WORKSPACE}/shell/apk-custom-packages.sh"
-
-          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
-            echo "ERROR: CUSTOM_PACKAGES is empty."
-            exit 1
-          fi
-
-          echo
-          echo "=========================================="
-          echo "Third-party package list"
-          echo "=========================================="
-
-          printf '%s\n' "${CUSTOM_PACKAGES}" |
-            sed '/^[[:space:]]*$/d'
-
-          FAILED=0
-
-          while IFS= read -r PACKAGE; do
-
-            [ -z "${PACKAGE}" ] && continue
-
-            if find packages \
-              -maxdepth 1 \
-              -type f \
-              -name "${PACKAGE}-*.apk" \
-              -print -quit |
-              grep -q .; then
-
-              echo "OK: ${PACKAGE}"
-
-            else
-
-              echo "WARNING: ${PACKAGE} not found."
-
-              FAILED=1
-
-            fi
-
-          done <<< "${CUSTOM_PACKAGES}"
-
-          if [ "${FAILED}" -ne 0 ]; then
-            echo
-            echo "ERROR: Some requested third-party APK packages are missing."
-            echo
-            echo "The third-party repository may have changed."
-            exit 1
-          fi
-
-
-      # ======================================================
-      # 安装第三方 APK 到 ImageBuilder packages
-      # ======================================================
-
-      - name: Install third-party APK into ImageBuilder
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -delete
-
-          cp -f \
-            packages/*.apk \
-            imagebuilder/packages/
-
-          echo
-          echo "ImageBuilder local APK packages:"
-
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
-
-
-      # ======================================================
-      # 关键：
-      # OpenWrt 25.12 ImageBuilder 对本地第三方 APK
-      # 默认可能进行签名检查。
+      # 这里不再创建本地 packages.adb
       #
-      # wukongdaily 第三方 APK 仓库并不是 OpenWrt 官方签名仓库。
-      #
-      # 因此构建阶段给 ImageBuilder APK 加
-      # --allow-untrusted。
-      #
-      # 这只影响 CI 构建阶段。
-      # 不会关闭设备运行时官方 APK 软件源。
+      # 统一使用已经签名的 APK repository
       # ======================================================
 
-      - name: Configure ImageBuilder APK trust
+      - name: Configure third-party APK repositories
         working-directory: imagebuilder
         shell: bash
         run: |
           set -euo pipefail
 
+          echo
           echo "=========================================="
-          echo "Configuring APK package trust"
+          echo "Configuring third-party APK repositories"
           echo "=========================================="
 
-          if grep -q -- "--allow-untrusted" Makefile; then
-            echo "ImageBuilder already supports --allow-untrusted."
-          else
+          mkdir -p keys
 
-            if grep -q -- '--repositories-file $(TOPDIR)/repositories' Makefile; then
+          # --------------------------------------------------
+          # PassWall 官方二进制仓库
+          # --------------------------------------------------
 
-              sed -i \
-                '/--repositories-file $(TOPDIR)\/repositories \\/a\
-\	--allow-untrusted \\' \
-                Makefile
+          PASSWALL_KEY_URL="https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub"
 
-              echo "Added --allow-untrusted to ImageBuilder APK command."
+          wget \
+            -q \
+            -O keys/openwrt-passwall-build.pem \
+            "${PASSWALL_KEY_URL}"
 
-            else
+          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-              echo "ERROR: Could not locate ImageBuilder APK command."
-              echo
-              grep -n "repositories-file" Makefile || true
-              exit 1
+          cat >> repositories <<EOF
+${PASSWALL_BASE}/passwall_luci/packages.adb
+${PASSWALL_BASE}/passwall_packages/packages.adb
+${PASSWALL_BASE}/passwall2/packages.adb
+EOF
 
-            fi
-          fi
+          # --------------------------------------------------
+          # ImmortalWrt 25.12 x86_64 LuCI APK 仓库
+          #
+          # 用于提供：
+          # Aurora
+          # Bandix
+          # FileManager
+          # FileBrowser Go
+          # Timewol
+          # VLMCSd
+          # AutoReboot
+          # OpenClash 等第三方 LuCI 包
+          # --------------------------------------------------
+
+          IMMORTAL_LUCI="https://downloads.immortalwrt.org/releases/25.12/packages/x86_64/luci/packages.adb"
+
+          cat >> repositories <<EOF
+${IMMORTAL_LUCI}
+EOF
 
           echo
-          echo "ImageBuilder APK command:"
-          grep -n -A6 -B2 "repositories-file" Makefile || true
+          echo "Repositories:"
+          cat repositories
+
+          echo
+          echo "Keys:"
+          find keys -maxdepth 1 -type f -printf '%f\n'
 
 
       # ======================================================
-      # 生成 files
+      # 准备 custom files
       # ======================================================
 
       - name: Prepare custom files
@@ -584,60 +391,45 @@ jobs:
 
           rm -rf files
 
-          mkdir -p files/etc/config
-          mkdir -p files/etc/uci-defaults
-          mkdir -p files/etc/apk/repositories.d
+          mkdir -p \
+            files/etc/config \
+            files/etc/uci-defaults \
+            files/etc/apk/repositories.d \
+            files/etc/apk/keys
 
 
       # ======================================================
-      # 官方 APK 软件源
-      #
-      # ImageBuilder 本身已经携带官方 repositories。
-      #
-      # 这里不覆盖 ImageBuilder 原始 repositories。
+      # 写入运行时第三方 APK 仓库
       # ======================================================
 
-      - name: Show APK repositories
-        working-directory: imagebuilder
+      - name: Configure runtime APK repositories
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
-          echo "=========================================="
-          echo "ImageBuilder APK repositories"
-          echo "=========================================="
+          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-          cat repositories
+          IMMORTAL_LUCI="https://downloads.immortalwrt.org/releases/25.12/packages/x86_64/luci/packages.adb"
 
-
-      # ======================================================
-      # 写入运行时自定义软件源说明
-      #
-      # 不添加有签名问题的第三方 PassWall PEM。
-      #
-      # OpenWrt 官方源由 ImageBuilder 自动生成。
-      # ======================================================
-
-      - name: Prepare runtime APK repository directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat > files/etc/apk/repositories.d/README-custom.txt <<'EOF'
-# OpenWrt 25.12.x APK repositories
-#
-# Official OpenWrt repositories are generated by ImageBuilder.
-#
-# Third-party APK packages used during this build are bundled
-# directly into the firmware.
-#
-# No untrusted third-party repository is added here automatically.
+          cat > files/etc/apk/repositories.d/customfeeds.list <<EOF
+${PASSWALL_BASE}/passwall_luci/packages.adb
+${PASSWALL_BASE}/passwall_packages/packages.adb
+${PASSWALL_BASE}/passwall2/packages.adb
+${IMMORTAL_LUCI}
 EOF
 
+          wget \
+            -q \
+            -O files/etc/apk/keys/openwrt-passwall-build.pem \
+            https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub
+
+          echo
+          echo "Runtime repositories:"
+          cat files/etc/apk/repositories.d/customfeeds.list
+
 
       # ======================================================
-      # 网络
+      # 网络配置
       #
       # eth0 = WAN1
       # eth1 = WAN2
@@ -658,10 +450,11 @@ EOF
         run: |
           set -euo pipefail
 
-          LAN_IP="${INPUT_LAN_IP}"
+          LAN_IP="${DEFAULT_LAN_IP}"
 
-          if [ -z "${LAN_IP}" ]; then
-            LAN_IP="${DEFAULT_LAN_IP}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] &&
+             [ -n "${INPUT_LAN_IP}" ]; then
+            LAN_IP="${INPUT_LAN_IP}"
           fi
 
           if [ -z "${WAN1_USER}" ] ||
@@ -669,16 +462,10 @@ EOF
              [ -z "${WAN2_USER}" ] ||
              [ -z "${WAN2_PASS}" ]; then
 
-            echo "ERROR: PPPoE secrets are missing."
-
-            echo
-            echo "Required GitHub Secrets:"
-            echo "WAN1_USER"
-            echo "WAN1_PASS"
-            echo "WAN2_USER"
-            echo "WAN2_PASS"
-
-            exit 1
+            echo "WARNING: PPPoE secrets are not configured."
+            echo "WAN1/WAN2 will remain unconfigured."
+            echo "Create WAN1_USER/WAN1_PASS/WAN2_USER/WAN2_PASS"
+            echo "if you want PPPoE credentials embedded."
           fi
 
           cat > files/etc/config/network <<EOF
@@ -706,8 +493,16 @@ config interface 'lan'
 config interface 'wan'
     option device 'eth0'
     option proto 'pppoe'
+EOF
+
+          if [ -n "${WAN1_USER}" ] && [ -n "${WAN1_PASS}" ]; then
+            cat >> files/etc/config/network <<EOF
     option username '${WAN1_USER}'
     option password '${WAN1_PASS}'
+EOF
+          fi
+
+          cat >> files/etc/config/network <<'EOF'
     option ipv6 'auto'
 
 config interface 'wan6'
@@ -719,8 +514,16 @@ config interface 'wan6'
 config interface 'wanb'
     option device 'eth1'
     option proto 'pppoe'
+EOF
+
+          if [ -n "${WAN2_USER}" ] && [ -n "${WAN2_PASS}" ]; then
+            cat >> files/etc/config/network <<EOF
     option username '${WAN2_USER}'
     option password '${WAN2_PASS}'
+EOF
+          fi
+
+          cat >> files/etc/config/network <<'EOF'
     option ipv6 'auto'
 
 config interface 'wanb6'
@@ -732,7 +535,7 @@ EOF
 
 
       # ======================================================
-      # DHCP / IPv6
+      # DHCP + IPv6
       # ======================================================
 
       - name: Generate DHCP configuration
@@ -802,118 +605,106 @@ EOF
 
 
       # ======================================================
-      # 最终软件包
+      # 官方 OpenWrt 软件包
       # ======================================================
 
-      - name: Prepare package list
+      - name: Prepare official package list
         shell: bash
         run: |
           set -euo pipefail
 
-          PACKAGES=""
+          OFFICIAL_PACKAGES="
+          luci
+          luci-ssl
+          luci-i18n-base-zh-cn
 
-          # --------------------------------------------------
-          # LuCI
-          # --------------------------------------------------
+          luci-app-package-manager
+          luci-i18n-package-manager-zh-cn
 
-          PACKAGES="${PACKAGES} luci"
-          PACKAGES="${PACKAGES} luci-ssl"
-          PACKAGES="${PACKAGES} luci-i18n-base-zh-cn"
+          luci-app-mwan3
+          luci-i18n-mwan3-zh-cn
 
-          PACKAGES="${PACKAGES} luci-app-package-manager"
-          PACKAGES="${PACKAGES} luci-i18n-package-manager-zh-cn"
+          luci-app-upnp
+          luci-i18n-upnp-zh-cn
 
-          # --------------------------------------------------
-          # 网络
-          # --------------------------------------------------
+          luci-app-ttyd
+          luci-i18n-ttyd-zh-cn
 
-          PACKAGES="${PACKAGES} luci-app-mwan3"
-          PACKAGES="${PACKAGES} luci-i18n-mwan3-zh-cn"
+          luci-proto-ipv6
+          luci-proto-ppp
 
-          PACKAGES="${PACKAGES} luci-app-upnp"
-          PACKAGES="${PACKAGES} luci-i18n-upnp-zh-cn"
+          ppp
+          ppp-mod-pppoe
+          kmod-pppoe
 
-          PACKAGES="${PACKAGES} luci-app-ttyd"
-          PACKAGES="${PACKAGES} luci-i18n-ttyd-zh-cn"
+          odhcp6c
+          odhcpd-ipv6only
 
-          # --------------------------------------------------
-          # PPPoE
-          # --------------------------------------------------
+          luci-compat
 
-          PACKAGES="${PACKAGES} ppp"
-          PACKAGES="${PACKAGES} ppp-mod-pppoe"
-          PACKAGES="${PACKAGES} kmod-pppoe"
-          PACKAGES="${PACKAGES} luci-proto-ppp"
+          kmod-tun
+          kmod-inet-diag
+          kmod-nft-socket
+          kmod-nft-tproxy
 
-          # --------------------------------------------------
-          # IPv6
-          # --------------------------------------------------
+          bash
+          curl
+          ca-bundle
+          ip-full
+          unzip
+          "
 
-          PACKAGES="${PACKAGES} luci-proto-ipv6"
-          PACKAGES="${PACKAGES} odhcp6c"
-          PACKAGES="${PACKAGES} odhcpd-ipv6only"
+          OFFICIAL_PACKAGES="$(printf '%s\n' ${OFFICIAL_PACKAGES} | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
 
-          # --------------------------------------------------
-          # OpenClash / PassWall 依赖
-          # --------------------------------------------------
+          echo "OFFICIAL_PACKAGES=${OFFICIAL_PACKAGES}" >> "${GITHUB_ENV}"
 
-          PACKAGES="${PACKAGES} luci-compat"
-          PACKAGES="${PACKAGES} kmod-tun"
-          PACKAGES="${PACKAGES} kmod-inet-diag"
-          PACKAGES="${PACKAGES} kmod-nft-socket"
-          PACKAGES="${PACKAGES} kmod-nft-tproxy"
+          echo
+          echo "Official packages:"
+          printf '%s\n' ${OFFICIAL_PACKAGES} | sort
 
-          PACKAGES="${PACKAGES} bash"
-          PACKAGES="${PACKAGES} curl"
-          PACKAGES="${PACKAGES} ca-bundle"
-          PACKAGES="${PACKAGES} ip-full"
-          PACKAGES="${PACKAGES} unzip"
 
-          # --------------------------------------------------
-          # 第三方 APK
-          #
-          # 重要：
-          # 这里重新 source。
-          # 不通过 GITHUB_ENV 传递多行变量。
-          # --------------------------------------------------
+      # ======================================================
+      # 第三方 APK
+      #
+      # 只 source，不写 GITHUB_ENV
+      # ======================================================
 
-          source "${GITHUB_WORKSPACE}/shell/apk-custom-packages.sh"
+      - name: Load third-party package list
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          while IFS= read -r PACKAGE; do
+          if [ ! -f shell/apk-custom-packages.sh ]; then
+            echo "ERROR: shell/apk-custom-packages.sh not found."
+            exit 1
+          fi
 
-            [ -z "${PACKAGE}" ] && continue
+          source shell/apk-custom-packages.sh
 
-            PACKAGES="${PACKAGES} ${PACKAGE}"
-
-          done <<< "${CUSTOM_PACKAGES}"
-
-          # --------------------------------------------------
-          # 去重
-          # --------------------------------------------------
-
-          PACKAGES="$(
-            printf '%s\n' ${PACKAGES} |
-            awk '!seen[$0]++' |
-            tr '\n' ' '
-          )"
-
-          PACKAGES="$(echo "${PACKAGES}" | xargs)"
-
-          echo "FINAL_PACKAGES=${PACKAGES}" >> "${GITHUB_ENV}"
+          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+            echo "ERROR: CUSTOM_PACKAGES is empty."
+            exit 1
+          fi
 
           echo
           echo "=========================================="
-          echo "Final package list"
+          echo "Third-party APK packages"
           echo "=========================================="
 
-          printf '%s\n' ${PACKAGES} | sort
+          printf '%s\n' ${CUSTOM_PACKAGES} |
+            awk 'NF && !seen[$0]++' |
+            sort
 
 
       # ======================================================
-      # 构建前检查
+      # 检查第三方 APK 仓库
+      #
+      # 不再检查本地 packages/*.apk
+      #
+      # 直接让 apk 查询远程签名仓库。
       # ======================================================
 
-      - name: Verify ImageBuilder package availability
+      - name: Verify APK repositories
         working-directory: imagebuilder
         shell: bash
         run: |
@@ -921,17 +712,116 @@ EOF
 
           echo
           echo "=========================================="
-          echo "Checking package availability"
+          echo "Updating APK repository indexes"
           echo "=========================================="
 
-          make manifest \
-            PROFILE="generic" \
-            PACKAGES="${FINAL_PACKAGES}" \
-            V=s
+          ./staging_dir/host/bin/apk update \
+            --repositories-file repositories \
+            --keys-dir keys
+
+          echo
+          echo "APK repository update completed."
 
 
       # ======================================================
-      # 构建 EXT4 固件
+      # 构造最终包列表
+      #
+      # 注意：
+      # CUSTOM_PACKAGES 不进入 GITHUB_ENV
+      # 直接在本步骤 source。
+      # ======================================================
+
+      - name: Prepare final package list
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source shell/apk-custom-packages.sh
+
+          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+            echo "ERROR: CUSTOM_PACKAGES is empty."
+            exit 1
+          fi
+
+          ALL_PACKAGES="${OFFICIAL_PACKAGES}"
+
+          for PACKAGE in ${CUSTOM_PACKAGES}; do
+            ALL_PACKAGES="${ALL_PACKAGES} ${PACKAGE}"
+          done
+
+          ALL_PACKAGES="$(
+            printf '%s\n' ${ALL_PACKAGES} |
+            awk 'NF && !seen[$0]++' |
+            tr '\n' ' '
+          )"
+
+          ALL_PACKAGES="$(echo "${ALL_PACKAGES}" | xargs)"
+
+          echo "FINAL_PACKAGES=${ALL_PACKAGES}" >> "${GITHUB_ENV}"
+
+          echo
+          echo "=========================================="
+          echo "Final package list"
+          echo "=========================================="
+
+          printf '%s\n' ${ALL_PACKAGES} | sort
+
+
+      # ======================================================
+      # 最终检查
+      #
+      # 使用 apk search，而不是检查文件名。
+      # ======================================================
+
+      - name: Verify requested packages
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source "${GITHUB_WORKSPACE}/shell/apk-custom-packages.sh"
+
+          FAILED=0
+
+          echo
+          echo "=========================================="
+          echo "Checking requested third-party packages"
+          echo "=========================================="
+
+          for PACKAGE in ${CUSTOM_PACKAGES}; do
+
+            if ./staging_dir/host/bin/apk search \
+              --repositories-file repositories \
+              --keys-dir keys \
+              --no-network \
+              "${PACKAGE}" |
+              grep -Fxq "${PACKAGE}"; then
+
+              echo "OK: ${PACKAGE}"
+
+            else
+
+              echo "WARNING: ${PACKAGE} not found."
+
+              FAILED=1
+
+            fi
+
+          done
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo
+            echo "ERROR: Some requested packages are unavailable."
+            echo
+            echo "The configured APK repositories do not provide"
+            echo "all packages requested by shell/apk-custom-packages.sh."
+            echo
+            exit 1
+          fi
+
+
+      # ======================================================
+      # 构建 Image
       # ======================================================
 
       - name: Build OpenWrt image
@@ -942,8 +832,19 @@ EOF
 
           echo
           echo "=========================================="
-          echo "Building OpenWrt ImageBuilder"
+          echo "Building OpenWrt Image"
           echo "=========================================="
+
+          echo "Version:"
+          echo "${OPENWRT_VERSION}"
+
+          echo
+          echo "RootFS:"
+          echo "${ROOTFS_SIZE}"
+
+          echo
+          echo "Packages:"
+          echo "${FINAL_PACKAGES}"
 
           make image \
             PROFILE="generic" \
@@ -954,7 +855,7 @@ EOF
 
 
       # ======================================================
-      # 构建时间
+      # 设置时间
       # ======================================================
 
       - name: Set build timestamp
@@ -1003,6 +904,8 @@ EOF
 
           if [ -z "${IMAGE}" ]; then
             echo "ERROR: BIOS EXT4 image not found."
+            echo
+            ls -lah imagebuilder/bin/targets/x86/64/
             exit 1
           fi
 
@@ -1030,6 +933,8 @@ EOF
 
           if [ -z "${IMAGE}" ]; then
             echo "ERROR: UEFI EXT4 image not found."
+            echo
+            ls -lah imagebuilder/bin/targets/x86/64/
             exit 1
           fi
 
@@ -1061,6 +966,8 @@ EOF
           fi
 
           gzip -dc "${IMAGE}" > openwrt.raw
+
+          file openwrt.raw
 
 
       # ======================================================
@@ -1127,7 +1034,7 @@ EOF
 
 
       # ======================================================
-      # 构建信息
+      # Build info
       # ======================================================
 
       - name: Create build info
@@ -1137,10 +1044,11 @@ EOF
         run: |
           set -euo pipefail
 
-          LAN_IP="${INPUT_LAN_IP}"
+          LAN_IP="${DEFAULT_LAN_IP}"
 
-          if [ -z "${LAN_IP}" ]; then
-            LAN_IP="${DEFAULT_LAN_IP}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] &&
+             [ -n "${INPUT_LAN_IP}" ]; then
+            LAN_IP="${INPUT_LAN_IP}"
           fi
 
           cat > release/build-info.txt <<EOF
@@ -1208,34 +1116,26 @@ Supported
 QCOW2:
 Supported
 
-VMDK:
-Manual build option
-
-RAW:
-Manual build option
-
 
 Package manager
 ===============
 
 APK
 
-OpenWrt 25.12.x
 
+Third-party repositories
+========================
 
-Build type
-==========
+PassWall:
+openwrt-passwall-build
 
-ImageBuilder
-
-No OpenWrt source compilation.
-No toolchain compilation.
-No kernel source compilation.
+LuCI third-party packages:
+ImmortalWrt 25.12 x86_64 LuCI APK repository
 EOF
 
 
       # ======================================================
-      # 显示文件
+      # 显示最终文件
       # ======================================================
 
       - name: Show release files
@@ -1252,7 +1152,7 @@ EOF
 
 
       # ======================================================
-      # GitHub Release
+      # 发布 GitHub Release
       # ======================================================
 
       - name: Publish GitHub Release
@@ -1273,14 +1173,6 @@ EOF
             - Build date: `${{ env.BUILD_DATE }}`
             - Build time: `${{ env.BUILD_TIME }}`
 
-            ## 构建方式
-
-            Official OpenWrt ImageBuilder。
-
-            不进行 OpenWrt 源码编译。
-            不进行 toolchain 编译。
-            不进行 kernel 源码编译。
-
             ## 网络
 
             - eth0 → WAN1 / PPPoE
@@ -1297,11 +1189,19 @@ EOF
             - BIOS EXT4
             - UEFI EXT4
             - QCOW2
-            - VMDK / RAW 可通过手动构建选项生成
+            - VMDK / RAW 按手动构建选项生成
 
-            ## 包管理器
+            ## 构建方式
 
-            OpenWrt 25.12.x 使用 APK。
+            Official OpenWrt ImageBuilder。
+
+            不进行 OpenWrt 源码编译。
+            不进行 toolchain 编译。
+            不进行 kernel 源码编译。
+
+            ## 软件包系统
+
+            OpenWrt 25.12 APK。
 
           files: release/*
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -1309,25 +1209,12 @@ EOF
 
       # ======================================================
       # 更新 openwrt-version
-      #
-      # 只有版本真正发生变化时才产生 commit。
       # ======================================================
 
       - name: Update openwrt-version
         shell: bash
         run: |
           set -euo pipefail
-
-          CURRENT_VERSION=""
-
-          if [ -f openwrt-version ]; then
-            CURRENT_VERSION="$(tr -d '[:space:]' < openwrt-version)"
-          fi
-
-          if [ "${CURRENT_VERSION}" = "${OPENWRT_VERSION}" ]; then
-            echo "openwrt-version already contains ${OPENWRT_VERSION}."
-            exit 0
-          fi
 
           echo "${OPENWRT_VERSION}" > openwrt-version
 
@@ -1340,6 +1227,11 @@ EOF
             "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add openwrt-version
+
+          if git diff --cached --quiet; then
+            echo "openwrt-version already up to date."
+            exit 0
+          fi
 
           git commit \
             -m "Update OpenWrt version to ${OPENWRT_VERSION}"
