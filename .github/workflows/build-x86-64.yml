@@ -4,18 +4,15 @@ on:
 workflow_dispatch:
 inputs:
 rootfs_size:
-description: "RootFS / 固件大小 MB"
+description: RootFS size in MB
 required: true
 default: "4096"
 type: string
-
-```
-  lan_ip:
-    description: "LAN IP"
-    required: true
-    default: "192.168.1.2"
-    type: string
-```
+lan_ip:
+description: LAN IP address
+required: true
+default: "192.168.1.2"
+type: string
 
 env:
 TZ: Asia/Shanghai
@@ -27,16 +24,9 @@ runs-on: ubuntu-24.04
 
 ```
 steps:
-
-  # ==========================================================
-  # Checkout
-  # ==========================================================
   - name: Checkout repository
     uses: actions/checkout@v4
 
-  # ==========================================================
-  # Install dependencies
-  # ==========================================================
   - name: Install dependencies
     shell: bash
     run: |
@@ -68,31 +58,33 @@ steps:
         genisoimage \
         qemu-utils
 
-  # ==========================================================
-  # Set build information
-  # ==========================================================
   - name: Set build information
     shell: bash
+    env:
+      ROOTFS_SIZE_INPUT: ${{ inputs.rootfs_size }}
+      LAN_IP_INPUT: ${{ inputs.lan_ip }}
     run: |
       set -euo pipefail
 
-      ROOTFS_SIZE="${{ inputs.rootfs_size }}"
-      LAN_IP_VALUE="${{ inputs.lan_ip }}"
-
-      case "${ROOTFS_SIZE}" in
+      case "${ROOTFS_SIZE_INPUT}" in
         1024|2048|4096|8192|16384)
           ;;
         *)
-          echo "ERROR: Invalid RootFS size: ${ROOTFS_SIZE}"
-          echo "Allowed values: 1024, 2048, 4096, 8192, 16384"
+          echo "ERROR: Invalid RootFS size: ${ROOTFS_SIZE_INPUT}"
+          echo "Allowed values:"
+          echo "1024"
+          echo "2048"
+          echo "4096"
+          echo "8192"
+          echo "16384"
           exit 1
           ;;
       esac
 
-      echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
-      echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
-      echo "ROOTFS_PARTSIZE=${ROOTFS_SIZE}" >> "$GITHUB_ENV"
-      echo "LAN_IP=${LAN_IP_VALUE}" >> "$GITHUB_ENV"
+      echo "BUILD_DATE=$(date +%Y%m%d)" >> "${GITHUB_ENV}"
+      echo "BUILD_TIME=$(date +%H%M%S)" >> "${GITHUB_ENV}"
+      echo "ROOTFS_PARTSIZE=${ROOTFS_SIZE_INPUT}" >> "${GITHUB_ENV}"
+      echo "LAN_IP=${LAN_IP_INPUT}" >> "${GITHUB_ENV}"
 
       echo
       echo "=========================================="
@@ -100,12 +92,9 @@ steps:
       echo "=========================================="
       echo "OpenWrt: ${OPENWRT_VERSION}"
       echo "Target: x86-64"
-      echo "RootFS: ${ROOTFS_SIZE} MB"
-      echo "LAN IP: ${LAN_IP_VALUE}"
+      echo "RootFS: ${ROOTFS_SIZE_INPUT} MB"
+      echo "LAN IP: ${LAN_IP_INPUT}"
 
-  # ==========================================================
-  # Clone OpenWrt
-  # ==========================================================
   - name: Clone OpenWrt
     shell: bash
     run: |
@@ -128,9 +117,6 @@ steps:
 
       git describe --tags --always
 
-  # ==========================================================
-  # Update feeds
-  # ==========================================================
   - name: Update feeds
     working-directory: openwrt
     shell: bash
@@ -140,9 +126,6 @@ steps:
       ./scripts/feeds update -a
       ./scripts/feeds install -a
 
-  # ==========================================================
-  # Load custom packages
-  # ==========================================================
   - name: Load custom packages
     shell: bash
     run: |
@@ -175,9 +158,6 @@ steps:
 
       cat selected-packages.txt
 
-  # ==========================================================
-  # Configure OpenWrt
-  # ==========================================================
   - name: Configure OpenWrt
     working-directory: openwrt
     shell: bash
@@ -229,14 +209,15 @@ steps:
       CONFIG_PACKAGE_luci-app-openclash=y
       EOF
 
-      # ------------------------------------------------------
-      # Select custom packages
-      # ------------------------------------------------------
+      echo
+      echo "=========================================="
+      echo "Selecting custom packages"
+      echo "=========================================="
+
       while IFS= read -r package; do
 
         [ -z "${package}" ] && continue
 
-        echo
         echo "Checking package: ${package}"
 
         if grep -R \
@@ -249,15 +230,11 @@ steps:
           echo "Found: ${package}"
           echo "CONFIG_PACKAGE_${package}=y" >> .config
         else
-          echo "WARNING: Package not found:"
-          echo "${package}"
+          echo "WARNING: Package not found: ${package}"
         fi
 
       done < ../selected-packages.txt
 
-      # ------------------------------------------------------
-      # Remove duplicate configuration lines
-      # ------------------------------------------------------
       awk '!seen[$0]++' .config > .config.tmp
       mv .config.tmp .config
 
@@ -268,9 +245,6 @@ steps:
 
       make defconfig
 
-  # ==========================================================
-  # Verify configuration
-  # ==========================================================
   - name: Verify configuration
     working-directory: openwrt
     shell: bash
@@ -332,9 +306,6 @@ steps:
       echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}"
       echo "LAN_IP=${LAN_IP}"
 
-  # ==========================================================
-  # Download package sources
-  # ==========================================================
   - name: Download package sources
     working-directory: openwrt
     shell: bash
@@ -345,9 +316,6 @@ steps:
         -j"$(nproc)" \
         V=s
 
-  # ==========================================================
-  # Compile packages
-  # ==========================================================
   - name: Compile packages
     working-directory: openwrt
     shell: bash
@@ -358,20 +326,16 @@ steps:
         -j"$(nproc)" \
         V=s
 
-  # ==========================================================
-  # Build firmware
-  # ==========================================================
   - name: Build firmware
     working-directory: openwrt
     shell: bash
     run: |
       set -euo pipefail
 
-      make -j"$(nproc)" V=s
+      make \
+        -j"$(nproc)" \
+        V=s
 
-  # ==========================================================
-  # Show firmware
-  # ==========================================================
   - name: Show firmware
     working-directory: openwrt
     shell: bash
@@ -389,9 +353,6 @@ steps:
         -printf '%f\n' |
         sort
 
-  # ==========================================================
-  # Prepare artifacts
-  # ==========================================================
   - name: Prepare artifacts
     shell: bash
     run: |
@@ -424,9 +385,6 @@ steps:
 
       ls -lah artifacts
 
-  # ==========================================================
-  # Upload artifacts
-  # ==========================================================
   - name: Upload firmware
     uses: actions/upload-artifact@v4
     with:
