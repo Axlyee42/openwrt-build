@@ -123,10 +123,6 @@ jobs:
           echo "Prepared APKs:"
           find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
-          # IMPORTANT: ImageBuilder/apk resolves dependencies from the local
-          # package repository.  Copy ALL prepared third-party APKs, not only
-          # the explicitly requested top-level packages.  This is required for
-          # Argon, SSR, RTP2HTTPD and PassWall dependency packages.
           cp -f "${PREPARED_DIR}"/*.apk "${IMAGEBUILDER_DIR}/packages/"
 
           for pkg in ${CUSTOM_PACKAGES:-}; do
@@ -205,7 +201,11 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${IMAGEBUILDER_DIR}"
-          BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-i18n-filebrowser-go-zh-cn luci-i18n-timewol-zh-cn luci-i18n-vlmcsd-zh-cn luci-i18n-autoreboot-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
+          # These four LuCI translation packages are not present in the
+          # current OpenWrt 25.12/wukongdaily x86 APK repositories. Keep them
+          # out of the ImageBuilder world set rather than making the build
+          # fail after the package index has been generated.
+          BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
           PACKAGES="$(printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${PACKAGES}"
           echo "Final package selection:"
