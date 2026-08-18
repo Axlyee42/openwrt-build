@@ -8,7 +8,7 @@ on:
         required: false
         default: auto
       rootfs_size:
-        description: Firmware root partition size
+        description: Root partition size
         required: true
         type: choice
         default: 4G
@@ -66,16 +66,15 @@ jobs:
           else
             tag="$(curl -fsSL --retry 3 https://api.github.com/repos/openwrt/openwrt/releases/latest | jq -r .tag_name)"
             version="${tag#v}"
-            test -n "${version}" && test "${version}" != null
+            test -n "$version" && test "$version" != null
             if curl -fsSL --retry 3 'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' | jq -e --arg p "openwrt-${version}-x86-64-" '.[] | select(.tag_name | startswith($p))' >/dev/null; then
               should_build=false
             else
               should_build=true
             fi
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
-          echo "OpenWrt version: ${version}; build=${should_build}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
 
   build:
     needs: resolve
@@ -92,10 +91,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install host tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl git jq qemu-utils zstd xz-utils wget gzip tar
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends curl git jq qemu-utils zstd xz-utils wget gzip tar
 
       - name: Download ImageBuilder
         shell: bash
@@ -105,11 +101,11 @@ jobs:
           archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           mkdir -p "$RUNNER_TEMP/ib"
           cd "$RUNNER_TEMP/ib"
-          wget -q --show-progress --tries=3 --timeout=30 "${base}/${archive}"
-          tar --zstd -xf "${archive}"
+          wget -q --show-progress --tries=3 --timeout=30 "$base/$archive"
+          tar --zstd -xf "$archive"
           dir="$(find . -mindepth 1 -maxdepth 1 -type d -name 'openwrt-imagebuilder-*' -print -quit)"
-          test -f "${dir}/Makefile"
-          echo "IMAGEBUILDER_DIR=$(cd "${dir}" && pwd)" >> "$GITHUB_ENV"
+          test -f "$dir/Makefile"
+          echo "IMAGEBUILDER_DIR=$(cd "$dir" && pwd)" >> "$GITHUB_ENV"
 
       - name: Prepare third-party APKs
         shell: bash
@@ -124,29 +120,26 @@ jobs:
           git clone --depth=1 --branch master https://github.com/wukongdaily/apk.git "$repo"
           test -d "$repo/run/x86"
           cp -a "$repo/run/x86/." "$src/"
-          test -x scripts/apk-prepare-packages.sh || chmod +x scripts/apk-prepare-packages.sh
+          chmod +x scripts/apk-prepare-packages.sh
           BASE_DIR="$src" TARGET_DIR="$dst" scripts/apk-prepare-packages.sh
           mkdir -p "$IMAGEBUILDER_DIR/packages"
-          for pkg in ${CUSTOM_PACKAGES}; do
+          : > "$RUNNER_TEMP/third-party-apks.txt"
+          for pkg in $CUSTOM_PACKAGES; do
             mapfile -t m < <(find "$dst" -maxdepth 1 -type f -name "${pkg}-*.apk" -print | sort -V)
-            if [[ ${#m[@]} -eq 0 ]]; then
-              echo "ERROR: requested APK not prepared: ${pkg}" >&2
-              find "$dst" -maxdepth 1 -type f -name "${pkg}*.apk" -printf '%f\n' | sort >&2 || true
-              exit 1
-            fi
+            if [[ ${#m[@]} -eq 0 ]]; then echo "ERROR: requested APK not prepared: $pkg" >&2; exit 1; fi
             cp -f "${m[-1]}" "$IMAGEBUILDER_DIR/packages/"
+            basename "${m[-1]}" >> "$RUNNER_TEMP/third-party-apks.txt"
           done
-          find "$dst" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort > "$RUNNER_TEMP/third-party-apks.txt"
 
-      - name: Download OpenClash APK and cores
+      - name: Download OpenClash and proxy core files
         shell: bash
         run: |
           set -euo pipefail
           cd "$IMAGEBUILDER_DIR"
           mkdir -p packages files/etc/openclash/core files/usr/bin
-          apk_url="$(curl -fsSL --retry 3 https://api.github.com/repos/vernesong/OpenClash/releases/latest | jq -r '[.assets[]? | select(.name | endswith(".apk")) | .browser_download_url][0]')"
-          test -n "$apk_url" && test "$apk_url" != null
-          wget -q --tries=3 "$apk_url" -P packages/
+          url="$(curl -fsSL --retry 3 https://api.github.com/repos/vernesong/OpenClash/releases/latest | jq -r '[.assets[]? | select(.name | endswith(".apk")) | .browser_download_url][0]')"
+          test -n "$url" && test "$url" != null
+          wget -q --tries=3 "$url" -P packages/
           wget -qO- --tries=3 'https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64-v1.tar.gz' | tar xOvz > files/etc/openclash/core/clash_meta
           chmod +x files/etc/openclash/core/clash_meta
           wget -q --tries=3 https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O files/etc/openclash/GeoIP.dat
@@ -154,106 +147,85 @@ jobs:
           wget -qO- --tries=3 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz' | gzip -dc > files/usr/bin/mihomo
           chmod +x files/usr/bin/mihomo
 
-      - name: Install requested packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$IMAGEBUILDER_DIR"
-          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
-          source "$GITHUB_WORKSPACE/scripts/apk-custom-packages.sh"
-          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}"
-          echo "OFFICIAL_PACKAGES=${official}"
-          echo "${CUSTOM_PACKAGES}" | tr ' ' '\n' | sort > "$RUNNER_TEMP/apk-list.txt"
-          printf '%s\n' ${CUSTOM_PACKAGES} ${official} luci-app-openclash >> "$RUNNER_TEMP/apk-list.txt"
-          sort -u "$RUNNER_TEMP/apk-list.txt" -o "$RUNNER_TEMP/apk-list.txt"
-          echo "PACKAGE_LIST=$(paste -sd ' ' "$RUNNER_TEMP/apk-list.txt")" >> "$GITHUB_ENV"
-
       - name: Configure dual WAN and LAN
         shell: bash
         run: |
           set -euo pipefail
           d="$IMAGEBUILDER_DIR/files/etc/uci-defaults"
           mkdir -p "$d"
-          u="$WAN1_USER" p="$WAN1_PASS" u2="$WAN2_USER" p2="$WAN2_PASS" ip="$LAN_IP" python3 - <<'PY'
-import os
-from pathlib import Path
-
-def shq(s):
-    return "'" + s.replace("'", "'\\''") + "'"
-text=f'''#!/bin/sh
-set -eu
-uci -q delete network.wan || true
-uci set network.wan=interface
-uci set network.wan.device=eth0
-uci set network.wan.proto=pppoe
-uci set network.wan.username={shq(os.environ["u"])}
-uci set network.wan.password={shq(os.environ["p"])}
-uci -q delete network.wanb || true
-uci set network.wanb=interface
-uci set network.wanb.device=eth1
-uci set network.wanb.proto=pppoe
-uci set network.wanb.username={shq(os.environ["u2"])}
-uci set network.wanb.password={shq(os.environ["p2"])}
-uci -q delete network.br_lan || true
-uci set network.br_lan=device
-uci set network.br_lan.type=bridge
-uci add_list network.br_lan.ports=eth2
-uci add_list network.br_lan.ports=eth3
-uci add_list network.br_lan.ports=eth4
-uci add_list network.br_lan.ports=eth5
-uci set network.lan=interface
-uci set network.lan.device=br-lan
-uci set network.lan.proto=static
-uci set network.lan.ipaddr={shq(os.environ["ip"])}
-uci set network.lan.netmask=255.255.255.0
-uci set network.lan.ip6assign=64
-uci commit network
-exit 0
-'''
-Path(os.environ["GITHUB_WORKSPACE"], "__tmp_network.sh").write_text(text)
-PY
-          cp "$GITHUB_WORKSPACE/__tmp_network.sh" "$d/98-network.sh"
-          rm "$GITHUB_WORKSPACE/__tmp_network.sh"
+          u64="$(printf '%s' "$WAN1_USER" | base64 -w0)"
+          p64="$(printf '%s' "$WAN1_PASS" | base64 -w0)"
+          u264="$(printf '%s' "$WAN2_USER" | base64 -w0)"
+          p264="$(printf '%s' "$WAN2_PASS" | base64 -w0)"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'set -eu' \
+            "WAN1_USER=\"\$(printf '%s' '$u64' | base64 -d)\"" \
+            "WAN1_PASS=\"\$(printf '%s' '$p64' | base64 -d)\"" \
+            "WAN2_USER=\"\$(printf '%s' '$u264' | base64 -d)\"" \
+            "WAN2_PASS=\"\$(printf '%s' '$p264' | base64 -d)\"" \
+            'uci -q delete network.wan || true' \
+            "uci set network.wan='interface'" \
+            "uci set network.wan.device='eth0'" \
+            "uci set network.wan.proto='pppoe'" \
+            'uci set network.wan.username="$WAN1_USER"' \
+            'uci set network.wan.password="$WAN1_PASS"' \
+            'uci -q delete network.wanb || true' \
+            "uci set network.wanb='interface'" \
+            "uci set network.wanb.device='eth1'" \
+            "uci set network.wanb.proto='pppoe'" \
+            'uci set network.wanb.username="$WAN2_USER"' \
+            'uci set network.wanb.password="$WAN2_PASS"' \
+            'uci -q delete network.br_lan || true' \
+            "uci set network.br_lan='device'" \
+            "uci set network.br_lan.type='bridge'" \
+            "uci add_list network.br_lan.ports='eth2'" \
+            "uci add_list network.br_lan.ports='eth3'" \
+            "uci add_list network.br_lan.ports='eth4'" \
+            "uci add_list network.br_lan.ports='eth5'" \
+            "uci set network.lan='interface'" \
+            "uci set network.lan.device='br-lan'" \
+            "uci set network.lan.proto='static'" \
+            "uci set network.lan.ipaddr='$LAN_IP'" \
+            "uci set network.lan.netmask='255.255.255.0'" \
+            "uci set network.lan.ip6assign='64'" \
+            'uci commit network' \
+            'exit 0' > "$d/98-network.sh"
           chmod +x "$d/98-network.sh"
 
-      - name: Build firmware
+      - name: Build OpenWrt image
         shell: bash
         run: |
           set -euo pipefail
           cd "$IMAGEBUILDER_DIR"
           case "$ROOTFS_SIZE" in 1G) part=1024;; 2G) part=2048;; 3G) part=3072;; 4G) part=4096;; *) exit 1;; esac
-          make image PROFILE=generic FILESYSTEM="$FILESYSTEM" ROOTFS_PARTSIZE="$part" PACKAGES="$PACKAGE_LIST"
+          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
+          source "$GITHUB_WORKSPACE/scripts/apk-custom-packages.sh"
+          packages="$CUSTOM_PACKAGES $official luci-app-openclash"
+          make image PROFILE=generic FILESYSTEM="$FILESYSTEM" ROOTFS_PARTSIZE="$part" PACKAGES="$packages"
 
-      - name: Create release files
+      - name: Prepare release
         shell: bash
         run: |
           set -euo pipefail
           out="$GITHUB_WORKSPACE/release"
           rm -rf "$out"; mkdir -p "$out"
-          img="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name "*combined-efi.img.gz" -print -quit)"
+          img="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*combined-efi.img.gz' -print -quit)"
           test -n "$img"
           cp "$img" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz"
           gunzip -c "$img" > "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img"
-          if [[ "$BUILD_QCOW2" == true ]]; then
-            qemu-img convert -f raw -O qcow2 "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
-          fi
+          if [[ "$BUILD_QCOW2" == true ]]; then qemu-img convert -f raw -O qcow2 "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"; fi
           manifest="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*.manifest' -print -quit)"
           [[ -n "$manifest" ]] && cp "$manifest" "$out/openwrt-${OPENWRT_VERSION}-x86-64.manifest" || true
-          date_utc="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           {
-            echo "# OpenWrt x86-64 build"
-            echo
-            echo "- Build date: ${date_utc}"
-            echo "- OpenWrt: ${OPENWRT_VERSION}"
-            echo "- Filesystem: ${FILESYSTEM}"
-            echo "- Root partition: ${ROOTFS_SIZE}"
-            echo "- LAN: ${LAN_IP}"
-            echo "- eth0: WAN (PPPoE)"
-            echo "- eth1: WANB (PPPoE)"
-            echo "- eth2-eth5: LAN"
-            echo
-            echo "## Included APK packages"
-            printf '%s\n' ${PACKAGE_LIST} | sort | sed 's/^/- /'
+            echo '# OpenWrt x86-64 build'; echo
+            echo "- Build date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- OpenWrt: $OPENWRT_VERSION"
+            echo "- Filesystem: $FILESYSTEM"
+            echo "- Root partition: $ROOTFS_SIZE"
+            echo '- eth0: WAN (PPPoE)'; echo '- eth1: WANB (PPPoE)'; echo '- eth2-eth5: LAN'; echo
+            echo '## Included APK packages'
+            printf '%s\n' $packages | sort -u | sed 's/^/- /'
           } > "$out/BUILD-INFO.md"
           sha256sum "$out"/* > "$out/SHA256SUMS"
 
@@ -271,5 +243,4 @@ PY
         run: |
           set -euo pipefail
           tag="openwrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${FILESYSTEM}"
-          title="OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}"
-          gh release create "$tag" release/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz release/openwrt-x86-64-uefi-${FILESYSTEM}.img release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2 release/openwrt-${OPENWRT_VERSION}-x86-64.manifest release/BUILD-INFO.md release/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file release/BUILD-INFO.md
+          gh release create "$tag" release/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz release/openwrt-x86-64-uefi-${FILESYSTEM}.img release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2 release/openwrt-${OPENWRT_VERSION}-x86-64.manifest release/BUILD-INFO.md release/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/BUILD-INFO.md
