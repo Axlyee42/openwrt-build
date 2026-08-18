@@ -142,9 +142,6 @@ jobs:
           echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
           echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "RootFS: ${SIZE}"
-          echo "Partition: ${PARTSIZE} MB"
-
 
       # ==========================================================
       # LAN
@@ -168,11 +165,9 @@ jobs:
 
           echo "LAN_IP=${LAN_IP}" >> "${GITHUB_ENV}"
 
-          echo "LAN IP: ${LAN_IP}"
-
 
       # ==========================================================
-      # PPPoE secrets
+      # PPPoE
       # ==========================================================
 
       - name: Validate PPPoE secrets
@@ -196,8 +191,6 @@ jobs:
               exit 1
             fi
           done
-
-          echo "PPPoE secrets are configured."
 
 
       # ==========================================================
@@ -239,15 +232,7 @@ jobs:
           set -euo pipefail
 
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
-
           ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-
-          echo
-          echo "=========================================="
-          echo "Downloading ImageBuilder"
-          echo "=========================================="
-
-          echo "${BASE_URL}/${ARCHIVE}"
 
           wget \
             --retry-connrefused \
@@ -267,7 +252,6 @@ jobs:
             --no-same-owner \
             -C imagebuilder
 
-          echo
           echo "ImageBuilder ready."
 
 
@@ -280,12 +264,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           make info
 
 
       # ==========================================================
-      # PassWall repository
+      # PassWall
       # ==========================================================
 
       - name: Configure PassWall repository
@@ -320,13 +303,9 @@ jobs:
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
             -O keys/openwrt-passwall-build.pem
 
-          echo
-          echo "PassWall repositories:"
-          tail -n 10 repositories
-
 
       # ==========================================================
-      # wukongdaily APK
+      # wukongdaily
       # ==========================================================
 
       - name: Download wukongdaily APK repository
@@ -347,17 +326,12 @@ jobs:
           fi
 
 
-      # ==========================================================
-      # Prepare wukongdaily APK
-      # ==========================================================
-
       - name: Prepare wukongdaily APK
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf imagebuilder/packages
-
           mkdir -p imagebuilder/packages
 
           find third-party-apk/run/x86 \
@@ -373,7 +347,6 @@ jobs:
             wc -l
           )"
 
-          echo
           echo "wukongdaily APK count: ${COUNT}"
 
           if [ "${COUNT}" -eq 0 ]; then
@@ -434,13 +407,9 @@ jobs:
             "${URL}" \
             -P imagebuilder/packages
 
-          echo
-          echo "OpenClash:"
-          ls -lh imagebuilder/packages/luci-app-openclash-*.apk
-
 
       # ==========================================================
-      # Official OpenWrt SDK
+      # Official SDK
       # ==========================================================
 
       - name: Download official OpenWrt SDK
@@ -465,7 +434,6 @@ jobs:
             exit 1
           fi
 
-          echo
           echo "SDK archive:"
           echo "${SDK_ARCHIVE}"
 
@@ -477,7 +445,6 @@ jobs:
             -O openwrt-sdk.tar.zst
 
           rm -rf sdk
-
           mkdir -p sdk
 
           tar \
@@ -487,11 +454,9 @@ jobs:
             --no-same-owner \
             -C sdk
 
-          echo "SDK ready."
-
 
       # ==========================================================
-      # Official SDK feeds
+      # Official feeds
       # ==========================================================
 
       - name: Update SDK feeds
@@ -501,12 +466,11 @@ jobs:
           set -euo pipefail
 
           ./scripts/feeds update -a
-
           ./scripts/feeds install -a
 
 
       # ==========================================================
-      # Kiddin9 source
+      # Kiddin9
       # ==========================================================
 
       - name: Download Kiddin9 Kwrt 25.12
@@ -522,14 +486,7 @@ jobs:
             https://github.com/kiddin9/Kwrt.git \
             kiddin9-kwrt
 
-          echo
-          echo "Kiddin9 commit:"
-
-          git \
-            -C kiddin9-kwrt \
-            log \
-            -1 \
-            --oneline
+          git -C kiddin9-kwrt log -1 --oneline
 
 
       # ==========================================================
@@ -557,18 +514,7 @@ jobs:
 
 
       # ==========================================================
-      # Prepare package sources
-      #
-      # Backend:
-      #   sdk/package/third-party
-      #
-      # LuCI:
-      #   sdk/feeds/luci/applications
-      #
-      # 然后手动复制到：
-      #   sdk/package/feeds/luci
-      #
-      # 避免 feeds install -a 忽略手工新增的包。
+      # Prepare third-party sources
       # ==========================================================
 
       - name: Prepare third-party sources
@@ -580,7 +526,8 @@ jobs:
 
           mkdir -p \
             sdk/package/third-party \
-            sdk/feeds/luci/applications
+            sdk/feeds/luci/applications \
+            sdk/package/feeds/luci
 
 
           find_package_dir() {
@@ -592,28 +539,21 @@ jobs:
               -name Makefile \
               -print |
             while IFS= read -r MAKEFILE; do
-
               DIR="$(dirname "${MAKEFILE}")"
 
               if [ "$(basename "${DIR}")" = "${NAME}" ]; then
                 printf '%s\n' "${DIR}"
                 return 0
               fi
-
             done
           }
 
 
           resolve_package() {
             local NAME="$1"
-
             local SRC=""
 
-
-            # ----------------------------------------------------
             # 1. Kiddin9
-            # ----------------------------------------------------
-
             SRC="$(
               find_package_dir \
                 kiddin9-kwrt \
@@ -627,10 +567,7 @@ jobs:
             fi
 
 
-            # ----------------------------------------------------
-            # 2. sbwml fallback
-            # ----------------------------------------------------
-
+            # 2. sbwml
             SRC="$(
               find_package_dir \
                 sbwml-pkgs \
@@ -644,22 +581,16 @@ jobs:
             fi
 
 
-            # ----------------------------------------------------
-            # 3. TimeWOL fallback
-            # ----------------------------------------------------
-
+            # 3. TimeWOL
             if [ "${NAME}" = "luci-app-timewol" ] &&
               [ -f timewol-pkg/Makefile ]
             then
-
               (
                 cd timewol-pkg
                 pwd
               )
-
               return 0
             fi
-
 
             return 1
           }
@@ -667,7 +598,6 @@ jobs:
 
           copy_backend() {
             local NAME="$1"
-
             local SRC=""
 
             if ! SRC="$(resolve_package "${NAME}")"; then
@@ -678,14 +608,8 @@ jobs:
             fi
 
             echo
-            echo "=========================================="
-            echo "Backend package"
-            echo "=========================================="
-
-            echo "Name:"
+            echo "Backend:"
             echo "${NAME}"
-
-            echo
             echo "Source:"
             echo "${SRC}"
 
@@ -700,7 +624,6 @@ jobs:
 
           copy_luci_source() {
             local NAME="$1"
-
             local SRC=""
 
             if ! SRC="$(resolve_package "${NAME}")"; then
@@ -711,14 +634,8 @@ jobs:
             fi
 
             echo
-            echo "=========================================="
-            echo "LuCI package source"
-            echo "=========================================="
-
-            echo "Name:"
+            echo "LuCI:"
             echo "${NAME}"
-
-            echo
             echo "Source:"
             echo "${SRC}"
 
@@ -732,72 +649,45 @@ jobs:
             if [ ! -f \
               "sdk/feeds/luci/applications/${NAME}/Makefile"
             ]; then
-              echo "ERROR: Makefile missing after copy."
+              echo "ERROR: LuCI Makefile missing: ${NAME}"
               exit 1
             fi
           }
 
 
-          # Backend
+          # Backend packages
           copy_backend filebrowser
           copy_backend vlmcsd
 
 
-          # LuCI source
+          # LuCI sources
           copy_luci_source luci-app-filebrowser-go
           copy_luci_source luci-app-vlmcsd
           copy_luci_source luci-app-autoreboot
           copy_luci_source luci-app-timewol
 
 
-          echo
-          echo "=========================================="
-          echo "Prepared LuCI sources"
-          echo "=========================================="
-
-          for PACKAGE in \
-            luci-app-filebrowser-go \
-            luci-app-vlmcsd \
-            luci-app-autoreboot \
-            luci-app-timewol
-          do
-
-            echo "${PACKAGE}:"
-
-            ls -la \
-              "sdk/feeds/luci/applications/${PACKAGE}"
-
-          done
-
-
       # ==========================================================
-      # Install custom LuCI packages
+      # Create proper LuCI symlinks
       #
-      # 不再依赖：
-      #   ./scripts/feeds install -a
+      # 关键修复：
       #
-      # 直接复制到 package/feeds/luci。
+      # 不复制 LuCI 包。
       #
-      # 这样：
+      # 使用与 scripts/feeds install 相同的 symlink 形式：
       #
-      # package/feeds/luci/<package>/Makefile
+      # package/feeds/luci/<package>
+      # ->
+      # ../../../feeds/luci/applications/<package>
       #
-      # 可以正确使用：
-      #
-      # ../../luci.mk
+      # 这样 Makefile 中的 ../../luci.mk 才会正确解析。
       # ==========================================================
 
-      - name: Install custom LuCI packages
+      - name: Install custom LuCI symlinks
         working-directory: sdk
         shell: bash
         run: |
           set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Installing custom LuCI packages"
-          echo "=========================================="
-
 
           mkdir -p package/feeds/luci
 
@@ -809,56 +699,76 @@ jobs:
             luci-app-timewol
           do
 
-            SRC="feeds/luci/applications/${PACKAGE}"
+            SRC="../../../feeds/luci/applications/${PACKAGE}"
 
             DST="package/feeds/luci/${PACKAGE}"
 
 
             echo
-            echo "Package: ${PACKAGE}"
-            echo "Source : ${SRC}"
-            echo "Target : ${DST}"
+            echo "=========================================="
+            echo "Installing LuCI symlink"
+            echo "=========================================="
 
 
-            if [ ! -f "${SRC}/Makefile" ]; then
+            echo "Source:"
+            echo "${SRC}"
 
-              echo
-              echo "ERROR: Source Makefile not found:"
-              echo "${SRC}/Makefile"
-
-              exit 1
-
-            fi
+            echo "Target:"
+            echo "${DST}"
 
 
             rm -rf "${DST}"
 
 
-            cp -a \
+            ln -s \
               "${SRC}" \
               "${DST}"
 
 
             if [ ! -f "${DST}/Makefile" ]; then
+              echo
+              echo "ERROR: LuCI symlink is invalid:"
+              echo "${DST}"
 
               echo
-              echo "ERROR: Package installation failed:"
-              echo "${PACKAGE}"
+              echo "Link target:"
+              readlink "${DST}" || true
 
               exit 1
-
             fi
 
 
             echo "OK: ${PACKAGE}"
 
+
           done
+
+
+      # ==========================================================
+      # Verify LuCI structure
+      # ==========================================================
+
+      - name: Verify LuCI structure
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
 
 
           echo
           echo "=========================================="
-          echo "Checking installed LuCI packages"
+          echo "LuCI structure"
           echo "=========================================="
+
+
+          if [ ! -f feeds/luci/luci.mk ]; then
+            echo "ERROR: Official LuCI luci.mk missing:"
+            echo "feeds/luci/luci.mk"
+            exit 1
+          fi
+
+
+          echo "OK: feeds/luci/luci.mk"
 
 
           for PACKAGE in \
@@ -870,74 +780,37 @@ jobs:
 
             LINK="package/feeds/luci/${PACKAGE}"
 
-            if [ -f "${LINK}/Makefile" ]; then
+            echo
+            echo "Checking:"
+            echo "${LINK}"
 
-              echo "OK: ${PACKAGE}"
 
-            else
-
-              echo
-              echo "ERROR: Missing:"
-              echo "${LINK}/Makefile"
-
+            if [ ! -L "${LINK}" ]; then
+              echo "ERROR: Not a symlink."
               exit 1
-
             fi
+
+
+            TARGET="$(readlink "${LINK}")"
+
+
+            echo "Target:"
+            echo "${TARGET}"
+
+
+            if [ ! -f "${LINK}/Makefile" ]; then
+              echo "ERROR: Makefile cannot be resolved."
+              exit 1
+            fi
+
+
+            echo "OK: ${PACKAGE}"
 
           done
 
 
       # ==========================================================
-      # Verify LuCI Makefile include
-      #
-      # 这一步提前发现 ../../luci.mk 问题。
-      # ==========================================================
-
-      - name: Verify LuCI Makefile layout
-        working-directory: sdk
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f package/feeds/luci/luci.mk ]; then
-            echo
-            echo "ERROR: Official LuCI luci.mk missing:"
-            echo "package/feeds/luci/luci.mk"
-            exit 1
-          fi
-
-          for PACKAGE in \
-            luci-app-filebrowser-go \
-            luci-app-vlmcsd \
-            luci-app-autoreboot \
-            luci-app-timewol
-          do
-
-            MAKEFILE="package/feeds/luci/${PACKAGE}/Makefile"
-
-            echo
-            echo "Checking ${MAKEFILE}"
-
-            if [ ! -f "${MAKEFILE}" ]; then
-              echo "ERROR: Makefile missing."
-              exit 1
-            fi
-
-            INCLUDE_LINE="$(
-              grep -E \
-                'luci\.mk|LUCI_PKGARCH|LUCI_TITLE' \
-                "${MAKEFILE}" |
-              head -n 5 ||
-              true
-            )"
-
-            echo "${INCLUDE_LINE}"
-
-          done
-
-
-      # ==========================================================
-      # SDK configuration
+      # Configure SDK
       # ==========================================================
 
       - name: Configure SDK
@@ -1054,19 +927,12 @@ jobs:
             wc -l
           )"
 
-          echo
-          echo "SDK APK count: ${COUNT}"
-
 
           if [ "${COUNT}" -eq 0 ]; then
             echo "ERROR: SDK produced zero APK."
             exit 1
           fi
 
-
-          # ------------------------------------------------------
-          # Remove old versions
-          # ------------------------------------------------------
 
           for PACKAGE in \
             filebrowser \
@@ -1080,19 +946,13 @@ jobs:
             luci-app-timewol \
             luci-i18n-timewol-zh-cn
           do
-
             find imagebuilder/packages \
               -maxdepth 1 \
               -type f \
               -name "${PACKAGE}-*.apk" \
               -delete
-
           done
 
-
-          # ------------------------------------------------------
-          # Copy SDK APK
-          # ------------------------------------------------------
 
           find sdk/bin/packages \
             -type f \
@@ -1101,7 +961,7 @@ jobs:
 
 
           echo
-          echo "ImageBuilder local APK:"
+          echo "Final local APK:"
           find imagebuilder/packages \
             -maxdepth 1 \
             -type f \
@@ -1111,7 +971,7 @@ jobs:
 
 
       # ==========================================================
-      # Verify new packages
+      # Verify rebuilt packages
       # ==========================================================
 
       - name: Verify rebuilt packages
@@ -1120,7 +980,6 @@ jobs:
           set -euo pipefail
 
           FAILED=0
-
 
           for PACKAGE in \
             luci-app-filebrowser-go \
@@ -1143,19 +1002,12 @@ jobs:
               tail -n 1
             )"
 
-
             if [ -n "${MATCH}" ]; then
-
               echo "OK: ${PACKAGE}"
-
               echo "    ${MATCH}"
-
             else
-
               echo "ERROR: Missing APK: ${PACKAGE}"
-
               FAILED=1
-
             fi
 
           done
@@ -1204,7 +1056,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # network
+          # Network
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -1302,7 +1154,7 @@ jobs:
 
 
           # ------------------------------------------------------
-          # Default Chinese
+          # Chinese
           # ------------------------------------------------------
 
           printf '%s\n' \
@@ -1314,12 +1166,13 @@ jobs:
             "exit 0" \
             > imagebuilder/files/etc/uci-defaults/99-default-language
 
+
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
 
       # ==========================================================
-      # Load custom package list
+      # User custom packages
       # ==========================================================
 
       - name: Load custom package list
@@ -1350,6 +1203,7 @@ jobs:
           set -euo pipefail
 
           rm -f selected-packages.txt
+
 
           printf '%s\n' \
             "luci" \
@@ -1383,7 +1237,6 @@ jobs:
 
 
           while IFS= read -r PACKAGE; do
-
             [ -z "${PACKAGE}" ] && continue
 
             case "${PACKAGE}" in
@@ -1461,7 +1314,6 @@ jobs:
 
           done
 
-
           if [ "${FAILED}" -ne 0 ]; then
             exit 1
           fi
@@ -1489,13 +1341,6 @@ jobs:
           echo "=========================================="
           echo "Building OpenWrt"
           echo "=========================================="
-
-          echo "OpenWrt: ${OPENWRT_VERSION}"
-          echo "RootFS: ${ROOTFS_PARTSIZE} MB"
-
-          echo
-          echo "Packages:"
-          echo "${PACKAGES}"
 
           make image \
             PROFILE="generic" \
@@ -1603,7 +1448,7 @@ jobs:
             "OpenWrt: ${OPENWRT_VERSION}" \
             "Target: x86-64" \
             "ImageBuilder: Official OpenWrt" \
-            "SDK: Official OpenWrt SDK" \
+            "SDK: Official OpenWrt" \
             "Primary third-party source: Kiddin9 Kwrt 25.12" \
             "RootFS: ${ROOTFS_SIZE}" \
             "RootFS partition: ${ROOTFS_PARTSIZE} MB" \
@@ -1669,7 +1514,7 @@ jobs:
 
 
       # ==========================================================
-      # GitHub Release
+      # Release
       # ==========================================================
 
       - name: Create GitHub Release
