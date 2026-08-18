@@ -1,3 +1,4 @@
+```yaml
 name: Build OpenWrt x86-64
 
 on:
@@ -268,10 +269,10 @@ jobs:
 
 
       # ==========================================================
-      # PassWall
+      # Third-party APK repositories
       # ==========================================================
 
-      - name: Configure PassWall repository
+      - name: Configure third-party APK repositories
         working-directory: imagebuilder
         shell: bash
         run: |
@@ -284,16 +285,32 @@ jobs:
 
           PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
-          for REPO in \
-            "${PASSWALL_BASE}/passwall_luci/packages.adb" \
-            "${PASSWALL_BASE}/passwall_packages/packages.adb" \
-            "${PASSWALL_BASE}/passwall2/packages.adb"
-          do
+          EAMONXG_FEED="https://openwrt.eamonxg.fun"
+
+          PASSWALL_REPOS="
+          ${PASSWALL_BASE}/passwall_luci/packages.adb
+          ${PASSWALL_BASE}/passwall_packages/packages.adb
+          ${PASSWALL_BASE}/passwall2/packages.adb
+          "
+
+          while IFS= read -r REPO; do
+            [ -z "${REPO}" ] && continue
+
             if ! grep -qxF "${REPO}" repositories; then
               printf '%s\n' "${REPO}" >> repositories
             fi
-          done
+          done <<< "${PASSWALL_REPOS}"
 
+          # Aurora / Shadcn feed
+          #
+          # The feed is provided by eamonxg for OpenWrt 25.12+.
+          # Keep it in the generated system for future apk upgrades.
+
+          if ! grep -qxF "${EAMONXG_FEED}" repositories; then
+            printf '%s\n' "${EAMONXG_FEED}" >> repositories
+          fi
+
+          # PassWall signing key
           mkdir -p keys
 
           wget \
@@ -303,9 +320,13 @@ jobs:
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
             -O keys/openwrt-passwall-build.pem
 
+          echo
+          echo "Configured repositories:"
+          cat repositories
+
 
       # ==========================================================
-      # wukongdaily
+      # Download wukongdaily APK repository
       # ==========================================================
 
       - name: Download wukongdaily APK repository
@@ -325,6 +346,10 @@ jobs:
             exit 1
           fi
 
+
+      # ==========================================================
+      # Prepare wukongdaily APK
+      # ==========================================================
 
       - name: Prepare wukongdaily APK
         shell: bash
@@ -668,19 +693,7 @@ jobs:
 
 
       # ==========================================================
-      # Create proper LuCI symlinks
-      #
-      # 关键修复：
-      #
-      # 不复制 LuCI 包。
-      #
-      # 使用与 scripts/feeds install 相同的 symlink 形式：
-      #
-      # package/feeds/luci/<package>
-      # ->
-      # ../../../feeds/luci/applications/<package>
-      #
-      # 这样 Makefile 中的 ../../luci.mk 才会正确解析。
+      # Install custom LuCI symlinks
       # ==========================================================
 
       - name: Install custom LuCI symlinks
@@ -690,7 +703,6 @@ jobs:
           set -euo pipefail
 
           mkdir -p package/feeds/luci
-
 
           for PACKAGE in \
             luci-app-filebrowser-go \
@@ -703,12 +715,10 @@ jobs:
 
             DST="package/feeds/luci/${PACKAGE}"
 
-
             echo
             echo "=========================================="
             echo "Installing LuCI symlink"
             echo "=========================================="
-
 
             echo "Source:"
             echo "${SRC}"
@@ -716,14 +726,11 @@ jobs:
             echo "Target:"
             echo "${DST}"
 
-
             rm -rf "${DST}"
-
 
             ln -s \
               "${SRC}" \
               "${DST}"
-
 
             if [ ! -f "${DST}/Makefile" ]; then
               echo
@@ -737,10 +744,7 @@ jobs:
               exit 1
             fi
 
-
             echo "OK: ${PACKAGE}"
-
-
           done
 
 
@@ -754,12 +758,10 @@ jobs:
         run: |
           set -euo pipefail
 
-
           echo
           echo "=========================================="
           echo "LuCI structure"
           echo "=========================================="
-
 
           if [ ! -f feeds/luci/luci.mk ]; then
             echo "ERROR: Official LuCI luci.mk missing:"
@@ -767,9 +769,7 @@ jobs:
             exit 1
           fi
 
-
           echo "OK: feeds/luci/luci.mk"
-
 
           for PACKAGE in \
             luci-app-filebrowser-go \
@@ -784,28 +784,22 @@ jobs:
             echo "Checking:"
             echo "${LINK}"
 
-
             if [ ! -L "${LINK}" ]; then
               echo "ERROR: Not a symlink."
               exit 1
             fi
 
-
             TARGET="$(readlink "${LINK}")"
-
 
             echo "Target:"
             echo "${TARGET}"
-
 
             if [ ! -f "${LINK}/Makefile" ]; then
               echo "ERROR: Makefile cannot be resolved."
               exit 1
             fi
 
-
             echo "OK: ${PACKAGE}"
-
           done
 
 
@@ -919,7 +913,6 @@ jobs:
             -printf "%p\n" |
           sort
 
-
           COUNT="$(
             find sdk/bin/packages \
               -type f \
@@ -927,12 +920,10 @@ jobs:
             wc -l
           )"
 
-
           if [ "${COUNT}" -eq 0 ]; then
             echo "ERROR: SDK produced zero APK."
             exit 1
           fi
-
 
           for PACKAGE in \
             filebrowser \
@@ -953,12 +944,10 @@ jobs:
               -delete
           done
 
-
           find sdk/bin/packages \
             -type f \
             -name "*.apk" \
             -exec cp -v {} imagebuilder/packages/ \;
-
 
           echo
           echo "Final local APK:"
@@ -1009,9 +998,7 @@ jobs:
               echo "ERROR: Missing APK: ${PACKAGE}"
               FAILED=1
             fi
-
           done
-
 
           if [ "${FAILED}" -ne 0 ]; then
             exit 1
@@ -1041,11 +1028,11 @@ jobs:
             exit 1
           fi
 
-
           mkdir -p \
             imagebuilder/files/etc/config \
-            imagebuilder/files/etc/uci-defaults
-
+            imagebuilder/files/etc/uci-defaults \
+            imagebuilder/files/etc/apk/keys \
+            imagebuilder/files/etc/apk/repositories.d
 
           if [ -d files ]; then
             rsync \
@@ -1053,6 +1040,30 @@ jobs:
               files/ \
               imagebuilder/files/
           fi
+
+
+          # ------------------------------------------------------
+          # PassWall APK key
+          # ------------------------------------------------------
+
+          wget \
+            --retry-connrefused \
+            --tries=5 \
+            --timeout=30 \
+            https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub \
+            -O imagebuilder/files/etc/apk/keys/openwrt-passwall-build.pem
+
+
+          # ------------------------------------------------------
+          # Persistent third-party repositories
+          # ------------------------------------------------------
+
+          cat > imagebuilder/files/etc/apk/repositories.d/99-customfeeds.list <<EOF
+          https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_luci/packages.adb
+          https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_packages/packages.adb
+          https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall2/packages.adb
+          https://openwrt.eamonxg.fun
+          EOF
 
 
           # ------------------------------------------------------
@@ -1166,7 +1177,6 @@ jobs:
             "exit 0" \
             > imagebuilder/files/etc/uci-defaults/99-default-language
 
-
           chmod +x \
             imagebuilder/files/etc/uci-defaults/99-default-language
 
@@ -1204,7 +1214,6 @@ jobs:
 
           rm -f selected-packages.txt
 
-
           printf '%s\n' \
             "luci" \
             "luci-i18n-base-zh-cn" \
@@ -1225,6 +1234,20 @@ jobs:
             "luci-app-openclash" \
             "luci-app-passwall" \
             "luci-i18n-passwall-zh-cn" \
+            "xray-core" \
+            "sing-box" \
+            "hysteria" \
+            "geoview" \
+            "v2ray-geoip" \
+            "v2ray-geosite" \
+            "kmod-nft-socket" \
+            "kmod-nft-tproxy" \
+            "luci-theme-aurora" \
+            "luci-app-aurora-config" \
+            "luci-i18n-aurora-config-zh-cn" \
+            "luci-theme-shadcn" \
+            "luci-app-package-manager" \
+            "luci-i18n-package-manager-zh-cn" \
             "luci-app-filebrowser-go" \
             "luci-i18n-filebrowser-go-zh-cn" \
             "luci-app-vlmcsd" \
@@ -1280,11 +1303,19 @@ jobs:
             luci-theme-aurora \
             luci-app-aurora-config \
             luci-i18n-aurora-config-zh-cn \
-            bandix \
-            luci-app-bandix \
-            luci-i18n-bandix-zh-cn \
-            luci-app-run \
+            luci-theme-shadcn \
+            luci-app-package-manager \
+            luci-i18n-package-manager-zh-cn \
+            xray-core \
+            sing-box \
+            hysteria \
+            geoview \
+            v2ray-geoip \
+            v2ray-geosite \
+            kmod-nft-socket \
+            kmod-nft-tproxy \
             luci-app-openclash \
+            luci-app-passwall \
             luci-app-filebrowser-go \
             luci-i18n-filebrowser-go-zh-cn \
             luci-app-vlmcsd \
@@ -1320,7 +1351,7 @@ jobs:
 
 
       # ==========================================================
-      # Build UEFI image
+      # Build UEFI
       # ==========================================================
 
       - name: Build UEFI image
@@ -1466,6 +1497,28 @@ jobs:
             "" \
             "IPv6: Enabled" \
             "" \
+            "Proxy engines:" \
+            "Xray" \
+            "Sing-box" \
+            "Hysteria" \
+            "" \
+            "Geo data:" \
+            "GeoView" \
+            "GeoIP" \
+            "GeoSite" \
+            "" \
+            "Themes:" \
+            "Aurora" \
+            "Shadcn" \
+            "" \
+            "Kernel:" \
+            "kmod-nft-socket" \
+            "kmod-nft-tproxy" \
+            "" \
+            "Package manager:" \
+            "apk" \
+            "LuCI Package Manager" \
+            "" \
             "Images:" \
             "UEFI" \
             "QCOW2" \
@@ -1552,10 +1605,31 @@ jobs:
             "- LAN IP: \`${LAN_IP}\`" \
             "- IPv6: Enabled" \
             "" \
-            "## Images" \
+            "## Proxy" \
             "" \
-            "- UEFI" \
-            "- QCOW2" \
+            "- Xray" \
+            "- Sing-box" \
+            "- Hysteria" \
+            "- GeoView" \
+            "- GeoIP" \
+            "- GeoSite" \
+            "- PassWall" \
+            "- OpenClash" \
+            "" \
+            "## Kernel" \
+            "" \
+            "- \`kmod-nft-socket\`" \
+            "- \`kmod-nft-tproxy\`" \
+            "" \
+            "## Themes" \
+            "" \
+            "- Aurora" \
+            "- Shadcn" \
+            "" \
+            "## Package Manager" \
+            "" \
+            "- LuCI Package Manager" \
+            "- Chinese translation" \
             "" \
             "## SDK packages" \
             "" \
@@ -1563,6 +1637,11 @@ jobs:
             "- VLMCSd" \
             "- AutoReboot" \
             "- TimeWOL" \
+            "" \
+            "## Images" \
+            "" \
+            "- UEFI" \
+            "- QCOW2" \
             > release-notes.md
 
           gh release create \
@@ -1574,3 +1653,4 @@ jobs:
             output/selected-packages.txt \
             --title "${TITLE}" \
             --notes-file release-notes.md
+```
