@@ -2,7 +2,7 @@
 
 # Third-party APKs supplied by the current x86 wukongdaily APK repository.
 # Only packages actually present in that repository belong here.
-CUSTOM_PACKAGES="luci-app-run luci-theme-aurora luci-app-aurora-config luci-i18n-aurora-config-zh-cn bandix luci-app-bandix luci-i18n-bandix-zh-cn luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria"
+CUSTOM_PACKAGES="luci-app-run luci-theme-aurora luci-app-aurora-config luci-i18n-aurora-config-zh-cn bandix luci-app-bandix luci-i18n-bandix-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria"
 
 # Packages supplied by the OpenWrt/ImmortalWrt package feeds.
 # These must NOT be looked up in wukongdaily/apk.
