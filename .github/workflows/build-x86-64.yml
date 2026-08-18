@@ -1,476 +1,449 @@
-```yaml
 name: Build OpenWrt x86-64
 
 on:
-  workflow_dispatch:
-    inputs:
-      rootfs_partsize:
-        description: "固件 RootFS 大小（MB）"
-        required: true
-        type: choice
-        default: "4096"
-        options:
-          - "512"
-          - "1024"
-          - "2048"
-          - "4096"
-          - "8192"
+workflow_dispatch:
+inputs:
+rootfs_size:
+description: "RootFS / 固件大小"
+required: true
+default: "4096"
+type: choice
+options:
+- "1024"
+- "2048"
+- "4096"
+- "8192"
+- "16384"
+
+```
+  lan_ip:
+    description: "LAN IP"
+    required: true
+    default: "192.168.1.2"
+    type: string
+```
 
 env:
-  TZ: Asia/Shanghai
-  OPENWRT_VERSION: "25.12.5"
-  LAN_IP: "192.168.1.2"
+TZ: Asia/Shanghai
+OPENWRT_VERSION: "25.12.5"
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-
-    steps:
-
-      # ==========================================================
-      # Checkout
-      # ==========================================================
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ==========================================================
-      # Set build variables
-      # ==========================================================
-      - name: Set build variables
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "ROOTFS_PARTSIZE=${{ inputs.rootfs_partsize }}" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
-
-          echo
-          echo "=========================================="
-          echo "Build information"
-          echo "=========================================="
-          echo "OpenWrt       : ${OPENWRT_VERSION}"
-          echo "Target        : x86-64"
-          echo "RootFS size   : ${{ inputs.rootfs_partsize }} MB"
-          echo "LAN IP        : ${LAN_IP}"
-
-      # ==========================================================
-      # Install dependencies
-      # ==========================================================
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            flex \
-            bison \
-            gawk \
-            gettext \
-            git \
-            libncurses-dev \
-            libssl-dev \
-            python3 \
-            python3-distutils \
-            rsync \
-            unzip \
-            wget \
-            curl \
-            jq \
-            zstd \
-            file \
-            xz-utils \
-            bc \
-            cpio \
-            genisoimage \
-            qemu-utils
-
-      # ==========================================================
-      # Clone OpenWrt
-      # ==========================================================
-      - name: Clone OpenWrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf openwrt
-
-          git clone \
-            --depth=1 \
-            --branch "v${OPENWRT_VERSION}" \
-            https://github.com/openwrt/openwrt.git \
-            openwrt
-
-          cd openwrt
-
-          echo
-          echo "=========================================="
-          echo "OpenWrt source"
-          echo "=========================================="
-
-          git describe --tags --always
-
-      # ==========================================================
-      # Update official feeds
-      # ==========================================================
-      - name: Update feeds
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      # ==========================================================
-      # Load custom package list
-      #
-      # shell/apk-custom-packages.sh 必须定义：
-      #
-      # CUSTOM_PACKAGES="
-      # package1
-      # package2
-      # "
-      # ==========================================================
-      - name: Load custom packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f shell/apk-custom-packages.sh ]; then
-            echo "ERROR: shell/apk-custom-packages.sh not found."
-            exit 1
-          fi
-
-          source shell/apk-custom-packages.sh
-
-          if [ -z "${CUSTOM_PACKAGES:-}" ]; then
-            echo "ERROR: CUSTOM_PACKAGES is empty."
-            exit 1
-          fi
-
-          printf '%s\n' "${CUSTOM_PACKAGES}" \
-            > selected-packages.txt
-
-          sed -i '/^[[:space:]]*$/d' \
-            selected-packages.txt
-
-          sort -u \
-            selected-packages.txt \
-            -o selected-packages.txt
-
-          echo
-          echo "=========================================="
-          echo "Requested custom packages"
-          echo "=========================================="
-
-          cat selected-packages.txt
-
-      # ==========================================================
-      # Base configuration
-      # ==========================================================
-      - name: Configure OpenWrt
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat > .config <<EOF
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-
-          CONFIG_TARGET_ROOTFS_EXT4FS=y
-          CONFIG_TARGET_IMAGES_GZIP=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
-
-          CONFIG_GRUB_IMAGES=y
-          CONFIG_GRUB_EFI_IMAGES=y
-
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-
-          CONFIG_PACKAGE_luci-proto-ipv6=y
-          CONFIG_PACKAGE_luci-proto-ppp=y
-
-          CONFIG_PACKAGE_ppp=y
-          CONFIG_PACKAGE_ppp-mod-pppoe=y
-          CONFIG_PACKAGE_kmod-pppoe=y
-
-          CONFIG_PACKAGE_kmod-ipv6=y
-          CONFIG_PACKAGE_odhcp6c=y
-          CONFIG_PACKAGE_odhcpd-ipv6only=y
-
-          CONFIG_PACKAGE_mwan3=y
-          CONFIG_PACKAGE_luci-app-mwan3=y
-          CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
-
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-
-          CONFIG_PACKAGE_luci-app-package-manager=y
-
-          CONFIG_PACKAGE_kmod-nft-socket=y
-          CONFIG_PACKAGE_kmod-nft-tproxy=y
-
-          CONFIG_PACKAGE_luci-app-openclash=y
-
-          EOF
-
-          # ------------------------------------------------------
-          # Add custom packages
-          # ------------------------------------------------------
-          while IFS= read -r package; do
-
-            [ -z "${package}" ] && continue
-
-            echo
-            echo "Checking package: ${package}"
-
-            if grep -R \
-              -q \
-              -E "^define Package/${package}($|[^A-Za-z0-9_-])" \
-              package \
-              feeds \
-              2>/dev/null
-            then
-
-              echo "Found: ${package}"
-
-              echo \
-                "CONFIG_PACKAGE_${package}=y" \
-                >> .config
-
-            else
-
-              echo "WARNING: Package not found in source tree:"
-              echo "${package}"
-
-            fi
-
-          done < ../selected-packages.txt
-
-          # ------------------------------------------------------
-          # Remove duplicate configuration entries
-          # ------------------------------------------------------
-          awk -F= '!seen[$1]++ || $1 !~ /^CONFIG_PACKAGE_/' \
-            .config > .config.tmp
-
-          mv \
-            .config.tmp \
-            .config
-
-          # ------------------------------------------------------
-          # Resolve dependencies
-          # ------------------------------------------------------
-          make defconfig
-
-      # ==========================================================
-      # Verify configuration
-      # ==========================================================
-      - name: Verify configuration
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Selected custom packages"
-          echo "=========================================="
-
-          while IFS= read -r package; do
-
-            [ -z "${package}" ] && continue
-
-            if grep -qx \
-              "CONFIG_PACKAGE_${package}=y" \
-              .config
-            then
-
-              echo "OK: ${package}"
-
-            else
-
-              echo "WARNING: ${package} not selected"
-
-            fi
-
-          done < ../selected-packages.txt
-
-          echo
-          echo "=========================================="
-          echo "Important packages"
-          echo "=========================================="
-
-          REQUIRED_PACKAGES="
-          luci
-          luci-ssl
-          luci-i18n-base-zh-cn
-          luci-app-package-manager
-          luci-app-mwan3
-          luci-app-upnp
-          luci-app-ttyd
-          luci-app-openclash
-          kmod-nft-socket
-          kmod-nft-tproxy
-          ppp
-          ppp-mod-pppoe
-          kmod-pppoe
-          odhcp6c
-          odhcpd-ipv6only
-          "
-
-          FAILED=0
-
-          while IFS= read -r package; do
-
-            [ -z "${package}" ] && continue
-
-            if grep -qx \
-              "CONFIG_PACKAGE_${package}=y" \
-              .config
-            then
-
-              echo "OK: ${package}"
-
-            else
-
-              echo "WARNING: ${package} missing"
-              FAILED=1
-
-            fi
-
-          done <<< "${REQUIRED_PACKAGES}"
-
-          if [ "${FAILED}" -ne 0 ]; then
-
-            echo
-            echo "WARNING: Some base packages were not selected."
-
-          fi
-
-          echo
-          echo "=========================================="
-          echo "RootFS configuration"
-          echo "=========================================="
-
-          grep \
-            '^CONFIG_TARGET_ROOTFS_PARTSIZE=' \
-            .config || true
-
-      # ==========================================================
-      # Download sources
-      # ==========================================================
-      - name: Download package sources
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          make download \
-            -j"$(nproc)" \
-            V=s
-
-      # ==========================================================
-      # Compile packages
-      # ==========================================================
-      - name: Compile packages
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          make package/compile \
-            -j"$(nproc)" \
-            V=s
-
-      # ==========================================================
-      # Build firmware
-      # ==========================================================
-      - name: Build firmware
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          make \
-            -j"$(nproc)" \
-            V=s
-
-      # ==========================================================
-      # Show firmware
-      # ==========================================================
-      - name: Show firmware
-        working-directory: openwrt
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo
-          echo "=========================================="
-          echo "Firmware images"
-          echo "=========================================="
-
-          find \
-            bin/targets/x86/64 \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f\n' |
-            sort
-
-      # ==========================================================
-      # Prepare artifacts
-      # ==========================================================
-      - name: Prepare artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf artifacts
-          mkdir -p artifacts
-
-          find \
-            openwrt/bin/targets/x86/64 \
-            -maxdepth 1 \
-            -type f \
-            \( \
-              -name '*.img.gz' \
-              -o \
-              -name '*.img' \
-              -o \
-              -name '*.vmdk' \
-              -o \
-              -name '*.qcow2' \
-              -o \
-              -name '*.manifest' \
-              -o \
-              -name '*.json' \
-            \) \
-            -exec cp -f {} artifacts/ \;
-
-          echo
-          echo "=========================================="
-          echo "Artifacts"
-          echo "=========================================="
-
-          ls -lah artifacts
-
-      # ==========================================================
-      # Upload firmware
-      # ==========================================================
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ inputs.rootfs_partsize }}MB
-          path: artifacts/
-          if-no-files-found: error
+build:
+runs-on: ubuntu-24.04
+
+```
+steps:
+
+  # ==========================================================
+  # Checkout
+  # ==========================================================
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  # ==========================================================
+  # Install build dependencies
+  # ==========================================================
+  - name: Install dependencies
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      sudo apt-get update
+
+      sudo apt-get install -y \
+        build-essential \
+        clang \
+        flex \
+        bison \
+        gawk \
+        gettext \
+        git \
+        libncurses-dev \
+        libssl-dev \
+        python3 \
+        rsync \
+        unzip \
+        wget \
+        curl \
+        jq \
+        zstd \
+        file \
+        xz-utils \
+        bc \
+        cpio \
+        genisoimage \
+        qemu-utils
+
+  # ==========================================================
+  # Set build information
+  # ==========================================================
+  - name: Set build information
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
+      echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
+
+      echo "ROOTFS_PARTSIZE=${{ inputs.rootfs_size }}" >> "$GITHUB_ENV"
+      echo "LAN_IP=${{ inputs.lan_ip }}" >> "$GITHUB_ENV"
+
+      echo
+      echo "=========================================="
+      echo "Build information"
+      echo "=========================================="
+      echo "OpenWrt: ${OPENWRT_VERSION}"
+      echo "Target: x86-64"
+      echo "RootFS: ${{ inputs.rootfs_size }} MB"
+      echo "LAN IP: ${{ inputs.lan_ip }}"
+
+  # ==========================================================
+  # Clone OpenWrt
+  # ==========================================================
+  - name: Clone OpenWrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      rm -rf openwrt
+
+      git clone \
+        --depth=1 \
+        --branch "v${OPENWRT_VERSION}" \
+        https://github.com/openwrt/openwrt.git \
+        openwrt
+
+      cd openwrt
+
+      echo
+      echo "=========================================="
+      echo "OpenWrt source"
+      echo "=========================================="
+
+      git describe --tags --always
+
+  # ==========================================================
+  # Update feeds
+  # ==========================================================
+  - name: Update feeds
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      ./scripts/feeds update -a
+      ./scripts/feeds install -a
+
+  # ==========================================================
+  # Load custom package list
+  #
+  # shell/apk-custom-packages.sh 必须定义：
+  #
+  # CUSTOM_PACKAGES="
+  # package1
+  # package2
+  # "
+  # ==========================================================
+  - name: Load custom packages
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      if [ ! -f shell/apk-custom-packages.sh ]; then
+        echo "ERROR: shell/apk-custom-packages.sh not found."
+        exit 1
+      fi
+
+      source shell/apk-custom-packages.sh
+
+      if [ -z "${CUSTOM_PACKAGES:-}" ]; then
+        echo "ERROR: CUSTOM_PACKAGES is empty."
+        exit 1
+      fi
+
+      printf '%s\n' "${CUSTOM_PACKAGES}" > selected-packages.txt
+
+      sed -i '/^[[:space:]]*$/d' selected-packages.txt
+
+      sort -u \
+        selected-packages.txt \
+        -o selected-packages.txt
+
+      echo
+      echo "=========================================="
+      echo "Selected packages"
+      echo "=========================================="
+
+      cat selected-packages.txt
+
+  # ==========================================================
+  # Configure OpenWrt
+  # ==========================================================
+  - name: Configure OpenWrt
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      cat > .config <<EOF
+      CONFIG_TARGET_x86=y
+      CONFIG_TARGET_x86_64=y
+      CONFIG_TARGET_x86_64_DEVICE_generic=y
+
+      CONFIG_TARGET_ROOTFS_EXT4FS=y
+      CONFIG_TARGET_IMAGES_GZIP=y
+      CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
+
+      CONFIG_GRUB_IMAGES=n
+      CONFIG_GRUB_EFI_IMAGES=y
+
+      CONFIG_PACKAGE_luci=y
+      CONFIG_PACKAGE_luci-ssl=y
+      CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+      CONFIG_PACKAGE_luci-proto-ipv6=y
+      CONFIG_PACKAGE_luci-proto-ppp=y
+
+      CONFIG_PACKAGE_ppp=y
+      CONFIG_PACKAGE_ppp-mod-pppoe=y
+      CONFIG_PACKAGE_kmod-pppoe=y
+
+      CONFIG_PACKAGE_kmod-ipv6=y
+      CONFIG_PACKAGE_odhcp6c=y
+      CONFIG_PACKAGE_odhcpd-ipv6only=y
+
+      CONFIG_PACKAGE_mwan3=y
+      CONFIG_PACKAGE_luci-app-mwan3=y
+      CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
+
+      CONFIG_PACKAGE_luci-app-upnp=y
+      CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+
+      CONFIG_PACKAGE_luci-app-ttyd=y
+      CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+
+      CONFIG_PACKAGE_luci-app-package-manager=y
+
+      CONFIG_PACKAGE_kmod-nft-socket=y
+      CONFIG_PACKAGE_kmod-nft-tproxy=y
+
+      CONFIG_PACKAGE_luci-app-openclash=y
+      EOF
+
+      # ------------------------------------------------------
+      # Add packages from selected-packages.txt
+      # ------------------------------------------------------
+      while IFS= read -r package; do
+
+        [ -z "${package}" ] && continue
+
+        echo
+        echo "Checking package: ${package}"
+
+        if grep -R \
+          -q \
+          -E "^define Package/${package}($|[^A-Za-z0-9_-])" \
+          package \
+          feeds \
+          2>/dev/null
+        then
+          echo "Found: ${package}"
+
+          echo "CONFIG_PACKAGE_${package}=y" >> .config
+        else
+          echo "WARNING: Package not found in source tree:"
+          echo "${package}"
+        fi
+
+      done < ../selected-packages.txt
+
+      # ------------------------------------------------------
+      # Remove duplicate CONFIG_PACKAGE entries
+      # ------------------------------------------------------
+      awk '!seen[$0]++' .config > .config.tmp
+      mv .config.tmp .config
+
+      echo
+      echo "=========================================="
+      echo "Running make defconfig"
+      echo "=========================================="
+
+      make defconfig
+
+  # ==========================================================
+  # Verify configuration
+  # ==========================================================
+  - name: Verify configuration
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      echo
+      echo "=========================================="
+      echo "Final selected packages"
+      echo "=========================================="
+
+      FAILED=0
+
+      while IFS= read -r package; do
+
+        [ -z "${package}" ] && continue
+
+        if grep -qx \
+          "CONFIG_PACKAGE_${package}=y" \
+          .config
+        then
+          echo "OK: ${package}"
+        else
+          echo "WARNING: ${package} not selected"
+          FAILED=1
+        fi
+
+      done < ../selected-packages.txt
+
+      echo
+      echo "=========================================="
+      echo "Important packages"
+      echo "=========================================="
+
+      for package in \
+        luci \
+        luci-i18n-base-zh-cn \
+        luci-app-package-manager \
+        luci-app-mwan3 \
+        luci-app-upnp \
+        luci-app-ttyd \
+        luci-app-openclash \
+        kmod-nft-socket \
+        kmod-nft-tproxy
+      do
+
+        if grep -qx \
+          "CONFIG_PACKAGE_${package}=y" \
+          .config
+        then
+          echo "OK: ${package}"
+        else
+          echo "WARNING: ${package} missing"
+          FAILED=1
+        fi
+
+      done
+
+      echo
+      echo "=========================================="
+      echo "RootFS configuration"
+      echo "=========================================="
+
+      echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}"
+      echo "LAN_IP=${LAN_IP}"
+
+      if [ "${FAILED}" -ne 0 ]; then
+        echo
+        echo "WARNING: Some optional/custom packages were not selected."
+        echo "The build will continue."
+      fi
+
+  # ==========================================================
+  # Download package sources
+  # ==========================================================
+  - name: Download package sources
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      make download \
+        -j"$(nproc)" \
+        V=s
+
+  # ==========================================================
+  # Compile packages
+  # ==========================================================
+  - name: Compile packages
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      make package/compile \
+        -j"$(nproc)" \
+        V=s
+
+  # ==========================================================
+  # Build firmware
+  # ==========================================================
+  - name: Build firmware
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      make -j"$(nproc)" V=s
+
+  # ==========================================================
+  # Show firmware
+  # ==========================================================
+  - name: Show firmware
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      echo
+      echo "=========================================="
+      echo "Firmware images"
+      echo "=========================================="
+
+      find bin/targets/x86/64 \
+        -maxdepth 1 \
+        -type f \
+        -printf '%f\n' |
+        sort
+
+  # ==========================================================
+  # Prepare artifacts
+  # ==========================================================
+  - name: Prepare artifacts
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      mkdir -p artifacts
+
+      find openwrt/bin/targets/x86/64 \
+        -maxdepth 1 \
+        -type f \
+        \( \
+          -name '*.img.gz' \
+          -o \
+          -name '*.img' \
+          -o \
+          -name '*.vmdk' \
+          -o \
+          -name '*.qcow2' \
+          -o \
+          -name '*.manifest' \
+          -o \
+          -name '*.json' \
+        \) \
+        -exec cp -f {} artifacts/ \;
+
+      echo
+      echo "=========================================="
+      echo "Artifacts"
+      echo "=========================================="
+
+      ls -lah artifacts
+
+  # ==========================================================
+  # Upload artifacts
+  # ==========================================================
+  - name: Upload firmware
+    uses: actions/upload-artifact@v4
+    with:
+      name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ inputs.rootfs_size }}MB
+      path: artifacts/
+      if-no-files-found: error
 ```
