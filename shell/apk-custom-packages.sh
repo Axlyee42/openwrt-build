@@ -1,89 +1,60 @@
 #!/usr/bin/env bash
 
-# ==========================================================
-# OpenWrt 25.12.x ImageBuilder
-# Third-party APK package list
 #
-# 注意：
-# 1. 本文件只负责定义 CUSTOM_PACKAGES
-# 2. 不负责下载 APK
-# 3. 不负责添加 APK 软件源
-# 4. 不要使用 opkg / feeds 机制
-# 5. OpenWrt 25.12.x 使用 APK
+# ==========================================================
+# Third-party APK packages for OpenWrt 25.12.x
+# ==========================================================
+#
+# IMPORTANT:
+#
+# 这里只填写第三方 APK。
+#
+# OpenWrt 官方仓库中的软件，例如：
+#
+# luci
+# luci-ssl
+# luci-app-mwan3
+# luci-app-upnp
+# luci-app-ttyd
+# luci-compat
+# kmod-tun
+# kmod-inet-diag
+# kmod-nft-tproxy
+# bash
+# curl
+# ip-full
+# unzip
+#
+# 不要放在这里。
+#
 # ==========================================================
 
-set -euo pipefail
 
 CUSTOM_PACKAGES="
-
-# ==========================================================
-# Aurora
-# ==========================================================
-
 luci-theme-aurora
 luci-app-aurora-config
 luci-i18n-aurora-config-zh-cn
-
-
-# ==========================================================
-# Bandix
-# ==========================================================
 
 bandix
 luci-app-bandix
 luci-i18n-bandix-zh-cn
 
-
-# ==========================================================
-# Run
-# ==========================================================
-
 luci-app-run
-
-
-# ==========================================================
-# FileManager
-# ==========================================================
 
 luci-app-filemanager
 luci-i18n-filemanager-zh-cn
 
-
-# ==========================================================
-# FileBrowser Go
-# ==========================================================
-
 luci-app-filebrowser-go
 luci-i18n-filebrowser-go-zh-cn
-
-
-# ==========================================================
-# Timewol
-# ==========================================================
 
 luci-app-timewol
 luci-i18n-timewol-zh-cn
 
-
-# ==========================================================
-# VLMCSd
-# ==========================================================
-
 luci-app-vlmcsd
 luci-i18n-vlmcsd-zh-cn
 
-
-# ==========================================================
-# Auto Reboot
-# ==========================================================
-
 luci-app-autoreboot
 luci-i18n-autoreboot-zh-cn
-
-
-# ==========================================================
-# PassWall
-# ==========================================================
 
 luci-app-passwall
 luci-i18n-passwall-zh-cn
@@ -93,21 +64,5 @@ xray-core
 sing-box
 hysteria
 
-
-# ==========================================================
-# OpenClash
-# ==========================================================
-
 luci-app-openclash
-luci-compat
-
-kmod-tun
-kmod-inet-diag
-kmod-nft-tproxy
-
-bash
-curl
-ip-full
-unzip
-
 "
