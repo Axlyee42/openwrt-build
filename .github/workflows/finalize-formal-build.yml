@@ -1,0 +1,101 @@
+name: Finalize and launch formal 4G build
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  finalize:
+    if: github.event.head_commit.message == 'fix: finalize third-party APK package list'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Patch official OpenWrt package list into build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('.github/workflows/build-x86-64.yml')
+          s = p.read_text()
+          extra = 'luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
+          unwanted = 'luci-app-ssr-plus luci-i18n-ssr-plus-zh-cn clashoo luci-app-clashoo luci-i18n-clashoo-zh-cn luci-app-lucky lucky luci-i18n-lucky-zh-cn luci-app-rtp2httpd luci-i18n-rtp2httpd-zh-cn luci-app-partexp luci-i18n-partexp-zh-cn'
+          for name in unwanted.split():
+              s = re.sub(r'(?<![A-Za-z0-9_-])' + re.escape(name) + r'(?![A-Za-z0-9_-])', '', s)
+          # Add official packages to the actual ImageBuilder make invocation.
+          marker = 'OFFICIAL_PACKAGES="' + extra + '"'
+          if marker not in s:
+              s = s.replace('      - name: Build OpenWrt image\n',
+                            '      - name: Build OpenWrt image\n        env:\n          OFFICIAL_PACKAGES: ' + extra + '\n')
+          # Prefer an existing PACKAGES= assignment; otherwise inject one on the make image command.
+          if 'PACKAGES="${PACKAGES} ${OFFICIAL_PACKAGES}"' not in s:
+              if 'PACKAGES="${PACKAGES}"' in s:
+                  s = s.replace('PACKAGES="${PACKAGES}"', 'PACKAGES="${PACKAGES} ${OFFICIAL_PACKAGES}"')
+              elif 'PACKAGES=${PACKAGES}' in s:
+                  s = s.replace('PACKAGES=${PACKAGES}', 'PACKAGES="${PACKAGES} ${OFFICIAL_PACKAGES}"')
+              else:
+                  lines = s.splitlines()
+                  for i, line in enumerate(lines):
+                      if 'make image' in line and not line.lstrip().startswith('#'):
+                          lines[i] = line + ' PACKAGES="${OFFICIAL_PACKAGES} ${PACKAGES:-}"'
+                          break
+                  else:
+                      raise SystemExit('ERROR: could not locate make image invocation')
+                  s = '\n'.join(lines) + '\n'
+          p.write_text(s)
+          PY
+
+      - name: Commit final workflow package fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/build-x86-64.yml
+          if git diff --cached --quiet; then
+            echo 'No workflow change required.'
+          else
+            git commit -m 'fix: add required official OpenWrt packages'
+            git push
+          fi
+
+      - name: Delete failed and cancelled historical workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current='${{ github.run_id }}'
+          gh run list --repo "${GITHUB_REPOSITORY}" --limit 100 --json databaseId,status,conclusion --jq '.[] | select(.databaseId != ('"${current}"')) | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "stale" or .conclusion == "action_required") | .databaseId' |
+          while read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            echo "Deleting failed run ${run_id}"
+            gh run delete "${run_id}" --repo "${GITHUB_REPOSITORY}" || true
+          done
+
+      - name: Launch formal 4G build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-x86-64.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f openwrt_version=25.12.5 \
+            -f lan_ip=192.168.1.2 \
+            -f rootfs_size=4G \
+            -f filesystem=ext4 \
+            -f qcow2=true
