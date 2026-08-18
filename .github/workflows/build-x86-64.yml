@@ -41,10 +41,6 @@ concurrency:
 
 env:
   LAN_IP: 192.168.1.2
-  WAN1_USER: ${{ secrets.WAN1_USER }}
-  WAN1_PASS: ${{ secrets.WAN1_PASS }}
-  WAN2_USER: ${{ secrets.WAN2_USER }}
-  WAN2_PASS: ${{ secrets.WAN2_PASS }}
 
 jobs:
   resolve:
@@ -154,22 +150,104 @@ jobs:
         run: |
           set -euo pipefail
           d="$IMAGEBUILDER_DIR/files/etc/uci-defaults"
-          mkdir -p "$d"
-          u64="$(printf '%s' "$WAN1_USER" | base64 -w0)"
-          p64="$(printf '%s' "$WAN1_PASS" | base64 -w0)"
-          u264="$(printf '%s' "$WAN2_USER" | base64 -w0)"
-          p264="$(printf '%s' "$WAN2_PASS" | base64 -w0)"
-          printf '%s\n' \
-            '#!/bin/sh' 'set -eu' \
-            "WAN1_USER=\"\$(printf '%s' '$u64' | base64 -d)\"" \
-            "WAN1_PASS=\"\$(printf '%s' '$p64' | base64 -d)\"" \
-            "WAN2_USER=\"\$(printf '%s' '$u264' | base64 -d)\"" \
-            "WAN2_PASS=\"\$(printf '%s' '$p264' | base64 -d)\"" \
-            'uci -q delete network.wan || true' "uci set network.wan='interface'" "uci set network.wan.device='eth0'" "uci set network.wan.proto='pppoe'" 'uci set network.wan.username="$WAN1_USER"' 'uci set network.wan.password="$WAN1_PASS"' \
-            'uci -q delete network.wanb || true' "uci set network.wanb='interface'" "uci set network.wanb.device='eth1'" "uci set network.wanb.proto='pppoe'" 'uci set network.wanb.username="$WAN2_USER"' 'uci set network.wanb.password="$WAN2_PASS"' \
-            'uci -q delete network.br_lan || true' "uci set network.br_lan='device'" "uci set network.br_lan.type='bridge'" "uci add_list network.br_lan.ports='eth2'" "uci add_list network.br_lan.ports='eth3'" "uci add_list network.br_lan.ports='eth4'" "uci add_list network.br_lan.ports='eth5'" \
-            "uci set network.lan='interface'" "uci set network.lan.device='br-lan'" "uci set network.lan.proto='static'" "uci set network.lan.ipaddr='$LAN_IP'" "uci set network.lan.netmask='255.255.255.0'" "uci set network.lan.ip6assign='64'" 'uci commit network' 'exit 0' > "$d/98-network.sh"
+          b="$IMAGEBUILDER_DIR/files/usr/bin"
+          mkdir -p "$d" "$b"
+
+          cat > "$d/98-network.sh" <<'EOF'
+          #!/bin/sh
+          set -eu
+
+          # Physical port mapping:
+          # eth0 = WAN
+          # eth1 = WANB
+          # eth2-eth5 = LAN
+          uci -q delete network.wan || true
+          uci set network.wan='interface'
+          uci set network.wan.device='eth0'
+          uci set network.wan.proto='none'
+          uci set network.wan.auto='0'
+
+          uci -q delete network.wanb || true
+          uci set network.wanb='interface'
+          uci set network.wanb.device='eth1'
+          uci set network.wanb.proto='none'
+          uci set network.wanb.auto='0'
+
+          uci -q delete network.br_lan || true
+          uci set network.br_lan='device'
+          uci set network.br_lan.type='bridge'
+          uci add_list network.br_lan.ports='eth2'
+          uci add_list network.br_lan.ports='eth3'
+          uci add_list network.br_lan.ports='eth4'
+          uci add_list network.br_lan.ports='eth5'
+
+          uci -q delete network.lan || true
+          uci set network.lan='interface'
+          uci set network.lan.device='br-lan'
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.1.2'
+          uci set network.lan.netmask='255.255.255.0'
+          uci set network.lan.ip6assign='64'
+          uci commit network
+          exit 0
+          EOF
           chmod +x "$d/98-network.sh"
+
+          cat > "$b/setup-dual-wan" <<'EOF'
+          #!/bin/ash
+          set -eu
+
+          echo 'OpenWrt dual-WAN first-boot setup'
+          echo 'eth0 = WAN, eth1 = WANB, eth2-eth5 = LAN'
+          echo
+          printf 'WAN PPPoE username: '
+          read WAN1_USER
+          printf 'WAN PPPoE password: '
+          read -s WAN1_PASS
+          echo
+          printf 'WANB PPPoE username: '
+          read WAN2_USER
+          printf 'WANB PPPoE password: '
+          read -s WAN2_PASS
+          echo
+
+          uci set network.wan='interface'
+          uci set network.wan.device='eth0'
+          uci set network.wan.proto='pppoe'
+          uci set network.wan.username="$WAN1_USER"
+          uci set network.wan.password="$WAN1_PASS"
+          uci set network.wan.auto='1'
+
+          uci set network.wanb='interface'
+          uci set network.wanb.device='eth1'
+          uci set network.wanb.proto='pppoe'
+          uci set network.wanb.username="$WAN2_USER"
+          uci set network.wanb.password="$WAN2_PASS"
+          uci set network.wanb.auto='1'
+
+          uci commit network
+          /etc/init.d/network restart
+          echo
+          echo 'PPPoE credentials have been written to UCI on this router only.'
+          echo 'They are NOT embedded in the firmware image or Git repository.'
+          EOF
+          chmod +x "$b/setup-dual-wan"
+
+          cat > "$IMAGEBUILDER_DIR/root/README-FIRST-BOOT.txt" <<'EOF'
+          OpenWrt first-boot network setup
+
+          LAN ports: eth2, eth3, eth4, eth5
+          LAN address: 192.168.1.2
+          WAN: eth0 (PPPoE)
+          WANB: eth1 (PPPoE)
+
+          For security, PPPoE credentials are NOT stored in the firmware.
+          After boot, connect to the LAN and run:
+
+            setup-dual-wan
+
+          Enter the WAN and WANB PPPoE usernames and passwords when prompted.
+          EOF
 
       - name: Build OpenWrt image
         shell: bash
@@ -202,6 +280,8 @@ jobs:
             echo "- Filesystem: $FILESYSTEM"
             echo "- Root partition: $ROOTFS_SIZE"
             echo '- eth0: WAN (PPPoE)'; echo '- eth1: WANB (PPPoE)'; echo '- eth2-eth5: LAN'; echo
+            echo '- PPPoE credentials: configured on first boot; not embedded in firmware'
+            echo
             echo '## Included APK packages'
             printf '%s\n' $packages | sort -u | sed 's/^/- /'
           } > "$out/BUILD-INFO.md"
