@@ -1,34 +1,14 @@
 #!/usr/bin/env bash
 
-#
 # ==========================================================
 # Third-party APK packages for OpenWrt 25.12.x
 # ==========================================================
 #
-# IMPORTANT:
-#
 # 这里只填写第三方 APK。
 #
-# OpenWrt 官方仓库中的软件，例如：
-#
-# luci
-# luci-ssl
-# luci-app-mwan3
-# luci-app-upnp
-# luci-app-ttyd
-# luci-compat
-# kmod-tun
-# kmod-inet-diag
-# kmod-nft-tproxy
-# bash
-# curl
-# ip-full
-# unzip
-#
-# 不要放在这里。
+# OpenWrt 官方仓库中的软件不要放在这里。
 #
 # ==========================================================
-
 
 CUSTOM_PACKAGES="
 luci-theme-aurora
