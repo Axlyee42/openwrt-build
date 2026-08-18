@@ -8,11 +8,14 @@ description: RootFS size in MB
 required: true
 default: "4096"
 type: string
-lan_ip:
-description: LAN IP address
-required: true
-default: "192.168.1.2"
-type: string
+
+```
+  lan_ip:
+    description: LAN IP address
+    required: true
+    default: "192.168.1.2"
+    type: string
+```
 
 env:
 TZ: Asia/Shanghai
@@ -24,6 +27,7 @@ runs-on: ubuntu-24.04
 
 ```
 steps:
+
   - name: Checkout repository
     uses: actions/checkout@v4
 
@@ -71,12 +75,7 @@ steps:
           ;;
         *)
           echo "ERROR: Invalid RootFS size: ${ROOTFS_SIZE_INPUT}"
-          echo "Allowed values:"
-          echo "1024"
-          echo "2048"
-          echo "4096"
-          echo "8192"
-          echo "16384"
+          echo "Allowed values: 1024, 2048, 4096, 8192, 16384"
           exit 1
           ;;
       esac
@@ -110,12 +109,30 @@ steps:
 
       cd openwrt
 
+      git describe --tags --always
+
+  - name: Add custom feeds
+    working-directory: openwrt
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      cp feeds.conf.default feeds.conf.default.bak
+
+      cat >> feeds.conf.default <<'EOF'
+
+      src-git aurora https://github.com/eamonxg/luci-theme-aurora.git
+      src-git shadcn https://github.com/eamonxg/luci-theme-shadcn.git
+      src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git
+      src-git passwall2 https://github.com/xiaorouji/openwrt-passwall2.git
+      EOF
+
       echo
       echo "=========================================="
-      echo "OpenWrt source"
+      echo "Configured feeds"
       echo "=========================================="
 
-      git describe --tags --always
+      tail -n 10 feeds.conf.default
 
   - name: Update feeds
     working-directory: openwrt
@@ -147,9 +164,7 @@ steps:
 
       sed -i '/^[[:space:]]*$/d' selected-packages.txt
 
-      sort -u \
-        selected-packages.txt \
-        -o selected-packages.txt
+      sort -u selected-packages.txt -o selected-packages.txt
 
       echo
       echo "=========================================="
@@ -207,6 +222,12 @@ steps:
       CONFIG_PACKAGE_kmod-nft-tproxy=y
 
       CONFIG_PACKAGE_luci-app-openclash=y
+
+      CONFIG_PACKAGE_luci-theme-aurora=y
+      CONFIG_PACKAGE_luci-app-aurora-config=y
+      CONFIG_PACKAGE_luci-i18n-aurora-config-zh-cn=y
+
+      CONFIG_PACKAGE_luci-theme-shadcn=y
       EOF
 
       echo
@@ -238,11 +259,6 @@ steps:
       awk '!seen[$0]++' .config > .config.tmp
       mv .config.tmp .config
 
-      echo
-      echo "=========================================="
-      echo "Running make defconfig"
-      echo "=========================================="
-
       make defconfig
 
   - name: Verify configuration
@@ -250,26 +266,6 @@ steps:
     shell: bash
     run: |
       set -euo pipefail
-
-      echo
-      echo "=========================================="
-      echo "Final selected packages"
-      echo "=========================================="
-
-      while IFS= read -r package; do
-
-        [ -z "${package}" ] && continue
-
-        if grep -qx \
-          "CONFIG_PACKAGE_${package}=y" \
-          .config
-        then
-          echo "OK: ${package}"
-        else
-          echo "WARNING: ${package} not selected"
-        fi
-
-      done < ../selected-packages.txt
 
       echo
       echo "=========================================="
@@ -284,27 +280,35 @@ steps:
         luci-app-upnp \
         luci-app-ttyd \
         luci-app-openclash \
+        luci-theme-aurora \
+        luci-app-aurora-config \
+        luci-theme-shadcn \
         kmod-nft-socket \
         kmod-nft-tproxy
       do
-
-        if grep -qx \
-          "CONFIG_PACKAGE_${package}=y" \
-          .config
+        if grep -qx "CONFIG_PACKAGE_${package}=y" .config
         then
           echo "OK: ${package}"
         else
           echo "WARNING: ${package} missing"
         fi
-
       done
 
       echo
       echo "=========================================="
-      echo "Build parameters"
+      echo "Custom packages"
       echo "=========================================="
-      echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}"
-      echo "LAN_IP=${LAN_IP}"
+
+      while IFS= read -r package; do
+        [ -z "${package}" ] && continue
+
+        if grep -qx "CONFIG_PACKAGE_${package}=y" .config
+        then
+          echo "OK: ${package}"
+        else
+          echo "WARNING: ${package} not selected"
+        fi
+      done < ../selected-packages.txt
 
   - name: Download package sources
     working-directory: openwrt
@@ -365,16 +369,11 @@ steps:
         -type f \
         \( \
           -name '*.img.gz' \
-          -o \
-          -name '*.img' \
-          -o \
-          -name '*.vmdk' \
-          -o \
-          -name '*.qcow2' \
-          -o \
-          -name '*.manifest' \
-          -o \
-          -name '*.json' \
+          -o -name '*.img' \
+          -o -name '*.vmdk' \
+          -o -name '*.qcow2' \
+          -o -name '*.manifest' \
+          -o -name '*.json' \
         \) \
         -exec cp -f {} artifacts/ \;
 
