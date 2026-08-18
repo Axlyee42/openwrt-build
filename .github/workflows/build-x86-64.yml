@@ -67,7 +67,9 @@ jobs:
             tag="$(curl -fsSL --retry 3 https://api.github.com/repos/openwrt/openwrt/releases/latest | jq -r .tag_name)"
             version="${tag#v}"
             test -n "$version" && test "$version" != null
-            if curl -fsSL --retry 3 'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' | jq -e --arg p "openwrt-${version}-x86-64-" '.[] | select(.tag_name | startswith($p))' >/dev/null; then
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              should_build=true
+            elif curl -fsSL --retry 3 'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' | jq -e --arg p "openwrt-${version}-x86-64-" '.[] | select(.tag_name | startswith($p))' >/dev/null; then
               should_build=false
             else
               should_build=true
@@ -158,39 +160,15 @@ jobs:
           u264="$(printf '%s' "$WAN2_USER" | base64 -w0)"
           p264="$(printf '%s' "$WAN2_PASS" | base64 -w0)"
           printf '%s\n' \
-            '#!/bin/sh' \
-            'set -eu' \
+            '#!/bin/sh' 'set -eu' \
             "WAN1_USER=\"\$(printf '%s' '$u64' | base64 -d)\"" \
             "WAN1_PASS=\"\$(printf '%s' '$p64' | base64 -d)\"" \
             "WAN2_USER=\"\$(printf '%s' '$u264' | base64 -d)\"" \
             "WAN2_PASS=\"\$(printf '%s' '$p264' | base64 -d)\"" \
-            'uci -q delete network.wan || true' \
-            "uci set network.wan='interface'" \
-            "uci set network.wan.device='eth0'" \
-            "uci set network.wan.proto='pppoe'" \
-            'uci set network.wan.username="$WAN1_USER"' \
-            'uci set network.wan.password="$WAN1_PASS"' \
-            'uci -q delete network.wanb || true' \
-            "uci set network.wanb='interface'" \
-            "uci set network.wanb.device='eth1'" \
-            "uci set network.wanb.proto='pppoe'" \
-            'uci set network.wanb.username="$WAN2_USER"' \
-            'uci set network.wanb.password="$WAN2_PASS"' \
-            'uci -q delete network.br_lan || true' \
-            "uci set network.br_lan='device'" \
-            "uci set network.br_lan.type='bridge'" \
-            "uci add_list network.br_lan.ports='eth2'" \
-            "uci add_list network.br_lan.ports='eth3'" \
-            "uci add_list network.br_lan.ports='eth4'" \
-            "uci add_list network.br_lan.ports='eth5'" \
-            "uci set network.lan='interface'" \
-            "uci set network.lan.device='br-lan'" \
-            "uci set network.lan.proto='static'" \
-            "uci set network.lan.ipaddr='$LAN_IP'" \
-            "uci set network.lan.netmask='255.255.255.0'" \
-            "uci set network.lan.ip6assign='64'" \
-            'uci commit network' \
-            'exit 0' > "$d/98-network.sh"
+            'uci -q delete network.wan || true' "uci set network.wan='interface'" "uci set network.wan.device='eth0'" "uci set network.wan.proto='pppoe'" 'uci set network.wan.username="$WAN1_USER"' 'uci set network.wan.password="$WAN1_PASS"' \
+            'uci -q delete network.wanb || true' "uci set network.wanb='interface'" "uci set network.wanb.device='eth1'" "uci set network.wanb.proto='pppoe'" 'uci set network.wanb.username="$WAN2_USER"' 'uci set network.wanb.password="$WAN2_PASS"' \
+            'uci -q delete network.br_lan || true' "uci set network.br_lan='device'" "uci set network.br_lan.type='bridge'" "uci add_list network.br_lan.ports='eth2'" "uci add_list network.br_lan.ports='eth3'" "uci add_list network.br_lan.ports='eth4'" "uci add_list network.br_lan.ports='eth5'" \
+            "uci set network.lan='interface'" "uci set network.lan.device='br-lan'" "uci set network.lan.proto='static'" "uci set network.lan.ipaddr='$LAN_IP'" "uci set network.lan.netmask='255.255.255.0'" "uci set network.lan.ip6assign='64'" 'uci commit network' 'exit 0' > "$d/98-network.sh"
           chmod +x "$d/98-network.sh"
 
       - name: Build OpenWrt image
