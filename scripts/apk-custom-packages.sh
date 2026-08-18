@@ -1,236 +1,82 @@
 #!/usr/bin/env bash
 #
-# OpenWrt x86-64 ImageBuilder third-party APK packages
+# OpenWrt 25.12.x third-party APK manifest.
 #
-# Responsibilities:
-#   1. Clone the prebuilt x86 APK repository.
-#   2. Select the requested third-party packages.
-#   3. Deduplicate multiple versions of the same package.
-#   4. Copy the selected APKs into ImageBuilder/packages/.
-#   5. Write the package names for the workflow.
+# IMPORTANT:
+# This file is sourced by build-x86-64.yml.
+# It MUST NOT clone repositories or build/extract APKs.
 #
-# This script does NOT:
-#   - compile packages
-#   - modify OpenWrt .config
-#   - run make image
-#   - modify LAN configuration
+# The actual APK preparation is done by:
+#   scripts/apk-prepare-packages.sh
+#
+# The list below follows the packages supported by the current
+# wukongdaily/apk 25.12.x repository and the package set requested
+# for this OpenWrt x86-64 project.
+#
+# Avoid enabling conflicting proxy frontends together unless you
+# deliberately want both.
 #
 
-set -Eeuo pipefail
+CUSTOM_PACKAGES=""
 
-IMAGEBUILDER_DIR="${IMAGEBUILDER_DIR:?IMAGEBUILDER_DIR is required}"
-APK_REPO="${APK_REPO:-https://github.com/wukongdaily/apk.git}"
-APK_TMP="${RUNNER_TEMP:-/tmp}/wukongdaily-apk"
+# Aurora
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-aurora luci-app-aurora-config luci-i18n-aurora-config-zh-cn"
 
-PACKAGE_DIR="${IMAGEBUILDER_DIR}/packages"
-PACKAGE_LIST="${IMAGEBUILDER_DIR}/.third-party-packages"
+# Bandix
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES bandix luci-app-bandix luci-i18n-bandix-zh-cn"
 
-mkdir -p "${PACKAGE_DIR}"
+# QuickFile / QuickStart
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES bash quickfile luci-app-quickfile luci-i18n-quickfile-zh-cn"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-quickstart luci-i18n-quickstart-zh-cn"
 
-rm -f "${PACKAGE_LIST}"
-rm -rf "${APK_TMP}"
+# Partition expansion
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-partexp luci-i18n-partexp-zh-cn"
 
-log() {
-    printf '\033[1;32m[APK] %s\033[0m\n' "$*"
-}
+# RTP2HTTPD
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES rtp2httpd luci-app-rtp2httpd luci-i18n-rtp2httpd-zh-cn"
 
-die() {
-    printf '\033[1;31m[APK] ERROR: %s\033[0m\n' "$*" >&2
-    exit 1
-}
+# Lucky
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES lucky luci-app-lucky luci-i18n-lucky-zh-cn"
 
-# Package names intentionally have no version suffix.
-# Dependencies which are also third-party packages are included explicitly.
-read -r -d '' REQUESTED_PACKAGES <<'EOF' || true
-bandix
-chinadns-ng
-clashoo
-dae
-daed
-dns2socks
-dns2tcp
-geoview
-hysteria
-ipt2socks
-lua-neturl
-luci-app-argon-config
-luci-app-aurora-config
-luci-app-bandix
-luci-app-clashoo
-luci-app-daed
-luci-app-daede
-luci-app-lucky
-luci-app-mosdns
-luci-app-nikki
-luci-app-partexp
-luci-app-passwall
-luci-app-passwall2
-luci-app-quickfile
-luci-app-quickstart
-luci-app-rtp2httpd
-luci-app-run
-luci-app-ssr-plus
-luci-app-store
-luci-app-taskplan
-luci-i18n-argon-config-zh-cn
-luci-i18n-aurora-config-zh-cn
-luci-i18n-bandix-zh-cn
-luci-i18n-clashoo-zh-cn
-luci-i18n-daed-zh-cn
-luci-i18n-lucky-zh-cn
-luci-i18n-mosdns-zh-cn
-luci-i18n-nikki-zh-cn
-luci-i18n-partexp-zh-cn
-luci-i18n-passwall-zh-cn
-luci-i18n-passwall2-zh-cn
-luci-i18n-quickfile-zh-cn
-luci-i18n-quickstart-zh-cn
-luci-i18n-rtp2httpd-zh-cn
-luci-i18n-ssr-plus-zh-cn
-luci-i18n-taskplan-zh-cn
-luci-lib-taskd
-luci-lib-xterm
-luci-theme-argon
-luci-theme-aurora
-lucky
-mosdns
-naiveproxy
-nikki
-quickfile
-quickstart
-rtp2httpd
-shadowsocksr-libev-ssr-check
-shadowsocksr-libev-ssr-local
-shadowsocksr-libev-ssr-nat
-shadowsocksr-libev-ssr-redir
-shadowsocksr-libev-ssr-server
-sing-box
-taskd
-tcping
-v2dat
-v2ray-geoip
-v2ray-geosite
-xray-core
-EOF
+# MosDNS
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES mosdns luci-app-mosdns luci-i18n-mosdns-zh-cn"
 
-log "Cloning ${APK_REPO}"
-git clone --depth=1 "${APK_REPO}" "${APK_TMP}"
+# Nikki
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES nikki luci-i18n-nikki-zh-cn"
 
-SRC="${APK_TMP}/run/x86"
-test -d "${SRC}" || die "APK repository does not contain run/x86"
+# Daed / Daede
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES daed luci-app-daed luci-i18n-daed-zh-cn"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-daede"
 
-# Temporary staging area. We deliberately do not copy every APK into the
-# final repository because the source repository contains multiple versions
-# of some packages.
-STAGE="${APK_TMP}/selected"
-mkdir -p "${STAGE}"
+# Clashoo
+# Do not add nikki and clashoo together if your configuration uses
+# the conflicting LuCI configuration files.
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES clashoo luci-app-clashoo luci-i18n-clashoo-zh-cn"
 
-log "Selecting requested packages"
+# PassWall
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-passwall luci-i18n-passwall-zh-cn"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES geoview xray-core sing-box hysteria"
 
-for pkg in ${REQUESTED_PACKAGES}; do
-    candidates=()
+# PassWall2
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-passwall2 luci-i18n-passwall2-zh-cn"
 
-    while IFS= read -r -d '' apk; do
-        pkgname="$(
-            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
-              awk -F' = ' '$1 == "pkgname" {print $2; exit}'
-        )"
+# SSR Plus
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES xray-core naiveproxy luci-app-ssr-plus luci-i18n-ssr-plus-zh-cn"
 
-        [[ "${pkgname}" == "${pkg}" ]] &&
-            candidates+=("${apk}")
-    done < <(
-        find "${SRC}" \
-            -type f \
-            -name '*.apk' \
-            -print0
-    )
+# TaskPlan
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES taskd luci-lib-taskd luci-app-taskplan luci-i18n-taskplan-zh-cn"
 
-    if (( ${#candidates[@]} == 0 )); then
-        echo "ERROR: requested APK package is missing: ${pkg}" >&2
-        echo
-        echo "Available package names:"
-        find "${SRC}" \
-            -type f \
-            -name '*.apk' \
-            -print0 |
-        while IFS= read -r -d '' apk; do
-            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
-                awk -F' = ' '$1 == "pkgname" {print $2; exit}'
-        done |
-        sort -u
-        exit 1
-    fi
+# iStore / Run
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store luci-app-run"
 
-    # Extract package version from .PKGINFO and select the greatest version.
-    best=""
-    best_ver=""
+# Argon
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn"
 
-    for apk in "${candidates[@]}"; do
-        ver="$(
-            tar -xOf "${apk}" .PKGINFO 2>/dev/null |
-              awk -F' = ' '$1 == "pkgver" {print $2; exit}'
-        )"
-
-        if [[ -z "${best}" ]]; then
-            best="${apk}"
-            best_ver="${ver}"
-            continue
-        fi
-
-        # OpenWrt/Alpine-style package versions are close enough to version
-        # sorting for this repository. If sort cannot establish an order,
-        # keep the first candidate.
-        if [[ -n "${ver}" && -n "${best_ver}" ]]; then
-            newer="$(
-                printf '%s\n%s\n' "${best_ver}" "${ver}" |
-                  sort -V |
-                  tail -n 1
-            )"
-
-            if [[ "${newer}" == "${ver}" && "${ver}" != "${best_ver}" ]]; then
-                best="${apk}"
-                best_ver="${ver}"
-            fi
-        fi
-    done
-
-    cp -f "${best}" "${STAGE}/${pkg}.apk"
-
-    log "${pkg} -> $(basename "${best}")"
-done
-
-# Clean the ImageBuilder local repository and install exactly one version
-# of every requested third-party package.
-find "${PACKAGE_DIR}" \
-    -maxdepth 1 \
-    -type f \
-    -name '*.apk' \
-    -delete
-
-cp -f "${STAGE}"/*.apk "${PACKAGE_DIR}/"
-
-# This file is consumed by the next workflow step. One package name per line.
-printf '%s\n' ${REQUESTED_PACKAGES} |
-    sort -u > "${PACKAGE_LIST}"
-
-# Never let old/generated package indexes survive after replacing APKs.
-rm -f \
-    "${PACKAGE_DIR}/packages.adb" \
-    "${PACKAGE_DIR}/Packages" \
-    "${PACKAGE_DIR}/Packages.gz" \
-    "${PACKAGE_DIR}/Packages.sig"
-
-log "Third-party APK preparation completed."
-
-echo
-echo "Selected packages:"
-cat "${PACKAGE_LIST}"
-
-echo
-echo "Selected APK files:"
-find "${PACKAGE_DIR}" \
-    -maxdepth 1 \
-    -type f \
-    -name '*.apk' \
-    -printf '%f\n' |
-    sort
+# The following kernel packages are NOT third-party APKs.
+# They are supplied by the OpenWrt 25.12.x package feed and are
+# therefore intentionally NOT placed in this list:
+#   kmod-nft-tproxy
+#   kmod-nft-socket
+#
+# If a selected third-party package needs them, add them to the
+# normal PACKAGES string in the workflow, not here.
