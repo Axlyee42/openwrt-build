@@ -1,44 +1,107 @@
-```bash
 #!/usr/bin/env bash
 #
 # OpenWrt Third-Party Source Packages
 #
-# ONLY:
-#   - download third-party source
-#   - place source under package/third-party
+# PURPOSE:
+#   ONLY prepare third-party OpenWrt package source trees.
 #
-# NEVER:
+# THIS SCRIPT DOES NOT:
 #   - modify .config
+#   - run make
 #   - run make defconfig
-#   - compile packages
-#   - check generated APK
+#   - compile APK/IPK
+#   - inspect generated APK/IPK
 #   - modify GITHUB_ENV
+#
+# OUTPUT:
+#
+#   ${OPENWRT_ROOT}/package/third-party/
+#
+# The following third-party sources are prepared:
+#
+#   Aurora
+#   Bandix
+#   PassWall
+#   PassWall dependency packages
+#   OpenClash
+#
+# PassWall dependency packages are copied from:
+#
+#   Openwrt-Passwall/openwrt-passwall-packages
+#
+# This script deliberately clones repositories using their DEFAULT
+# upstream branch unless an explicit branch is supplied.
+#
+# This avoids failures caused by assuming every repository uses "main".
 #
 
 set -Eeuo pipefail
 
+###############################################################################
+# Paths
+###############################################################################
+
 ROOT_DIR="${OPENWRT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-TP_DIR="${ROOT_DIR}/package/third-party"
+
+TP_DIR="${ROOT_DIR}/${THIRD_PARTY_DIR:-package/third-party}"
+
+RUNNER_TEMP_DIR="${RUNNER_TEMP:-/tmp}/openwrt-third-party"
 
 GIT_DEPTH="${GIT_DEPTH:-1}"
 
+###############################################################################
+# Logging
+###############################################################################
+
 log() {
-    printf '\033[1;32m[TP] %s\033[0m\n' "$*"
+    printf '%b\n' "\033[1;32m[TP]\033[0m $*"
 }
 
 warn() {
-    printf '\033[1;33m[TP] %s\033[0m\n' "$*" >&2
+    printf '%b\n' "\033[1;33m[TP]\033[0m $*" >&2
 }
 
 die() {
-    printf '\033[1;31m[TP] ERROR: %s\033[0m\n' "$*" >&2
+    printf '%b\n' "\033[1;31m[TP] ERROR:\033[0m $*" >&2
     exit 1
 }
 
+###############################################################################
+# Validation
+###############################################################################
+
+require_openwrt_tree() {
+
+    [[ -d "${ROOT_DIR}" ]] ||
+        die "OpenWrt root does not exist: ${ROOT_DIR}"
+
+    [[ -f "${ROOT_DIR}/Makefile" ]] ||
+        die "Not an OpenWrt source tree: ${ROOT_DIR}"
+}
+
+###############################################################################
+# Git clone helper
+#
+# IMPORTANT:
+#
+# Do NOT assume "main".
+#
+# If branch is supplied:
+#
+#   clone_repo repo destination branch
+#
+# Otherwise:
+#
+#   clone_repo repo destination
+#
+# Git will use the repository's default branch.
+###############################################################################
+
 clone_repo() {
+
     local repo="$1"
     local dest="$2"
-    local branch="${3:-main}"
+    local branch="${3:-}"
 
     local url="https://github.com/${repo}.git"
 
@@ -46,245 +109,493 @@ clone_repo() {
 
     mkdir -p "$(dirname "${dest}")"
 
-    log "clone ${repo}"
+    log "Cloning ${repo}"
 
-    git clone \
-        --depth="${GIT_DEPTH}" \
-        --single-branch \
-        --branch="${branch}" \
-        "${url}" \
-        "${dest}"
+    if [[ -n "${branch}" ]]; then
+
+        log "Using branch: ${branch}"
+
+        git clone \
+            --depth="${GIT_DEPTH}" \
+            --single-branch \
+            --branch="${branch}" \
+            "${url}" \
+            "${dest}"
+
+    else
+
+        log "Using upstream default branch"
+
+        git clone \
+            --depth="${GIT_DEPTH}" \
+            --single-branch \
+            "${url}" \
+            "${dest}"
+
+    fi
 }
 
+###############################################################################
+# Copy package tree
+###############################################################################
+
 copy_package() {
+
     local src="$1"
     local dst="$2"
 
     [[ -d "${src}" ]] ||
-        die "package source not found: ${src}"
+        die "Package source not found: ${src}"
+
+    [[ -f "${src}/Makefile" ]] ||
+        die "Package Makefile not found: ${src}/Makefile"
 
     rm -rf "${dst}"
+
     mkdir -p "${dst}"
 
-    cp -a "${src}/." "${dst}/"
+    cp -a \
+        "${src}/." \
+        "${dst}/"
+
+    log "Installed package source: $(basename "${dst}")"
 }
 
+###############################################################################
+# Copy a repository package directory
+#
+# Used when a repository itself is a package.
+###############################################################################
+
+copy_repo_as_package() {
+
+    local repo_dir="$1"
+    local package_name="$2"
+
+    copy_package \
+        "${repo_dir}" \
+        "${TP_DIR}/${package_name}"
+}
+
+###############################################################################
+# Remove Git metadata
+###############################################################################
+
 clean_git() {
+
+    [[ -d "${TP_DIR}" ]] || return 0
+
     find "${TP_DIR}" \
         -type d \
         -name .git \
         -prune \
-        -exec rm -rf {} + 2>/dev/null || true
+        -exec rm -rf {} + \
+        2>/dev/null || true
 
     find "${TP_DIR}" \
         -type d \
         -name .github \
         -prune \
-        -exec rm -rf {} + 2>/dev/null || true
+        -exec rm -rf {} + \
+        2>/dev/null || true
 }
 
+###############################################################################
+# Prepare target directory
+###############################################################################
+
 prepare_root() {
+
+    log "Preparing third-party package directory"
+
     rm -rf "${TP_DIR}"
+
     mkdir -p "${TP_DIR}"
+
+    rm -rf "${RUNNER_TEMP_DIR}"
+
+    mkdir -p "${RUNNER_TEMP_DIR}"
 }
 
 ###############################################################################
 # Aurora
+#
+# Repository:
+#
+#   eamonxg/luci-theme-aurora
+#
+# IMPORTANT:
+#
+# No branch is specified.
+#
+# The repository's default branch is used.
+#
+# Aurora currently contains:
+#
+#   luci-theme-aurora
+#   luci-app-aurora-config
+#
 ###############################################################################
 
 install_aurora() {
 
-    local tmp="${RUNNER_TEMP:-/tmp}/aurora"
+    local tmp="${RUNNER_TEMP_DIR}/aurora"
 
-    rm -rf "${tmp}"
+    log "Preparing Aurora"
 
     clone_repo \
         "eamonxg/luci-theme-aurora" \
         "${tmp}"
 
-    if [[ -d "${tmp}/luci-theme-aurora" ]]; then
-        copy_package \
+    if [[ -f "${tmp}/luci-theme-aurora/Makefile" ]]; then
+
+        copy_repo_as_package \
             "${tmp}/luci-theme-aurora" \
-            "${TP_DIR}/luci-theme-aurora"
+            "luci-theme-aurora"
+
+    else
+
+        die \
+            "Aurora theme package not found: ${tmp}/luci-theme-aurora/Makefile"
+
     fi
 
-    if [[ -d "${tmp}/luci-app-aurora-config" ]]; then
-        copy_package \
+    if [[ -f "${tmp}/luci-app-aurora-config/Makefile" ]]; then
+
+        copy_repo_as_package \
             "${tmp}/luci-app-aurora-config" \
-            "${TP_DIR}/luci-app-aurora-config"
-    fi
+            "luci-app-aurora-config"
 
-    rm -rf "${tmp}"
+    else
+
+        warn \
+            "Aurora config package not found; continuing without luci-app-aurora-config"
+
+    fi
 }
 
 ###############################################################################
 # Bandix
+#
+# Frontend:
+#
+#   timsaya/luci-app-bandix
+#
+# Backend:
+#
+#   timsaya/openwrt-bandix
+#
+# The upstream project explicitly documents that the two packages are
+# separate and should be installed together. 
 ###############################################################################
 
 install_bandix() {
 
-    local tmp="${RUNNER_TEMP:-/tmp}/bandix"
+    local tmp="${RUNNER_TEMP_DIR}/bandix"
 
-    rm -rf "${tmp}"
+    log "Preparing Bandix frontend"
 
     clone_repo \
         "timsaya/luci-app-bandix" \
         "${tmp}/luci-app-bandix"
 
+    copy_repo_as_package \
+        "${tmp}/luci-app-bandix" \
+        "luci-app-bandix"
+
+    log "Preparing Bandix backend"
+
     clone_repo \
         "timsaya/openwrt-bandix" \
         "${tmp}/openwrt-bandix"
 
-    copy_package \
-        "${tmp}/luci-app-bandix" \
-        "${TP_DIR}/luci-app-bandix"
-
-    copy_package \
+    copy_repo_as_package \
         "${tmp}/openwrt-bandix" \
-        "${TP_DIR}/bandix"
-
-    rm -rf "${tmp}"
+        "bandix"
 }
 
 ###############################################################################
-# PassWall
+# PassWall LuCI
 ###############################################################################
 
 install_passwall() {
 
-    local tmp="${RUNNER_TEMP:-/tmp}/passwall"
+    local tmp="${RUNNER_TEMP_DIR}/passwall"
 
-    rm -rf "${tmp}"
+    log "Preparing PassWall"
 
     clone_repo \
         "Openwrt-Passwall/openwrt-passwall" \
         "${tmp}"
 
-    if [[ -d "${tmp}/luci-app-passwall" ]]; then
-        copy_package \
-            "${tmp}/luci-app-passwall" \
-            "${TP_DIR}/luci-app-passwall"
-    fi
+    if [[ -f "${tmp}/luci-app-passwall/Makefile" ]]; then
 
-    rm -rf "${tmp}"
+        copy_repo_as_package \
+            "${tmp}/luci-app-passwall" \
+            "luci-app-passwall"
+
+    else
+
+        die \
+            "PassWall package not found: ${tmp}/luci-app-passwall/Makefile"
+
+    fi
 }
 
 ###############################################################################
-# PassWall packages
+# PassWall dependency packages
 #
-# PassWall 的核心依赖单独来自 packages 仓库。
+# Repository:
+#
+#   Openwrt-Passwall/openwrt-passwall-packages
+#
+# The upstream repository currently contains packages including:
+#
+#   chinadns-ng
+#   dns2socks
+#   geoview
+#   hysteria
+#   ipt2socks
+#   naiveproxy
+#   shadowsocksr-libev
+#   sing-box
+#   tcping
+#   v2ray-geodata
+#   xray-core
+#
+# and additional packages.
+#
+# We intentionally use an allow-list so unrelated packages from the upstream
+# repository do not unexpectedly enter the firmware.
 ###############################################################################
 
 install_passwall_packages() {
 
-    local tmp="${RUNNER_TEMP:-/tmp}/passwall-packages"
+    local tmp="${RUNNER_TEMP_DIR}/passwall-packages"
 
-    rm -rf "${tmp}"
+    log "Preparing PassWall dependency packages"
 
     clone_repo \
         "Openwrt-Passwall/openwrt-passwall-packages" \
         "${tmp}"
 
-    if [[ -d "${tmp}" ]]; then
+    [[ -d "${tmp}" ]] ||
+        die "PassWall packages repository was not cloned."
 
-        while IFS= read -r makefile; do
+    #
+    # These are the package directories we actually want.
+    #
+    # v2ray-geodata is special:
+    #
+    #   one source directory
+    #       ↓
+    #   v2ray-geoip
+    #   v2ray-geosite
+    #
+    local packages=(
+        "chinadns-ng"
+        "dns2socks"
+        "dns2tcp"
+        "geoview"
+        "hysteria"
+        "ipt2socks"
+        "naiveproxy"
+        "shadowsocksr-libev"
+        "sing-box"
+        "tcping"
+        "xray-core"
+    )
 
-            local dir
-            dir="$(dirname "${makefile}")"
+    local package
 
-            if grep -qE \
-                'Package/(geoview|xray-core|sing-box|hysteria)' \
-                "${makefile}" 2>/dev/null; then
+    for package in "${packages[@]}"; do
 
-                local name
-                name="$(basename "${dir}")"
+        if [[ -f "${tmp}/${package}/Makefile" ]]; then
 
-                copy_package \
-                    "${dir}" \
-                    "${TP_DIR}/${name}"
+            copy_repo_as_package \
+                "${tmp}/${package}" \
+                "${package}"
 
-            fi
+        else
 
-        done < <(
-            find "${tmp}" \
-                -type f \
-                -name Makefile
-        )
+            warn \
+                "PassWall package not found upstream: ${package}"
+
+        fi
+
+    done
+
+    ###########################################################################
+    # v2ray-geodata
+    ###########################################################################
+
+    if [[ -f "${tmp}/v2ray-geodata/Makefile" ]]; then
+
+        copy_repo_as_package \
+            "${tmp}/v2ray-geodata" \
+            "v2ray-geodata"
+
+    else
+
+        warn \
+            "v2ray-geodata Makefile not found."
 
     fi
-
-    rm -rf "${tmp}"
 }
 
 ###############################################################################
 # OpenClash
+#
+# Repository:
+#
+#   vernesong/OpenClash
+#
+# Default upstream branch is used.
 ###############################################################################
 
 install_openclash() {
 
-    local tmp="${RUNNER_TEMP:-/tmp}/openclash"
+    local tmp="${RUNNER_TEMP_DIR}/openclash"
 
-    rm -rf "${tmp}"
+    log "Preparing OpenClash"
 
     clone_repo \
         "vernesong/OpenClash" \
         "${tmp}"
 
-    if [[ -d "${tmp}/luci-app-openclash" ]]; then
+    if [[ -f "${tmp}/luci-app-openclash/Makefile" ]]; then
 
-        copy_package \
+        copy_repo_as_package \
             "${tmp}/luci-app-openclash" \
-            "${TP_DIR}/luci-app-openclash"
+            "luci-app-openclash"
+
+    else
+
+        warn \
+            "OpenClash package not found; continuing without OpenClash."
 
     fi
-
-    rm -rf "${tmp}"
 }
 
 ###############################################################################
-# 其它第三方包
-#
-# 这些包如果已经通过你的其它第三方 feed 提供，
-# 不在这里重复 clone。
-#
-# 这样可以避免：
-#
-#   同一个 package
-#       ↓
-#   多个 feed
-#       ↓
-#   两个版本同时进入 bin/packages
-#
+# Package tree validation
 ###############################################################################
 
-install_optional_feed() {
+validate_packages() {
 
-    local repo="$1"
-    local dest="$2"
-    local branch="${3:-main}"
+    local count
 
-    if [[ -z "${repo}" ]]; then
-        return 0
-    fi
+    count="$(
+        find "${TP_DIR}" \
+            -type f \
+            -name Makefile \
+            | wc -l
+    )"
 
-    clone_repo \
-        "${repo}" \
-        "${TP_DIR}/${dest}" \
-        "${branch}"
+    log "Detected ${count} third-party Makefiles."
+
+    [[ "${count}" -gt 0 ]] ||
+        die "No third-party OpenWrt package Makefiles were generated."
+
+    echo
+    echo "============================================================"
+    echo " Third-party package Makefiles"
+    echo "============================================================"
+
+    find "${TP_DIR}" \
+        -type f \
+        -name Makefile \
+        -print \
+        | sort
+
+    echo
+    echo "============================================================"
 }
 
 ###############################################################################
-# main
+# Show package definitions
+#
+# This is ONLY diagnostic.
+#
+# It does not modify .config.
+###############################################################################
+
+show_package_definitions() {
+
+    echo
+    echo "============================================================"
+    echo " Third-party Package definitions"
+    echo "============================================================"
+
+    while IFS= read -r makefile; do
+
+        awk '
+            /^define Package\// {
+                name=$0
+                sub(/^define Package\//, "", name)
+                print name
+            }
+        ' "${makefile}"
+
+    done < <(
+        find "${TP_DIR}" \
+            -type f \
+            -name Makefile \
+            -print \
+            | sort
+    ) | sort -u
+
+    echo
+    echo "============================================================"
+}
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+cleanup() {
+
+    rm -rf "${RUNNER_TEMP_DIR}"
+}
+
+###############################################################################
+# Error trap
+###############################################################################
+
+on_error() {
+
+    local line="${1:-unknown}"
+
+    printf '%b\n' \
+        "\033[1;31m[TP] ERROR: apk-custom-packages.sh failed at line ${line}\033[0m" \
+        >&2
+
+    printf '%b\n' \
+        "\033[1;31m[TP] Command: ${BASH_COMMAND}\033[0m" \
+        >&2
+}
+
+trap 'on_error "${LINENO}"' ERR
+
+trap cleanup EXIT
+
+###############################################################################
+# Main
 ###############################################################################
 
 main() {
 
-    cd "${ROOT_DIR}"
+    log "OpenWrt root: ${ROOT_DIR}"
 
-    [[ -f Makefile ]] ||
-        die "Not an OpenWrt source tree: ${ROOT_DIR}"
+    log "Third-party directory: ${TP_DIR}"
+
+    require_openwrt_tree
 
     prepare_root
+
+    ###########################################################################
+    # Third-party sources
+    ###########################################################################
 
     install_aurora
 
@@ -296,18 +607,37 @@ main() {
 
     install_openclash
 
+    ###########################################################################
+    # Remove Git metadata
+    ###########################################################################
+
     clean_git
 
-    log "Third-party source preparation completed."
+    ###########################################################################
+    # Validate
+    ###########################################################################
+
+    validate_packages
+
+    show_package_definitions
+
+    ###########################################################################
+    # Done
+    ###########################################################################
+
+    log "Third-party source preparation completed successfully."
 
     echo
-    echo "Third-party package trees:"
+    echo "Third-party package tree:"
+    echo
     find "${TP_DIR}" \
+        -maxdepth 2 \
         -type f \
         -name Makefile \
         -print \
         | sort
+
+    echo
 }
 
 main "$@"
-```
