@@ -1,0 +1,91 @@
+#!/bin/sh
+
+set -eu
+
+
+API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
+
+TMP="/tmp/openclash-update"
+
+mkdir -p "${TMP}"
+
+rm -f \
+    "${TMP}/release.json" \
+    "${TMP}/openclash.apk"
+
+
+echo
+echo "=========================================="
+echo "OpenClash updater"
+echo "=========================================="
+
+
+echo "Getting latest OpenClash release..."
+
+
+curl \
+    -fsSL \
+    --retry 3 \
+    --connect-timeout 15 \
+    "${API}" \
+    -o "${TMP}/release.json"
+
+
+URL="$(
+    jsonfilter \
+        -i "${TMP}/release.json" \
+        -e '@.assets[*].browser_download_url' |
+    grep -E '\.apk$' |
+    head -n 1
+)"
+
+
+if [ -z "${URL}" ]; then
+
+    echo
+    echo "ERROR: OpenClash APK URL not found."
+
+    exit 1
+
+fi
+
+
+echo
+echo "Download:"
+echo "${URL}"
+
+
+curl \
+    -fL \
+    --retry 3 \
+    --connect-timeout 15 \
+    "${URL}" \
+    -o "${TMP}/openclash.apk"
+
+
+if [ ! -s "${TMP}/openclash.apk" ]; then
+
+    echo
+    echo "ERROR: OpenClash APK download failed."
+
+    exit 1
+
+fi
+
+
+echo
+echo "Installing latest OpenClash..."
+
+
+apk add \
+    -q \
+    --force-overwrite \
+    --clean-protected \
+    --allow-untrusted \
+    "${TMP}/openclash.apk"
+
+
+echo
+echo "=========================================="
+echo "OpenClash update completed."
+echo "=========================================="
