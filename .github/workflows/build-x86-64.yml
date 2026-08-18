@@ -151,28 +151,23 @@ jobs:
           set -euo pipefail
           d="$IMAGEBUILDER_DIR/files/etc/uci-defaults"
           b="$IMAGEBUILDER_DIR/files/usr/bin"
-          mkdir -p "$d" "$b"
+          r="$IMAGEBUILDER_DIR/files/root"
+          mkdir -p "$d" "$b" "$r"
 
           cat > "$d/98-network.sh" <<'EOF'
           #!/bin/sh
           set -eu
-
-          # Physical port mapping:
-          # eth0 = WAN
-          # eth1 = WANB
-          # eth2-eth5 = LAN
+          # eth0 = WAN; eth1 = WANB; eth2-eth5 = LAN
           uci -q delete network.wan || true
           uci set network.wan='interface'
           uci set network.wan.device='eth0'
           uci set network.wan.proto='none'
           uci set network.wan.auto='0'
-
           uci -q delete network.wanb || true
           uci set network.wanb='interface'
           uci set network.wanb.device='eth1'
           uci set network.wanb.proto='none'
           uci set network.wanb.auto='0'
-
           uci -q delete network.br_lan || true
           uci set network.br_lan='device'
           uci set network.br_lan.type='bridge'
@@ -180,7 +175,6 @@ jobs:
           uci add_list network.br_lan.ports='eth3'
           uci add_list network.br_lan.ports='eth4'
           uci add_list network.br_lan.ports='eth5'
-
           uci -q delete network.lan || true
           uci set network.lan='interface'
           uci set network.lan.device='br-lan'
@@ -196,53 +190,41 @@ jobs:
           cat > "$b/setup-dual-wan" <<'EOF'
           #!/bin/ash
           set -eu
-
           echo 'OpenWrt dual-WAN first-boot setup'
           echo 'eth0 = WAN, eth1 = WANB, eth2-eth5 = LAN'
           echo
-          printf 'WAN PPPoE username: '
-          read WAN1_USER
-          printf 'WAN PPPoE password: '
-          read -s WAN1_PASS
-          echo
-          printf 'WANB PPPoE username: '
-          read WAN2_USER
-          printf 'WANB PPPoE password: '
-          read -s WAN2_PASS
-          echo
-
+          printf 'WAN PPPoE username: '; read WAN1_USER
+          printf 'WAN PPPoE password: '; read -s WAN1_PASS; echo
+          printf 'WANB PPPoE username: '; read WAN2_USER
+          printf 'WANB PPPoE password: '; read -s WAN2_PASS; echo
           uci set network.wan='interface'
           uci set network.wan.device='eth0'
           uci set network.wan.proto='pppoe'
           uci set network.wan.username="$WAN1_USER"
           uci set network.wan.password="$WAN1_PASS"
           uci set network.wan.auto='1'
-
           uci set network.wanb='interface'
           uci set network.wanb.device='eth1'
           uci set network.wanb.proto='pppoe'
           uci set network.wanb.username="$WAN2_USER"
           uci set network.wanb.password="$WAN2_PASS"
           uci set network.wanb.auto='1'
-
           uci commit network
           /etc/init.d/network restart
           echo
-          echo 'PPPoE credentials have been written to UCI on this router only.'
-          echo 'They are NOT embedded in the firmware image or Git repository.'
+          echo 'PPPoE credentials are stored only on this router.'
+          echo 'They are not embedded in the firmware or Git repository.'
           EOF
           chmod +x "$b/setup-dual-wan"
 
-          cat > "$IMAGEBUILDER_DIR/root/README-FIRST-BOOT.txt" <<'EOF'
+          cat > "$r/README-FIRST-BOOT.txt" <<'EOF'
           OpenWrt first-boot network setup
+          LAN: eth2, eth3, eth4, eth5 / 192.168.1.2
+          WAN: eth0 / PPPoE
+          WANB: eth1 / PPPoE
 
-          LAN ports: eth2, eth3, eth4, eth5
-          LAN address: 192.168.1.2
-          WAN: eth0 (PPPoE)
-          WANB: eth1 (PPPoE)
-
-          For security, PPPoE credentials are NOT stored in the firmware.
-          After boot, connect to the LAN and run:
+          PPPoE credentials are NOT stored in the firmware.
+          After boot, connect to LAN and run:
 
             setup-dual-wan
 
