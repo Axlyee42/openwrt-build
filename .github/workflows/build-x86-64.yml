@@ -27,31 +27,31 @@ on:
           - "4G"
 
       bios:
-        description: "生成 BIOS EXT4"
+        description: "生成 BIOS EXT4 镜像"
         required: true
         default: true
         type: boolean
 
       uefi:
-        description: "生成 UEFI EXT4"
+        description: "生成 UEFI EXT4 镜像"
         required: true
         default: true
         type: boolean
 
       qcow2:
-        description: "生成 QCOW2"
+        description: "生成 QCOW2 虚拟机镜像"
         required: true
         default: true
         type: boolean
 
       vmdk:
-        description: "生成 VMDK"
+        description: "生成 VMDK VMware 镜像"
         required: true
         default: false
         type: boolean
 
       raw:
-        description: "生成 RAW"
+        description: "生成 RAW 镜像"
         required: true
         default: false
         type: boolean
@@ -64,13 +64,13 @@ permissions:
 
 jobs:
 
-  check-version:
+  check-update:
     name: Check OpenWrt version
     runs-on: ubuntu-24.04
 
     outputs:
-      version: ${{ steps.version.outputs.version }}
       should_build: ${{ steps.version.outputs.should_build }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
 
@@ -81,24 +81,28 @@ jobs:
         id: version
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Checking latest OpenWrt 25.12.x..."
+          echo "=========================================="
+          echo "Checking latest OpenWrt 25.12.x"
+          echo "=========================================="
 
-          VERSION="$(
-            git ls-remote --tags --refs \
+          LATEST_VERSION="$(
+            git ls-remote \
+              --tags \
+              --refs \
               https://github.com/openwrt/openwrt.git |
             sed -n 's#.*refs/tags/v\(25\.12\.[0-9][0-9]*\)$#\1#p' |
             sort -V |
             tail -n 1
           )"
 
-          if [ -z "$VERSION" ]; then
-            echo "Unable to find OpenWrt 25.12.x"
+          if [ -z "${LATEST_VERSION}" ]; then
+            echo "ERROR: Cannot find latest OpenWrt 25.12.x"
             exit 1
           fi
 
-          echo "Latest version: $VERSION"
+          echo "Latest version: ${LATEST_VERSION}"
 
           LAST_VERSION=""
 
@@ -108,26 +112,27 @@ jobs:
 
           echo "Last built version: ${LAST_VERSION:-NONE}"
 
-          SHOULD_BUILD=false
-
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            SHOULD_BUILD=true
-          elif [ -z "$LAST_VERSION" ]; then
-            SHOULD_BUILD=true
-          elif [ "$VERSION" != "$LAST_VERSION" ]; then
-            SHOULD_BUILD=true
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            SHOULD_BUILD="true"
+          elif [ -z "${LAST_VERSION}" ]; then
+            SHOULD_BUILD="true"
+          elif [ "${LATEST_VERSION}" != "${LAST_VERSION}" ]; then
+            SHOULD_BUILD="true"
+          else
+            SHOULD_BUILD="false"
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+          echo "version=${LATEST_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "should_build=${SHOULD_BUILD}" >> "${GITHUB_OUTPUT}"
 
-          echo "Should build: $SHOULD_BUILD"
+          echo "Should build: ${SHOULD_BUILD}"
 
 
   build:
     name: Build OpenWrt ImageBuilder
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true'
+    needs: check-update
+
+    if: needs.check-update.outputs.should_build == 'true'
 
     runs-on: ubuntu-24.04
 
@@ -137,44 +142,59 @@ jobs:
         uses: actions/checkout@v4
 
 
-      - name: Set OpenWrt version
+      - name: Set build timestamp
         shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DATE="$(date -u '+%Y%m%d')"
+          BUILD_TIME="$(date -u '+%H%M%S')"
+
+          echo "BUILD_DATE=${BUILD_DATE}" >> "${GITHUB_ENV}"
+          echo "BUILD_TIME=${BUILD_TIME}" >> "${GITHUB_ENV}"
+
+          echo "Build date: ${BUILD_DATE}"
+          echo "Build time: ${BUILD_TIME}"
+
+
+      - name: Set OpenWrt version
         env:
           MANUAL_VERSION: ${{ inputs.openwrt_version }}
-          LATEST_VERSION: ${{ needs.check-version.outputs.version }}
+          LATEST_VERSION: ${{ needs.check-update.outputs.version }}
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          VERSION="$LATEST_VERSION"
+          VERSION="${LATEST_VERSION}"
 
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ -n "$MANUAL_VERSION" ]; then
-            VERSION="$MANUAL_VERSION"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${MANUAL_VERSION}" ]; then
+            VERSION="${MANUAL_VERSION}"
           fi
 
-          if ! echo "$VERSION" | grep -Eq '^25\.12\.[0-9]+$'; then
-            echo "Invalid OpenWrt version: $VERSION"
+          if ! echo "${VERSION}" | grep -Eq '^25\.12\.[0-9]+$'; then
+            echo "ERROR: Invalid OpenWrt version: ${VERSION}"
             exit 1
           fi
 
-          echo "OPENWRT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "OPENWRT_VERSION=${VERSION}" >> "${GITHUB_ENV}"
 
-          echo "OpenWrt version: $VERSION"
+          echo "OpenWrt version: ${VERSION}"
 
 
       - name: Set rootfs size
-        shell: bash
         env:
           INPUT_SIZE: ${{ inputs.rootfs_size }}
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          SIZE="$INPUT_SIZE"
+          SIZE="4G"
 
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ -z "$SIZE" ]; then
-            SIZE="4G"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${INPUT_SIZE}" ]; then
+            SIZE="${INPUT_SIZE}"
           fi
 
-          case "$SIZE" in
+          case "${SIZE}" in
             1G)
               PARTSIZE=1024
               ;;
@@ -188,31 +208,22 @@ jobs:
               PARTSIZE=4096
               ;;
             *)
-              echo "Invalid rootfs size: $SIZE"
+              echo "ERROR: Invalid rootfs size: ${SIZE}"
               exit 1
               ;;
           esac
 
-          echo "ROOTFS_SIZE=$SIZE" >> "$GITHUB_ENV"
-          echo "ROOTFS_PARTSIZE=$PARTSIZE" >> "$GITHUB_ENV"
+          echo "ROOTFS_SIZE=${SIZE}" >> "${GITHUB_ENV}"
+          echo "ROOTFS_PARTSIZE=${PARTSIZE}" >> "${GITHUB_ENV}"
 
-          echo "RootFS: $SIZE"
-          echo "Partition: ${PARTSIZE}MB"
+          echo "RootFS size: ${SIZE}"
+          echo "Partition size: ${PARTSIZE} MB"
 
 
-      - name: Set build time
+      - name: Install required tools
         shell: bash
         run: |
-          set -e
-
-          echo "BUILD_DATE=$(date -u '+%Y%m%d')" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date -u '+%H%M%S')" >> "$GITHUB_ENV"
-
-
-      - name: Install tools
-        shell: bash
-        run: |
-          set -e
+          set -euo pipefail
 
           sudo apt-get update
 
@@ -232,117 +243,71 @@ jobs:
       - name: Download OpenWrt ImageBuilder
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGEBUILDER="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
           URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/${IMAGEBUILDER}"
 
-          echo "Downloading:"
-          echo "$URL"
+          echo "=========================================="
+          echo "Downloading OpenWrt ImageBuilder"
+          echo "=========================================="
+
+          echo "${URL}"
 
           wget \
             --progress=bar:force \
-            -O "$IMAGEBUILDER" \
-            "$URL"
+            -O "${IMAGEBUILDER}" \
+            "${URL}"
 
           rm -rf imagebuilder
 
-          mkdir imagebuilder
+          mkdir -p imagebuilder
 
           tar \
             --use-compress-program=unzstd \
-            -xf "$IMAGEBUILDER" \
+            -xf "${IMAGEBUILDER}" \
             -C imagebuilder \
             --strip-components=1
 
           echo "ImageBuilder ready."
 
 
-      - name: Show ImageBuilder info
+      - name: Show ImageBuilder information
         working-directory: imagebuilder
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           make info
 
 
-      - name: Download third-party APK repository
+      - name: Prepare custom files
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          rm -rf third-party-apk
+          rm -rf files
 
-          git clone \
-            --depth=1 \
-            https://github.com/wukongdaily/apk.git \
-            third-party-apk
-
-          if [ ! -d third-party-apk/run/x86 ]; then
-            echo "Third-party APK repository not found."
-            exit 1
-          fi
+          mkdir -p files/etc/config
+          mkdir -p files/etc/uci-defaults
+          mkdir -p files/etc/apk/repositories.d
+          mkdir -p files/etc/apk/keys
 
 
-      - name: Prepare third-party packages
+      - name: Configure PassWall APK repository
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          rm -rf packages
-          mkdir -p packages
-
-          find third-party-apk/run/x86 \
-            -type f \
-            -name "*.apk" \
-            -exec cp -f {} packages/ \;
-
-          echo "Third-party APK packages:"
-
-          find packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
-
-
-      - name: Install local APK packages
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p imagebuilder/packages
-
-          find packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -exec cp -f {} imagebuilder/packages/ \;
-
-          echo "ImageBuilder local packages:"
-
-          find imagebuilder/packages \
-            -maxdepth 1 \
-            -type f \
-            -name "*.apk" \
-            -printf "%f\n" |
-          sort
-
-
-      - name: Configure PassWall repository
-        shell: bash
-        run: |
-          set -e
+          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
           mkdir -p imagebuilder/keys
 
-          wget -q \
-            -O imagebuilder/keys/passwall.pem \
+          wget \
+            -q \
+            -O imagebuilder/keys/openwrt-passwall-build.pem \
             https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub
-
-          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
 
           cat >> imagebuilder/repositories <<EOF
 ${PASSWALL_BASE}/passwall_luci/packages.adb
@@ -350,69 +315,45 @@ ${PASSWALL_BASE}/passwall_packages/packages.adb
 ${PASSWALL_BASE}/passwall2/packages.adb
 EOF
 
-          echo "PassWall repositories:"
-          tail -n 3 imagebuilder/repositories
-
-
-      - name: Prepare custom files
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf files
-
-          mkdir -p \
-            files/etc/config \
-            files/etc/uci-defaults \
-            files/etc/apk/repositories.d \
-            files/etc/apk/keys
-
-
-      - name: Configure runtime PassWall repository
-        shell: bash
-        run: |
-          set -e
-
-          PASSWALL_BASE="https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64"
-
           cat > files/etc/apk/repositories.d/passwall.list <<EOF
 ${PASSWALL_BASE}/passwall_luci/packages.adb
 ${PASSWALL_BASE}/passwall_packages/packages.adb
 ${PASSWALL_BASE}/passwall2/packages.adb
 EOF
 
-          wget -q \
-            -O files/etc/apk/keys/passwall.pem \
-            https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub
+          cp \
+            imagebuilder/keys/openwrt-passwall-build.pem \
+            files/etc/apk/keys/openwrt-passwall-build.pem
+
+          echo "PassWall repository configured."
 
 
       - name: Generate network configuration
-        shell: bash
         env:
           WAN1_USER: ${{ secrets.WAN1_USER }}
           WAN1_PASS: ${{ secrets.WAN1_PASS }}
           WAN2_USER: ${{ secrets.WAN2_USER }}
           WAN2_PASS: ${{ secrets.WAN2_PASS }}
-          LAN_IP: ${{ inputs.lan_ip }}
+          LAN_IP_INPUT: ${{ inputs.lan_ip }}
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+          LAN_IP="${LAN_IP_INPUT}"
+
+          if [ -z "${LAN_IP}" ]; then
             LAN_IP="192.168.1.2"
           fi
 
-          if [ -z "$LAN_IP" ]; then
-            LAN_IP="192.168.1.2"
-          fi
+          if [ -z "${WAN1_USER}" ] || \
+             [ -z "${WAN1_PASS}" ] || \
+             [ -z "${WAN2_USER}" ] || \
+             [ -z "${WAN2_PASS}" ]; then
 
-          if [ -z "$WAN1_USER" ] || \
-             [ -z "$WAN1_PASS" ] || \
-             [ -z "$WAN2_USER" ] || \
-             [ -z "$WAN2_PASS" ]; then
-
-            echo "PPPoE secrets are missing."
-
-            echo "Required GitHub Secrets:"
+            echo "ERROR: PPPoE secrets are missing."
+            echo
+            echo "Please create these GitHub Secrets:"
+            echo
             echo "WAN1_USER"
             echo "WAN1_PASS"
             echo "WAN2_USER"
@@ -470,11 +411,13 @@ config interface 'wanb6'
     option reqprefix 'auto'
 EOF
 
+          echo "Network configuration generated."
 
-      - name: Generate DHCP configuration
+
+      - name: Generate DHCP and IPv6 configuration
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cat > files/etc/config/dhcp <<'EOF'
 config dnsmasq
@@ -516,10 +459,10 @@ config odhcpd 'odhcpd'
 EOF
 
 
-      - name: Set default Chinese
+      - name: Set default Chinese language
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cat > files/etc/uci-defaults/99-default-language <<'EOF'
 #!/bin/sh
@@ -536,180 +479,171 @@ EOF
       - name: Prepare package list
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          cat > package-list.txt <<'EOF'
-luci
-luci-ssl
-luci-i18n-base-zh-cn
+          PACKAGES=""
 
-luci-app-package-manager
-luci-i18n-package-manager-zh-cn
+          # LuCI
+          PACKAGES="${PACKAGES} luci"
+          PACKAGES="${PACKAGES} luci-ssl"
+          PACKAGES="${PACKAGES} luci-i18n-base-zh-cn"
+          PACKAGES="${PACKAGES} luci-app-package-manager"
+          PACKAGES="${PACKAGES} luci-i18n-package-manager-zh-cn"
 
-luci-app-mwan3
-luci-i18n-mwan3-zh-cn
+          # Network
+          PACKAGES="${PACKAGES} luci-app-mwan3"
+          PACKAGES="${PACKAGES} luci-i18n-mwan3-zh-cn"
+          PACKAGES="${PACKAGES} luci-app-upnp"
+          PACKAGES="${PACKAGES} luci-i18n-upnp-zh-cn"
+          PACKAGES="${PACKAGES} luci-app-ttyd"
+          PACKAGES="${PACKAGES} luci-i18n-ttyd-zh-cn"
 
-luci-app-upnp
-luci-i18n-upnp-zh-cn
+          # PPPoE
+          PACKAGES="${PACKAGES} ppp"
+          PACKAGES="${PACKAGES} ppp-mod-pppoe"
+          PACKAGES="${PACKAGES} kmod-pppoe"
+          PACKAGES="${PACKAGES} luci-proto-ppp"
 
-luci-app-ttyd
-luci-i18n-ttyd-zh-cn
+          # IPv6
+          PACKAGES="${PACKAGES} ipv6"
+          PACKAGES="${PACKAGES} luci-proto-ipv6"
+          PACKAGES="${PACKAGES} odhcp6c"
+          PACKAGES="${PACKAGES} odhcpd-ipv6only"
 
-luci-proto-ppp
-luci-proto-ipv6
+          # File manager
+          PACKAGES="${PACKAGES} luci-app-filemanager"
+          PACKAGES="${PACKAGES} luci-i18n-filemanager-zh-cn"
+          PACKAGES="${PACKAGES} luci-app-filebrowser-go"
+          PACKAGES="${PACKAGES} luci-i18n-filebrowser-go-zh-cn"
 
-ppp
-ppp-mod-pppoe
-kmod-pppoe
+          # Timewol
+          PACKAGES="${PACKAGES} luci-app-timewol"
+          PACKAGES="${PACKAGES} luci-i18n-timewol-zh-cn"
 
-odhcp6c
-odhcpd-ipv6only
+          # VLMCSd
+          PACKAGES="${PACKAGES} luci-app-vlmcsd"
+          PACKAGES="${PACKAGES} luci-i18n-vlmcsd-zh-cn"
 
-luci-app-filemanager
-luci-i18n-filemanager-zh-cn
+          # Auto reboot
+          PACKAGES="${PACKAGES} luci-app-autoreboot"
+          PACKAGES="${PACKAGES} luci-i18n-autoreboot-zh-cn"
 
-luci-app-filebrowser-go
-luci-i18n-filebrowser-go-zh-cn
+          # Aurora
+          PACKAGES="${PACKAGES} luci-theme-aurora"
+          PACKAGES="${PACKAGES} luci-app-aurora-config"
+          PACKAGES="${PACKAGES} luci-i18n-aurora-config-zh-cn"
 
-luci-app-timewol
-luci-i18n-timewol-zh-cn
+          # Shadcn
+          PACKAGES="${PACKAGES} luci-theme-shadcn"
 
-luci-app-vlmcsd
-luci-i18n-vlmcsd-zh-cn
+          # Bandix
+          PACKAGES="${PACKAGES} bandix"
+          PACKAGES="${PACKAGES} luci-app-bandix"
+          PACKAGES="${PACKAGES} luci-i18n-bandix-zh-cn"
 
-luci-app-autoreboot
-luci-i18n-autoreboot-zh-cn
+          # Run
+          PACKAGES="${PACKAGES} luci-app-run"
 
-luci-theme-aurora
-luci-app-aurora-config
-luci-i18n-aurora-config-zh-cn
+          # PassWall
+          PACKAGES="${PACKAGES} luci-app-passwall"
+          PACKAGES="${PACKAGES} luci-i18n-passwall-zh-cn"
+          PACKAGES="${PACKAGES} geoview"
+          PACKAGES="${PACKAGES} xray-core"
+          PACKAGES="${PACKAGES} sing-box"
+          PACKAGES="${PACKAGES} hysteria"
+          PACKAGES="${PACKAGES} v2ray-geoip"
+          PACKAGES="${PACKAGES} v2ray-geosite"
 
-bandix
-luci-app-bandix
-luci-i18n-bandix-zh-cn
+          # OpenClash
+          PACKAGES="${PACKAGES} luci-app-openclash"
+          PACKAGES="${PACKAGES} luci-compat"
+          PACKAGES="${PACKAGES} kmod-tun"
+          PACKAGES="${PACKAGES} kmod-inet-diag"
+          PACKAGES="${PACKAGES} kmod-nft-tproxy"
+          PACKAGES="${PACKAGES} kmod-nft-socket"
 
-luci-app-run
+          # Utilities
+          PACKAGES="${PACKAGES} bash"
+          PACKAGES="${PACKAGES} curl"
+          PACKAGES="${PACKAGES} ip-full"
+          PACKAGES="${PACKAGES} unzip"
 
-luci-app-passwall
-luci-i18n-passwall-zh-cn
+          # Load custom package list if available
+          if [ -f "${GITHUB_WORKSPACE}/shell/apk-custom-packages.sh" ]; then
+            echo "Loading custom package definition..."
 
-geoview
-xray-core
-sing-box
-hysteria
-v2ray-geoip
-v2ray-geosite
+            source "${GITHUB_WORKSPACE}/shell/apk-custom-packages.sh"
 
-luci-app-openclash
-luci-compat
-
-kmod-tun
-kmod-inet-diag
-kmod-nft-socket
-kmod-nft-tproxy
-
-bash
-curl
-ip-full
-unzip
-EOF
-
-          PACKAGES="$(grep -v '^#' package-list.txt | xargs)"
-
-          echo "FINAL_PACKAGES=$PACKAGES" >> "$GITHUB_ENV"
-
-          echo
-          echo "======================================"
-          echo "Package list"
-          echo "======================================"
-
-          cat package-list.txt
-
-
-      - name: Verify required local packages
-        shell: bash
-        run: |
-          set -e
-
-          REQUIRED="
-          luci-app-filemanager
-          luci-i18n-filemanager-zh-cn
-          luci-app-filebrowser-go
-          luci-i18n-filebrowser-go-zh-cn
-          luci-app-timewol
-          luci-i18n-timewol-zh-cn
-          luci-app-vlmcsd
-          luci-i18n-vlmcsd-zh-cn
-          luci-app-autoreboot
-          luci-i18n-autoreboot-zh-cn
-          luci-theme-aurora
-          luci-app-aurora-config
-          luci-i18n-aurora-config-zh-cn
-          bandix
-          luci-app-bandix
-          luci-i18n-bandix-zh-cn
-          luci-app-run
-          "
-
-          FAILED=0
-
-          for PACKAGE in $REQUIRED; do
-            if find packages \
-              -maxdepth 1 \
-              -type f \
-              -name "${PACKAGE}_*.apk" |
-              grep -q .; then
-
-              echo "OK: $PACKAGE"
-
-            else
-
-              echo "WARNING: $PACKAGE not found."
-
-              FAILED=1
-
+            if [ -n "${CUSTOM_PACKAGES:-}" ]; then
+              PACKAGES="${PACKAGES} ${CUSTOM_PACKAGES}"
             fi
-          done
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo
-            echo "Some third-party packages are missing."
-            exit 1
           fi
 
+          # Remove duplicates
+          PACKAGES="$(
+            printf '%s\n' ${PACKAGES} |
+            awk '!seen[$0]++' |
+            tr '\n' ' '
+          )"
 
-      - name: Build OpenWrt Image
+          PACKAGES="$(echo "${PACKAGES}" | xargs)"
+
+          echo "FINAL_PACKAGES=${PACKAGES}" >> "${GITHUB_ENV}"
+
+          echo
+          echo "=========================================="
+          echo "Final package list"
+          echo "=========================================="
+
+          printf '%s\n' ${PACKAGES} | sort
+
+
+      - name: Verify important packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Package verification list:"
+
+          printf '%s\n' ${FINAL_PACKAGES} | sort
+
+
+      - name: Build OpenWrt ImageBuilder image
         working-directory: imagebuilder
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "======================================"
-          echo "Building OpenWrt ImageBuilder"
-          echo "======================================"
+          echo "=========================================="
+          echo "Building OpenWrt ImageBuilder image"
+          echo "=========================================="
+
+          echo "OpenWrt version: ${OPENWRT_VERSION}"
+          echo "RootFS size: ${ROOTFS_SIZE}"
+          echo "RootFS partition: ${ROOTFS_PARTSIZE} MB"
 
           make image \
             PROFILE="generic" \
-            PACKAGES="$FINAL_PACKAGES" \
-            FILES="$GITHUB_WORKSPACE/files" \
-            ROOTFS_PARTSIZE="$ROOTFS_PARTSIZE" \
+            PACKAGES="${FINAL_PACKAGES}" \
+            FILES="${GITHUB_WORKSPACE}/files" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
             V=s
 
 
       - name: Prepare release directory
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           rm -rf release
           mkdir -p release
 
 
-      - name: Export BIOS EXT4
+      - name: Export BIOS EXT4 image
         if: github.event_name != 'workflow_dispatch' || inputs.bios
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGE="$(
             find imagebuilder/bin/targets/x86/64 \
@@ -719,20 +653,21 @@ EOF
             head -n 1
           )"
 
-          if [ -z "$IMAGE" ]; then
-            echo "BIOS EXT4 image not found."
+          if [ -z "${IMAGE}" ]; then
+            echo "ERROR: BIOS EXT4 image not found."
             exit 1
           fi
 
-          cp "$IMAGE" \
+          cp \
+            "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${BUILD_TIME}-BIOS-ext4.img.gz"
 
 
-      - name: Export UEFI EXT4
+      - name: Export UEFI EXT4 image
         if: github.event_name != 'workflow_dispatch' || inputs.uefi
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGE="$(
             find imagebuilder/bin/targets/x86/64 \
@@ -742,20 +677,21 @@ EOF
             head -n 1
           )"
 
-          if [ -z "$IMAGE" ]; then
-            echo "UEFI EXT4 image not found."
+          if [ -z "${IMAGE}" ]; then
+            echo "ERROR: UEFI EXT4 image not found."
             exit 1
           fi
 
-          cp "$IMAGE" \
+          cp \
+            "${IMAGE}" \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${BUILD_TIME}-UEFI-ext4.img.gz"
 
 
-      - name: Prepare RAW image
+      - name: Prepare raw image
         if: github.event_name != 'workflow_dispatch' || inputs.qcow2 || inputs.vmdk || inputs.raw
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGE="$(
             find imagebuilder/bin/targets/x86/64 \
@@ -765,19 +701,21 @@ EOF
             head -n 1
           )"
 
-          if [ -z "$IMAGE" ]; then
-            echo "UEFI image not found."
+          if [ -z "${IMAGE}" ]; then
+            echo "ERROR: UEFI EXT4 image not found."
             exit 1
           fi
 
-          gzip -dc "$IMAGE" > openwrt.raw
+          gzip -dc "${IMAGE}" > openwrt.raw
+
+          ls -lh openwrt.raw
 
 
-      - name: Create QCOW2
+      - name: Create QCOW2 image
         if: github.event_name != 'workflow_dispatch' || inputs.qcow2
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           qemu-img convert \
             -f raw \
@@ -786,11 +724,11 @@ EOF
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${BUILD_TIME}-UEFI.qcow2"
 
 
-      - name: Create VMDK
+      - name: Create VMDK image
         if: github.event_name == 'workflow_dispatch' && inputs.vmdk
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           qemu-img convert \
             -f raw \
@@ -799,37 +737,38 @@ EOF
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${BUILD_TIME}-UEFI.vmdk"
 
 
-      - name: Export RAW
+      - name: Export RAW image
         if: github.event_name == 'workflow_dispatch' && inputs.raw
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          cp openwrt.raw \
+          cp \
+            openwrt.raw \
             "release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${BUILD_DATE}-${BUILD_TIME}-UEFI.raw"
 
 
       - name: Generate SHA256
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cd release
 
           sha256sum * > sha256sums
 
 
-      - name: Create build info
+      - name: Create build information
         env:
-          LAN_IP: ${{ inputs.lan_ip }}
+          LAN_IP_INPUT: ${{ inputs.lan_ip }}
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          IP="$LAN_IP"
+          LAN_IP="${LAN_IP_INPUT}"
 
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ -z "$IP" ]; then
-            IP="192.168.1.2"
+          if [ -z "${LAN_IP}" ]; then
+            LAN_IP="192.168.1.2"
           fi
 
           cat > release/build-info.txt <<EOF
@@ -842,7 +781,7 @@ ${OPENWRT_VERSION}
 Target:
 x86-64
 
-Build method:
+Build system:
 Official OpenWrt ImageBuilder
 
 RootFS:
@@ -859,10 +798,10 @@ Network
 =======
 
 eth0:
-WAN1 PPPoE
+WAN1 / PPPoE
 
 eth1:
-WAN2 PPPoE
+WAN2 / PPPoE
 
 eth2:
 LAN
@@ -877,7 +816,7 @@ eth5:
 LAN
 
 LAN IP:
-${IP}
+${LAN_IP}
 
 IPv6:
 Enabled
@@ -889,21 +828,24 @@ Filesystem
 EXT4
 
 BIOS:
-Enabled
+Supported
 
 UEFI:
-Enabled
+Supported
+
+QCOW2:
+Supported
 EOF
 
 
       - name: Show release files
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "======================================"
+          echo "=========================================="
           echo "Release files"
-          echo "======================================"
+          echo "=========================================="
 
           ls -lh release
 
@@ -912,7 +854,7 @@ EOF
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "OpenWrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ env.ROOTFS_SIZE }}-${{ env.BUILD_DATE }}-${{ env.BUILD_TIME }}"
-          name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }}"
+          name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 ${{ env.ROOTFS_SIZE }} ${{ env.BUILD_DATE }}"
           body: |
             # OpenWrt ${{ env.OPENWRT_VERSION }} x86-64
 
@@ -934,7 +876,7 @@ EOF
             - eth3 → LAN
             - eth4 → LAN
             - eth5 → LAN
-            - LAN → 192.168.1.2
+            - LAN → `${{ inputs.lan_ip }}`
             - IPv6 → Enabled
 
             ## 固件
@@ -959,9 +901,9 @@ EOF
       - name: Update openwrt-version
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "$OPENWRT_VERSION" > openwrt-version
+          echo "${OPENWRT_VERSION}" > openwrt-version
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -974,6 +916,6 @@ EOF
           fi
 
           git commit \
-            -m "Update OpenWrt version to $OPENWRT_VERSION"
+            -m "Update OpenWrt version to ${OPENWRT_VERSION}"
 
           git push
