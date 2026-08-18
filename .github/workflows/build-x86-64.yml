@@ -246,6 +246,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/apk-custom-packages.sh"
+          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
+          packages="$CUSTOM_PACKAGES $official luci-app-openclash"
           out="$GITHUB_WORKSPACE/release"
           rm -rf "$out"; mkdir -p "$out"
           img="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*combined-efi.img.gz' -print -quit)"
