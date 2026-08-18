@@ -1,0 +1,361 @@
+name: Build OpenWrt x86-64 ImageBuilder
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt version"
+        required: true
+        default: "25.12.5"
+
+      lan_ip:
+        description: "LAN IP address"
+        required: true
+        default: "192.168.1.2"
+
+      rootfs_size:
+        description: "Firmware disk/rootfs size"
+        required: true
+        type: choice
+        default: "4G"
+        options:
+          - "1G"
+          - "2G"
+          - "3G"
+          - "4G"
+
+      filesystem:
+        description: "Filesystem format"
+        required: true
+        type: choice
+        default: "ext4"
+        options:
+          - "ext4"
+          - "squashfs"
+
+      qcow2:
+        description: "Build QCOW2 image"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    env:
+      OPENWRT_VERSION: ${{ inputs.openwrt_version }}
+      LAN_IP: ${{ inputs.lan_ip }}
+      ROOTFS_SIZE: ${{ inputs.rootfs_size }}
+      FILESYSTEM: ${{ inputs.filesystem }}
+      BUILD_QCOW2: ${{ inputs.qcow2 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ImageBuilder tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            qemu-utils \
+            zstd \
+            xz-utils \
+            gzip \
+            tar \
+            wget \
+            curl \
+            git \
+            rsync
+
+      - name: Download OpenWrt x86-64 ImageBuilder
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
+          IB="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+
+          mkdir -p "${RUNNER_TEMP}/ib"
+          cd "${RUNNER_TEMP}/ib"
+
+          wget -q --show-progress "${BASE_URL}/${IB}"
+
+          tar --zstd -xf "${IB}"
+
+          IMAGEBUILDER_DIR="$(
+            find . \
+              -maxdepth 1 \
+              -type d \
+              -name "openwrt-imagebuilder-*" \
+              -print \
+              | head -n 1
+          )"
+
+          test -n "${IMAGEBUILDER_DIR}"
+
+          IMAGEBUILDER_DIR="$(cd "${IMAGEBUILDER_DIR}" && pwd)"
+
+          echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> "${GITHUB_ENV}"
+
+          echo "ImageBuilder:"
+          echo "${IMAGEBUILDER_DIR}"
+
+      - name: Prepare third-party APK repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -f shell/apk-custom-packages.sh
+
+          chmod +x shell/apk-custom-packages.sh
+
+          IMAGEBUILDER_DIR="${IMAGEBUILDER_DIR}" \
+            shell/apk-custom-packages.sh
+
+          echo
+          echo "Third-party APK files:"
+          find "${IMAGEBUILDER_DIR}/packages" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            -printf '%f\n' \
+            | sort
+
+      - name: Prepare custom files
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
+
+          cp \
+            files/etc/uci-defaults/99-custom.sh \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+
+          sed -i \
+            "s/__LAN_IP__/${LAN_IP}/g" \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+
+          chmod +x \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+
+      - name: Configure filesystem
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "${IMAGEBUILDER_DIR}"
+
+          test -f .config
+
+          case "${FILESYSTEM}" in
+            ext4)
+              echo "Selected filesystem: ext4"
+
+              sed -i \
+                's/^CONFIG_TARGET_ROOTFS_SQUASHFS=.*/# CONFIG_TARGET_ROOTFS_SQUASHFS is not set/' \
+                .config
+
+              if grep -q '^CONFIG_TARGET_ROOTFS_EXT4FS=' .config; then
+                sed -i \
+                  's/^CONFIG_TARGET_ROOTFS_EXT4FS=.*/CONFIG_TARGET_ROOTFS_EXT4FS=y/' \
+                  .config
+              else
+                printf '%s\n' \
+                  'CONFIG_TARGET_ROOTFS_EXT4FS=y' \
+                  >> .config
+              fi
+              ;;
+
+            squashfs)
+              echo "Selected filesystem: squashfs"
+
+              sed -i \
+                's/^CONFIG_TARGET_ROOTFS_EXT4FS=.*/# CONFIG_TARGET_ROOTFS_EXT4FS is not set/' \
+                .config
+
+              if grep -q '^CONFIG_TARGET_ROOTFS_SQUASHFS=' .config; then
+                sed -i \
+                  's/^CONFIG_TARGET_ROOTFS_SQUASHFS=.*/CONFIG_TARGET_ROOTFS_SQUASHFS=y/' \
+                  .config
+              else
+                printf '%s\n' \
+                  'CONFIG_TARGET_ROOTFS_SQUASHFS=y' \
+                  >> .config
+              fi
+              ;;
+
+            *)
+              echo "Unsupported filesystem: ${FILESYSTEM}"
+              exit 1
+              ;;
+          esac
+
+          echo
+          echo "Filesystem configuration:"
+          grep -E \
+            '^CONFIG_TARGET_ROOTFS_(EXT4FS|SQUASHFS)=' \
+            .config \
+            || true
+
+      - name: Build OpenWrt image
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "${IMAGEBUILDER_DIR}"
+
+          CUSTOM_PACKAGES=""
+
+          shopt -s nullglob
+
+          for apk in packages/*.apk; do
+            pkgname="$(
+              tar -xOf "${apk}" .PKGINFO 2>/dev/null \
+                | awk -F' = ' '$1 == "pkgname" {print $2; exit}'
+            )"
+
+            if [[ -n "${pkgname}" ]]; then
+              CUSTOM_PACKAGES+=" ${pkgname}"
+            fi
+          done
+
+          PACKAGES="
+            curl
+            luci
+            luci-i18n-base-zh-cn
+            luci-i18n-firewall-zh-cn
+            luci-theme-bootstrap
+            luci-theme-argon
+            luci-app-argon-config
+            luci-i18n-argon-config-zh-cn
+            openssh-sftp-server
+            ${CUSTOM_PACKAGES}
+          "
+
+          ROOTFS_PARTSIZE="$(( ${ROOTFS_SIZE%G} * 1024 ))"
+
+          echo "============================================================"
+          echo "OpenWrt version : ${OPENWRT_VERSION}"
+          echo "Target          : x86 / 64"
+          echo "LAN IP          : ${LAN_IP}"
+          echo "Rootfs size     : ${ROOTFS_SIZE}"
+          echo "Rootfs partsize : ${ROOTFS_PARTSIZE} MiB"
+          echo "Filesystem      : ${FILESYSTEM}"
+          echo "QCOW2           : ${BUILD_QCOW2}"
+          echo "Packages        :"
+          printf '%s\n' "${PACKAGES}"
+          echo "============================================================"
+
+          make image \
+            PROFILE="generic" \
+            PACKAGES="${PACKAGES}" \
+            FILES="${IMAGEBUILDER_DIR}/files" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
+
+      - name: Collect UEFI image
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          BUILD_DIR="${IMAGEBUILDER_DIR}/bin/targets/x86/64"
+          OUT="${GITHUB_WORKSPACE}/release"
+
+          rm -rf "${OUT}"
+          mkdir -p "${OUT}"
+
+          shopt -s nullglob
+
+          case "${FILESYSTEM}" in
+            ext4)
+              candidates=(
+                "${BUILD_DIR}"/*generic-ext4-combined-efi.img.gz
+                "${BUILD_DIR}"/*generic-ext4-combined-efi.img
+              )
+              ;;
+
+            squashfs)
+              candidates=(
+                "${BUILD_DIR}"/*generic-squashfs-combined-efi.img.gz
+                "${BUILD_DIR}"/*generic-squashfs-combined-efi.img
+              )
+              ;;
+          esac
+
+          if (( ${#candidates[@]} == 0 )); then
+            echo "ERROR: UEFI ${FILESYSTEM} image was not generated."
+
+            echo
+            echo "ImageBuilder output:"
+            find "${BUILD_DIR}" \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
+              | sort
+
+            exit 1
+          fi
+
+          src="${candidates[0]}"
+          dst="${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
+
+          case "${src}" in
+            *.gz)
+              gzip -dc "${src}" > "${dst}"
+              ;;
+
+            *)
+              cp "${src}" "${dst}"
+              ;;
+          esac
+
+          test -s "${dst}"
+
+          echo "Generated:"
+          ls -lh "${dst}"
+
+      - name: Convert UEFI image to QCOW2
+        if: ${{ inputs.qcow2 }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          IMG="${GITHUB_WORKSPACE}/release/openwrt-x86-64-uefi-${FILESYSTEM}.img"
+          QCOW2="${GITHUB_WORKSPACE}/release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
+
+          test -s "${IMG}"
+
+          qemu-img convert \
+            -p \
+            -f raw \
+            -O qcow2 \
+            "${IMG}" \
+            "${QCOW2}"
+
+          qemu-img info "${QCOW2}"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "${GITHUB_WORKSPACE}/release"
+
+          sha256sum * > sha256sums.txt
+
+          echo "============================================================"
+          cat sha256sums.txt
+          echo "============================================================"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-64-${{ inputs.openwrt_version }}-${{ inputs.filesystem }}
+          path: release/*
+          if-no-files-found: error
