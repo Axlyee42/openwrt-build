@@ -295,10 +295,22 @@ jobs:
             exit 1
           fi
 
-          echo "CUSTOM_PACKAGES=$CUSTOM_PACKAGES" >> "$GITHUB_ENV"
+          # 将多行软件包列表转换成单行、空格分隔
+          CUSTOM_PACKAGES="$(printf '%s\n' "$CUSTOM_PACKAGES" | xargs)"
+
+          if [ -z "$CUSTOM_PACKAGES" ]; then
+            echo "ERROR: CUSTOM_PACKAGES is empty after normalization."
+            exit 1
+          fi
+
+          # GitHub Actions 环境变量必须写成单行
+          printf 'CUSTOM_PACKAGES=%s\n' "$CUSTOM_PACKAGES" >> "$GITHUB_ENV"
 
           echo
-          echo "Third-party package list:"
+          echo "=========================================="
+          echo "Third-party package list"
+          echo "=========================================="
+
           printf '%s\n' $CUSTOM_PACKAGES
 
 
