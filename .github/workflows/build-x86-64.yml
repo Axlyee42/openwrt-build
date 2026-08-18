@@ -119,19 +119,23 @@ jobs:
 
           rm -rf "${IMAGEBUILDER_DIR}/packages"
           mkdir -p "${IMAGEBUILDER_DIR}/packages"
+
           echo "Prepared APKs:"
           find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+
+          # IMPORTANT: ImageBuilder/apk resolves dependencies from the local
+          # package repository.  Copy ALL prepared third-party APKs, not only
+          # the explicitly requested top-level packages.  This is required for
+          # Argon, SSR, RTP2HTTPD and PassWall dependency packages.
+          cp -f "${PREPARED_DIR}"/*.apk "${IMAGEBUILDER_DIR}/packages/"
 
           for pkg in ${CUSTOM_PACKAGES:-}; do
             mapfile -t matches < <(find "${PREPARED_DIR}" -maxdepth 1 -type f -name "${pkg}-*.apk" -printf '%p\n' | sort -V)
             if [[ "${#matches[@]}" -eq 0 ]]; then
-              echo "ERROR: third-party APK package was not prepared: ${pkg}" >&2
+              echo "ERROR: requested third-party APK package was not prepared: ${pkg}" >&2
               find "${PREPARED_DIR}" -maxdepth 1 -type f -name "${pkg}*.apk" -printf '%f\n' | sort >&2 || true
               exit 1
             fi
-            src="${matches[${#matches[@]}-1]}"
-            cp -f "${src}" "${IMAGEBUILDER_DIR}/packages/"
-            echo "  ${pkg} <- $(basename "${src}")"
           done
 
           echo "Local third-party APK files supplied to ImageBuilder:"
@@ -204,6 +208,8 @@ jobs:
           BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-i18n-filebrowser-go-zh-cn luci-i18n-timewol-zh-cn luci-i18n-vlmcsd-zh-cn luci-i18n-autoreboot-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
           PACKAGES="$(printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${PACKAGES}"
+          echo "Final package selection:"
+          printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
           make image PROFILE="generic" PACKAGES="${PACKAGES}" FILES="${IMAGEBUILDER_DIR}/files" ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
       - name: Collect images
