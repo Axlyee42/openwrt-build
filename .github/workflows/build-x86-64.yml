@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y curl git gzip qemu-utils wget xz-utils zstd
+          sudo apt-get install -y curl git gzip jq qemu-utils wget xz-utils zstd
 
       - name: Download OpenWrt ImageBuilder
         shell: bash
@@ -179,9 +179,18 @@ jobs:
           chmod +x files/etc/openclash/core/clash_meta
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O files/etc/openclash/GeoIP.dat
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O files/etc/openclash/GeoSite.dat
-          OPENCLASH_APK_URL="$(curl -fsSL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep 'browser_download_url.*apk' | head -n1 | cut -d '\"' -f4)"
-          test -n "${OPENCLASH_APK_URL}"
-          wget -q "${OPENCLASH_APK_URL}" -P "${IMAGEBUILDER_DIR}/packages/"
+
+          OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
+          OPENCLASH_APK_URL="$(curl -fsSL --retry 3 --retry-delay 2 "${OPENCLASH_API}" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1)"
+          if [[ -z "${OPENCLASH_APK_URL}" || "${OPENCLASH_APK_URL}" == "null" ]]; then
+            echo "ERROR: no OpenClash APK asset found in latest release" >&2
+            curl -fsSL --retry 3 --retry-delay 2 "${OPENCLASH_API}" | jq -r '.tag_name, (.assets[]?.name)' >&2
+            exit 1
+          fi
+          echo "OpenClash APK: ${OPENCLASH_APK_URL}"
+          wget -q --show-progress "${OPENCLASH_APK_URL}" -P "${IMAGEBUILDER_DIR}/packages/"
+          test -n "$(find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -print -quit)"
+
           mkdir -p files/usr/bin
           MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz"
           wget -qO- "${MIHOMO_URL}" | gzip -dc > files/usr/bin/mihomo
