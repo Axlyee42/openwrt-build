@@ -139,34 +139,26 @@ jobs:
           PREPARED_DIR="${RUNNER_TEMP}/prepared-apk"
 
           rm -rf "${THIRD_PARTY_REPO}" "${EXTRA_DIR}" "${PREPARED_DIR}"
+          mkdir -p "${EXTRA_DIR}" "${PREPARED_DIR}"
 
-          git clone --depth=1 \
+          git clone --depth=1 --branch master \
             https://github.com/wukongdaily/apk.git \
             "${THIRD_PARTY_REPO}"
 
-          mkdir -p "${EXTRA_DIR}" "${PREPARED_DIR}"
-
-          # x86 APKs live under run/x86. Some packages are direct APKs,
-          # while the larger package bundles are makeself .run archives.
+          test -d "${THIRD_PARTY_REPO}/run/x86"
           cp -a "${THIRD_PARTY_REPO}/run/x86/." "${EXTRA_DIR}/"
 
-          rm -rf packages
-          mkdir -p packages
-
-          # Extract all x86 .run bundles, then collect the APKs. This is the
-          # same preparation model used by the upstream ImageBuilder project.
           BASE_DIR="${EXTRA_DIR}" \
           TARGET_DIR="${PREPARED_DIR}" \
             scripts/apk-prepare-packages.sh
 
-          echo
+          rm -rf packages
+          mkdir -p packages
+
           echo "Prepared APKs:"
           find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
-          # Select the exact package names requested by CUSTOM_PACKAGES.
-          # Do not rename APKs: OpenWrt 25.12 ImageBuilder validates the APK
-          # filename against the package metadata, including '~' revisions.
-          for pkg in ${CUSTOM_PACKAGES}; do
+          for pkg in ${CUSTOM_PACKAGES:-}; do
             mapfile -t matches < <(
               find "${PREPARED_DIR}" \
                 -maxdepth 1 \
@@ -177,15 +169,12 @@ jobs:
             )
 
             if [[ "${#matches[@]}" -eq 0 ]]; then
-              echo
-              echo "ERROR: requested APK package was not prepared: ${pkg}" >&2
-              echo "Matching files:" >&2
+              echo "ERROR: third-party APK package was not prepared: ${pkg}" >&2
               find "${PREPARED_DIR}" \
                 -maxdepth 1 \
                 -type f \
                 -name "${pkg}*.apk" \
-                -printf '%f\n' |
-                sort >&2 || true
+                -printf '%f\n' | sort >&2 || true
               exit 1
             fi
 
@@ -194,10 +183,8 @@ jobs:
             echo "  ${pkg} <- $(basename "${src}")"
           done
 
-          echo
-          echo "Local APK files supplied to ImageBuilder:"
+          echo "Local third-party APK files supplied to ImageBuilder:"
           find packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
-
           test -n "$(find packages -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
       - name: Prepare ImageBuilder configuration
@@ -217,7 +204,6 @@ jobs:
 
           echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}" >> "${GITHUB_ENV}"
 
-          # Configure only the selected filesystem.
           sed -i \
             -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' \
             -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' \
@@ -239,7 +225,6 @@ jobs:
             *) echo "Invalid FILESYSTEM=${FILESYSTEM}" >&2; exit 1 ;;
           esac
 
-          # UEFI only. BIOS, VDI, VMDK, VHDX and ISO are never released.
           sed -i \
             -e '/^CONFIG_GRUB_IMAGES=/d' \
             -e '/^# CONFIG_GRUB_IMAGES is not set$/d' \
@@ -289,10 +274,31 @@ jobs:
             "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
           chmod +x "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
-          # Escape replacement text for sed, then substitute the placeholder.
           ESCAPED_LAN_IP="$(printf '%s' "${LAN_IP}" | sed 's/[&|\\]/\\&/g')"
           sed -i "s|__LAN_IP__|${ESCAPED_LAN_IP}|g" \
             "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+
+      - name: Prepare proxy cores
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "${IMAGEBUILDER_DIR}"
+
+          mkdir -p files/etc/openclash/core
+          META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64-v1.tar.gz"
+          wget -qO- "${META_URL}" | tar xOvz > files/etc/openclash/core/clash_meta
+          chmod +x files/etc/openclash/core/clash_meta
+          wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O files/etc/openclash/GeoIP.dat
+          wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O files/etc/openclash/GeoSite.dat
+          OPENCLASH_APK_URL="$(curl -fsSL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep 'browser_download_url.*apk' | head -n1 | cut -d '\"' -f4)"
+          test -n "${OPENCLASH_APK_URL}"
+          wget -q "${OPENCLASH_APK_URL}" -P packages/
+
+          mkdir -p files/usr/bin
+          MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz"
+          wget -qO- "${MIHOMO_URL}" | gzip -dc > files/usr/bin/mihomo
+          chmod +x files/usr/bin/mihomo
 
       - name: Build OpenWrt image
         shell: bash
@@ -301,7 +307,7 @@ jobs:
 
           cd "${IMAGEBUILDER_DIR}"
 
-          BASE_PACKAGES="curl luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server"
+          BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-i18n-filebrowser-go-zh-cn luci-i18n-timewol-zh-cn luci-i18n-vlmcsd-zh-cn luci-i18n-autoreboot-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
 
           PACKAGES="$(
             printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" |
@@ -326,8 +332,6 @@ jobs:
           echo "Packages:"
           printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
 
-          # ImageBuilder's APK implementation reads packages/ as the local
-          # package source. Keep PACKAGES a single whitespace-separated line.
           make image \
             PROFILE="generic" \
             PACKAGES="${PACKAGES}" \
@@ -373,7 +377,6 @@ jobs:
               *) cp -f "${src}" "${raw_img}" ;;
             esac
 
-            # RAW is only an intermediate. It is never uploaded.
             if [[ "${BUILD_QCOW2}" == "true" ]]; then
               qemu-img convert \
                 -p \
