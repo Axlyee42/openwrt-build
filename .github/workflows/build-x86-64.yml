@@ -112,19 +112,14 @@ jobs:
           git clone --depth=1 --branch master https://github.com/wukongdaily/apk.git "${THIRD_PARTY_REPO}"
           test -d "${THIRD_PARTY_REPO}/run/x86"
           cp -a "${THIRD_PARTY_REPO}/run/x86/." "${EXTRA_DIR}/"
-
           test -f "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
           chmod +x "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
           BASE_DIR="${EXTRA_DIR}" TARGET_DIR="${PREPARED_DIR}" "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
-
           rm -rf "${IMAGEBUILDER_DIR}/packages"
           mkdir -p "${IMAGEBUILDER_DIR}/packages"
-
           echo "Prepared APKs:"
           find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
-
           cp -f "${PREPARED_DIR}"/*.apk "${IMAGEBUILDER_DIR}/packages/"
-
           for pkg in ${CUSTOM_PACKAGES:-}; do
             mapfile -t matches < <(find "${PREPARED_DIR}" -maxdepth 1 -type f -name "${pkg}-*.apk" -printf '%p\n' | sort -V)
             if [[ "${#matches[@]}" -eq 0 ]]; then
@@ -133,7 +128,6 @@ jobs:
               exit 1
             fi
           done
-
           echo "Local third-party APK files supplied to ImageBuilder:"
           find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
           test -n "$(find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -print -quit)"
@@ -179,7 +173,6 @@ jobs:
           chmod +x files/etc/openclash/core/clash_meta
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O files/etc/openclash/GeoIP.dat
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O files/etc/openclash/GeoSite.dat
-
           OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
           OPENCLASH_APK_URL="$(curl -fsSL --retry 3 --retry-delay 2 "${OPENCLASH_API}" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1)"
           if [[ -z "${OPENCLASH_APK_URL}" || "${OPENCLASH_APK_URL}" == "null" ]]; then
@@ -190,7 +183,6 @@ jobs:
           echo "OpenClash APK: ${OPENCLASH_APK_URL}"
           wget -q --show-progress "${OPENCLASH_APK_URL}" -P "${IMAGEBUILDER_DIR}/packages/"
           test -n "$(find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -print -quit)"
-
           mkdir -p files/usr/bin
           MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz"
           wget -qO- "${MIHOMO_URL}" | gzip -dc > files/usr/bin/mihomo
@@ -208,7 +200,7 @@ jobs:
           printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
           make image PROFILE="generic" PACKAGES="${PACKAGES}" FILES="${IMAGEBUILDER_DIR}/files" ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
-      - name: Collect images
+      - name: Collect images and release metadata
         shell: bash
         run: |
           set -euxo pipefail
@@ -228,6 +220,36 @@ jobs:
           fi
           cp -f "${BUILD_DIR}"/*.manifest "${OUT}/" 2>/dev/null || true
           cp -f "${BUILD_DIR}"/*.buildinfo "${OUT}/" 2>/dev/null || true
+          BUILD_DATE_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          {
+            echo "# OpenWrt x86-64 Build"
+            echo
+            echo "## 基本信息"
+            echo
+            echo "| 项目 | 信息 |"
+            echo "|---|---|"
+            echo "| OpenWrt | ${OPENWRT_VERSION} |"
+            echo "| Target | x86/64 |"
+            echo "| Profile | generic |"
+            echo "| Filesystem | ${FILESYSTEM} |"
+            echo "| Rootfs size | ${ROOTFS_SIZE} |"
+            echo "| LAN IP | ${LAN_IP} |"
+            echo "| UEFI | ${BUILD_UEFI} |"
+            echo "| QCOW2 | ${BUILD_QCOW2} |"
+            echo "| 编译日期 | ${BUILD_DATE_UTC} |"
+            echo "| Git commit | ${GITHUB_SHA} |"
+            echo "| Workflow run | ${GITHUB_RUN_NUMBER} |"
+            echo
+            echo "## 包含的第三方 APK"
+            echo
+            printf '%s\n' "${CUSTOM_PACKAGES}" | tr ' ' '\n' | sed '/^$/d' | sed 's/^/- `/' | sed 's/$/`/'
+            echo
+            echo "## 说明"
+            echo
+            echo "以上第三方 APK 来自构建时使用的 wukongdaily x86 APK 仓库；ImageBuilder 同时保留其依赖包用于 APK 依赖解析。"
+          } > "${OUT}/RELEASE.md"
+          echo "BUILD_DATE_UTC=${BUILD_DATE_UTC}" >> "${GITHUB_ENV}"
+          test -s "${OUT}/RELEASE.md"
           test -n "$(find "${OUT}" -maxdepth 1 -type f -print -quit)"
 
       - name: Upload release artifacts
@@ -242,17 +264,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64-build-${{ github.run_number }}
-          name: OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 Build ${{ github.run_number }}
-          body: |
-            Automated OpenWrt x86-64 build.
-
-            - Version: ${{ env.OPENWRT_VERSION }}
-            - Filesystem: ${{ env.FILESYSTEM }}
-            - Rootfs size: ${{ env.ROOTFS_SIZE }}
-            - UEFI: ${{ env.BUILD_UEFI }}
-            - QCOW2: ${{ env.BUILD_QCOW2 }}
-            - Git commit: ${{ github.sha }}
-            - Workflow run: ${{ github.run_number }}
+          name: OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 Build ${{ github.run_number }} - ${{ env.BUILD_DATE_UTC }}
+          body_path: release/RELEASE.md
           files: release/*
           fail_on_unmatched_files: true
           generate_release_notes: true
