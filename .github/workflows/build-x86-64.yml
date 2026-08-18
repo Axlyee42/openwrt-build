@@ -7,12 +7,10 @@ on:
         description: "OpenWrt version"
         required: true
         default: "25.12.5"
-
       lan_ip:
         description: "LAN IP address"
         required: true
         default: "192.168.1.2"
-
       rootfs_size:
         description: "Firmware/rootfs size"
         required: true
@@ -23,7 +21,6 @@ on:
           - "2G"
           - "3G"
           - "4G"
-
       filesystem:
         description: "Filesystem"
         required: true
@@ -32,18 +29,22 @@ on:
         options:
           - "ext4"
           - "squashfs"
-
       build_uefi:
         description: "Build UEFI image"
         required: true
         type: boolean
         default: true
-
       build_qcow2:
         description: "Build QCOW2 image"
         required: true
         type: boolean
         default: true
+
+  # Temporary automatic trigger so the repository can self-test the fixes.
+  # It can be removed after the first successful build.
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -53,12 +54,12 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      OPENWRT_VERSION: ${{ inputs.openwrt_version }}
-      LAN_IP: ${{ inputs.lan_ip }}
-      ROOTFS_SIZE: ${{ inputs.rootfs_size }}
-      FILESYSTEM: ${{ inputs.filesystem }}
-      BUILD_UEFI: ${{ inputs.build_uefi }}
-      BUILD_QCOW2: ${{ inputs.build_qcow2 }}
+      OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.5' }}
+      LAN_IP: ${{ inputs.lan_ip || '192.168.1.2' }}
+      ROOTFS_SIZE: ${{ inputs.rootfs_size || '1G' }}
+      FILESYSTEM: ${{ inputs.filesystem || 'ext4' }}
+      BUILD_UEFI: ${{ inputs.build_uefi == '' && 'true' || inputs.build_uefi }}
+      BUILD_QCOW2: ${{ inputs.build_qcow2 == '' && 'true' || inputs.build_qcow2 }}
 
     steps:
       - name: Checkout
@@ -85,9 +86,11 @@ jobs:
 
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+          IB_ROOT="${RUNNER_TEMP}/imagebuilder"
 
-          mkdir -p "${RUNNER_TEMP}/imagebuilder"
-          cd "${RUNNER_TEMP}/imagebuilder"
+          rm -rf "${IB_ROOT}"
+          mkdir -p "${IB_ROOT}"
+          cd "${IB_ROOT}"
 
           wget -q --show-progress "${BASE_URL}/${ARCHIVE}"
           tar --zstd -xf "${ARCHIVE}"
@@ -99,13 +102,8 @@ jobs:
           )"
 
           test -n "${IMAGEBUILDER_DIR}"
-
-          IMAGEBUILDER_DIR="$(
-            cd "${IMAGEBUILDER_DIR}" && pwd
-          )"
-
+          IMAGEBUILDER_DIR="$(cd "${IMAGEBUILDER_DIR}" && pwd)"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> "${GITHUB_ENV}"
-
           echo "ImageBuilder: ${IMAGEBUILDER_DIR}"
 
       - name: Load third-party APK manifest
@@ -114,10 +112,6 @@ jobs:
           set -euxo pipefail
 
           test -f scripts/apk-custom-packages.sh
-
-          # IMPORTANT:
-          # apk-custom-packages.sh is a manifest, not an executable installer.
-          # source it so CUSTOM_PACKAGES exists in THIS shell.
           source scripts/apk-custom-packages.sh
 
           CUSTOM_PACKAGES="$(
@@ -128,10 +122,8 @@ jobs:
           )"
 
           test -n "${CUSTOM_PACKAGES}"
-
           echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "${GITHUB_ENV}"
 
-          echo
           echo "Selected third-party packages:"
           printf '%s\n' "${CUSTOM_PACKAGES}" | tr ' ' '\n'
 
@@ -143,57 +135,68 @@ jobs:
           cd "${IMAGEBUILDER_DIR}"
 
           THIRD_PARTY_REPO="${RUNNER_TEMP}/wukongdaily-apk"
+          EXTRA_DIR="${RUNNER_TEMP}/extra-packages"
+          PREPARED_DIR="${RUNNER_TEMP}/prepared-apk"
 
-          rm -rf "${THIRD_PARTY_REPO}"
+          rm -rf "${THIRD_PARTY_REPO}" "${EXTRA_DIR}" "${PREPARED_DIR}"
 
           git clone --depth=1 \
             https://github.com/wukongdaily/apk.git \
             "${THIRD_PARTY_REPO}"
 
+          mkdir -p "${EXTRA_DIR}" "${PREPARED_DIR}"
+
+          # x86 APKs live under run/x86. Some packages are direct APKs,
+          # while the larger package bundles are makeself .run archives.
+          cp -a "${THIRD_PARTY_REPO}/run/x86/." "${EXTRA_DIR}/"
+
+          rm -rf packages
           mkdir -p packages
 
-          echo
-          echo "Searching third-party APK repository..."
+          # Extract all x86 .run bundles, then collect the APKs. This is the
+          # same preparation model used by the upstream ImageBuilder project.
+          BASE_DIR="${EXTRA_DIR}" \
+          TARGET_DIR="${PREPARED_DIR}" \
+            scripts/apk-prepare-packages.sh
 
-          # Copy only APKs explicitly selected by CUSTOM_PACKAGES.
-          # For packages with multiple revisions, choose the highest version
-          # according to sort -V.
+          echo
+          echo "Prepared APKs:"
+          find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+
+          # Select the exact package names requested by CUSTOM_PACKAGES.
+          # Do not rename APKs: OpenWrt 25.12 ImageBuilder validates the APK
+          # filename against the package metadata, including '~' revisions.
           for pkg in ${CUSTOM_PACKAGES}; do
             mapfile -t matches < <(
-              find "${THIRD_PARTY_REPO}" \
+              find "${PREPARED_DIR}" \
+                -maxdepth 1 \
                 -type f \
                 -name "${pkg}-*.apk" \
-                -print |
+                -printf '%p\n' |
                 sort -V
             )
 
             if [[ "${#matches[@]}" -eq 0 ]]; then
               echo
-              echo "ERROR: APK not found in wukongdaily/apk: ${pkg}"
-              echo
-              echo "Available matching files:"
-              find "${THIRD_PARTY_REPO}" \
+              echo "ERROR: requested APK package was not prepared: ${pkg}" >&2
+              echo "Matching files:" >&2
+              find "${PREPARED_DIR}" \
+                -maxdepth 1 \
                 -type f \
                 -name "${pkg}*.apk" \
-                -printf '%p\n' |
-                sort || true
+                -printf '%f\n' |
+                sort >&2 || true
               exit 1
             fi
 
             src="${matches[${#matches[@]}-1]}"
             cp -f "${src}" packages/
-
             echo "  ${pkg} <- $(basename "${src}")"
           done
 
           echo
-          echo "Local APK files:"
-          find packages \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            -printf '%f\n' |
-            sort
+          echo "Local APK files supplied to ImageBuilder:"
+          find packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
           test -n "$(find packages -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
@@ -209,15 +212,12 @@ jobs:
             2G) ROOTFS_PARTSIZE=2048 ;;
             3G) ROOTFS_PARTSIZE=3072 ;;
             4G) ROOTFS_PARTSIZE=4096 ;;
-            *)
-              echo "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}" >&2
-              exit 1
-              ;;
+            *) echo "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}" >&2; exit 1 ;;
           esac
 
           echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}" >> "${GITHUB_ENV}"
 
-          # Only the requested filesystem is enabled.
+          # Configure only the selected filesystem.
           sed -i \
             -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' \
             -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' \
@@ -229,22 +229,17 @@ jobs:
             ext4)
               printf '%s\n' \
                 'CONFIG_TARGET_ROOTFS_SQUASHFS=n' \
-                'CONFIG_TARGET_ROOTFS_EXT4FS=y' \
-                >> .config
+                'CONFIG_TARGET_ROOTFS_EXT4FS=y' >> .config
               ;;
             squashfs)
               printf '%s\n' \
                 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' \
-                'CONFIG_TARGET_ROOTFS_EXT4FS=n' \
-                >> .config
+                'CONFIG_TARGET_ROOTFS_EXT4FS=n' >> .config
               ;;
-            *)
-              echo "Invalid FILESYSTEM=${FILESYSTEM}" >&2
-              exit 1
-              ;;
+            *) echo "Invalid FILESYSTEM=${FILESYSTEM}" >&2; exit 1 ;;
           esac
 
-          # UEFI only. BIOS/VDI/VMDK/VHDX/ISO are disabled.
+          # UEFI only. BIOS, VDI, VMDK, VHDX and ISO are never released.
           sed -i \
             -e '/^CONFIG_GRUB_IMAGES=/d' \
             -e '/^# CONFIG_GRUB_IMAGES is not set$/d' \
@@ -267,8 +262,7 @@ jobs:
               'CONFIG_VDI_IMAGES=n' \
               'CONFIG_VMDK_IMAGES=n' \
               'CONFIG_VHDX_IMAGES=n' \
-              'CONFIG_ISO_IMAGES=n' \
-              >> .config
+              'CONFIG_ISO_IMAGES=n' >> .config
           else
             printf '%s\n' \
               'CONFIG_GRUB_IMAGES=n' \
@@ -276,16 +270,13 @@ jobs:
               'CONFIG_VDI_IMAGES=n' \
               'CONFIG_VMDK_IMAGES=n' \
               'CONFIG_VHDX_IMAGES=n' \
-              'CONFIG_ISO_IMAGES=n' \
-              >> .config
+              'CONFIG_ISO_IMAGES=n' >> .config
           fi
 
-          echo
-          echo "Filesystem:"
+          echo "Filesystem configuration:"
           grep -E '^CONFIG_TARGET_ROOTFS_(SQUASHFS|EXT4FS)=' .config || true
 
-          echo
-          echo "Image formats:"
+          echo "Image format configuration:"
           grep -E '^(CONFIG_GRUB_IMAGES|CONFIG_GRUB_EFI_IMAGES|CONFIG_VDI_IMAGES|CONFIG_VMDK_IMAGES|CONFIG_VHDX_IMAGES|CONFIG_ISO_IMAGES)=' .config || true
 
       - name: Prepare custom files
@@ -294,16 +285,13 @@ jobs:
           set -euxo pipefail
 
           mkdir -p "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
-
-          cp \
-            files/etc/uci-defaults/99-custom.sh \
+          cp files/etc/uci-defaults/99-custom.sh \
             "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+          chmod +x "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
-          chmod +x \
-            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
-
-          sed -i \
-            "s/__LAN_IP__/${LAN_IP}/g" \
+          # Escape replacement text for sed, then substitute the placeholder.
+          ESCAPED_LAN_IP="$(printf '%s' "${LAN_IP}" | sed 's/[&|\\]/\\&/g')"
+          sed -i "s|__LAN_IP__|${ESCAPED_LAN_IP}|g" \
             "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
       - name: Build OpenWrt image
@@ -315,11 +303,8 @@ jobs:
 
           BASE_PACKAGES="curl luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server"
 
-          # PACKAGES is intentionally ONE LINE.
           PACKAGES="$(
-            printf '%s\n' \
-              "${BASE_PACKAGES}" \
-              "${CUSTOM_PACKAGES:-}" |
+            printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" |
               tr '[:space:]' '\n' |
               awk 'NF && !seen[$0]++' |
               paste -sd ' ' -
@@ -327,7 +312,6 @@ jobs:
 
           test -n "${PACKAGES}"
 
-          echo
           echo "============================================================"
           echo "OpenWrt version : ${OPENWRT_VERSION}"
           echo "Target          : x86/64"
@@ -342,6 +326,8 @@ jobs:
           echo "Packages:"
           printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
 
+          # ImageBuilder's APK implementation reads packages/ as the local
+          # package source. Keep PACKAGES a single whitespace-separated line.
           make image \
             PROFILE="generic" \
             PACKAGES="${PACKAGES}" \
@@ -358,7 +344,6 @@ jobs:
 
           rm -rf "${OUT}"
           mkdir -p "${OUT}"
-
           shopt -s nullglob
 
           if [[ "${BUILD_UEFI}" == "true" ]]; then
@@ -381,34 +366,29 @@ jobs:
             fi
 
             src="${candidates[0]}"
-            uefi_img="${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
+            raw_img="${RUNNER_TEMP}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
 
             case "${src}" in
-              *.gz)
-                gzip -dc "${src}" > "${uefi_img}"
-                ;;
-              *)
-                cp -f "${src}" "${uefi_img}"
-                ;;
+              *.gz) gzip -dc "${src}" > "${raw_img}" ;;
+              *) cp -f "${src}" "${raw_img}" ;;
             esac
 
+            # RAW is only an intermediate. It is never uploaded.
             if [[ "${BUILD_QCOW2}" == "true" ]]; then
               qemu-img convert \
                 -p \
                 -f raw \
                 -O qcow2 \
-                "${uefi_img}" \
+                "${raw_img}" \
                 "${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
             fi
 
-            # RAW is an intermediate format only.
-            # It is intentionally removed from the final artifact set.
-            rm -f "${uefi_img}"
+            rm -f "${raw_img}"
           fi
 
-          echo
           echo "Final artifacts:"
           find "${OUT}" -maxdepth 1 -type f -printf '%f\n' | sort
+          test -n "$(find "${OUT}" -maxdepth 1 -type f -print -quit)"
 
       - name: Generate SHA256
         shell: bash
@@ -420,6 +400,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-x86-64-${{ inputs.openwrt_version }}-${{ inputs.filesystem }}
+          name: openwrt-x86-64-${{ env.OPENWRT_VERSION }}-${{ env.FILESYSTEM }}
           path: release/*
           if-no-files-found: error
