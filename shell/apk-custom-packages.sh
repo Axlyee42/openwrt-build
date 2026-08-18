@@ -6,49 +6,26 @@ set -euo pipefail
 # ============================================================
 # OpenWrt 25.12.x x86-64
 #
-# Final package list
+# 第三方 / 自定义软件包清单
 #
-# 这个脚本只负责生成：
+# 注意：
 #
-#   /tmp/custom-packages
+# 1. 官方 OpenWrt 包由官方 feeds 提供
+# 2. PassWall 核心由 PassWall packages feed 提供
+# 3. PassWall LuCI 由 PassWall LuCI feed 提供
+# 4. Bandix 由 Bandix feeds 提供
+# 5. Aurora / OpenClash / luci-app-run 由 package/custom 提供
 #
-# 后续由 build-x86-64.yml 的 ImageBuilder 流程读取。
-#
-# 不在这里编译第三方源码。
-# 不在这里处理 SDK。
-# 不在这里直接下载 APK。
+# 本文件只负责提供 CUSTOM_PACKAGES。
 # ============================================================
 
 
-OUTPUT="/tmp/custom-packages"
-
-
-rm -f "${OUTPUT}"
-
-touch "${OUTPUT}"
-
-
-# ============================================================
-# 基础 LuCI
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
-
+CUSTOM_PACKAGES="
 luci
 luci-i18n-base-zh-cn
 
-# LuCI 软件包管理
 luci-app-package-manager
 luci-i18n-package-manager-zh-cn
-
-EOF
-
-
-# ============================================================
-# PPP / PPPoE
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 ppp
 ppp-mod-pppoe
@@ -57,344 +34,147 @@ kmod-pppoe
 luci-proto-ppp
 luci-proto-ipv6
 
+ipv6
+kmod-ipv6
+
 odhcp6c
 odhcpd-ipv6only
-
-EOF
-
-
-# ============================================================
-# 多 WAN
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 mwan3
 luci-app-mwan3
 luci-i18n-mwan3-zh-cn
 
-EOF
-
-
-# ============================================================
-# UPnP
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
-
 luci-app-upnp
 luci-i18n-upnp-zh-cn
-
-EOF
-
-
-# ============================================================
-# TTYD
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 luci-app-ttyd
 luci-i18n-ttyd-zh-cn
 
-EOF
-
 
 # ============================================================
 # PassWall
-#
-# PassWall LuCI
 # ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 luci-app-passwall
 luci-i18n-passwall-zh-cn
-
-EOF
-
-
-# ============================================================
-# PassWall 核心
-#
-# 这些包来自 PassWall packages feed。
-#
-# Geoview：
-#   Sing-box 分流需要
-#
-# Xray：
-#   Xray Core
-#
-# Sing-box：
-#   Sing-box Core
-#
-# Hysteria：
-#   Hysteria Core
-# ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 geoview
 xray-core
 sing-box
 hysteria
 
-EOF
-
 
 # ============================================================
 # OpenClash
 # ============================================================
 
-cat >> "${OUTPUT}" <<'EOF'
-
 luci-app-openclash
 
-EOF
+
+# ============================================================
+# nftables TProxy
+# ============================================================
+
+kmod-nft-socket
+kmod-nft-tproxy
 
 
 # ============================================================
 # Aurora
-#
-# 第三方 APK / 本地包
 # ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 luci-theme-aurora
 luci-app-aurora-config
 luci-i18n-aurora-config-zh-cn
 
-EOF
-
 
 # ============================================================
 # Bandix
-#
-# 第三方 APK / 本地包
 # ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 bandix
 luci-app-bandix
 luci-i18n-bandix-zh-cn
 
-EOF
-
 
 # ============================================================
-# Run
+# luci-app-run
 # ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 luci-app-run
-
-EOF
 
 
 # ============================================================
 # FileBrowser Go
-#
-# 当前使用你之前已经成功找到的第三方包。
 # ============================================================
-
-cat >> "${OUTPUT}" <<'EOF'
 
 luci-app-filebrowser-go
 luci-i18n-filebrowser-go-zh-cn
-
-EOF
 
 
 # ============================================================
 # VLMCSd
 # ============================================================
 
-cat >> "${OUTPUT}" <<'EOF'
-
 luci-app-vlmcsd
 luci-i18n-vlmcsd-zh-cn
-
-EOF
 
 
 # ============================================================
 # TimeWOL
 # ============================================================
 
-cat >> "${OUTPUT}" <<'EOF'
-
 luci-app-timewol
 luci-i18n-timewol-zh-cn
-
-EOF
 
 
 # ============================================================
 # AutoReboot
 # ============================================================
 
-cat >> "${OUTPUT}" <<'EOF'
-
 luci-app-autoreboot
 luci-i18n-autoreboot-zh-cn
-
-EOF
-
-
-# ============================================================
-# 读取仓库中用户额外指定的包
-#
-# 如果 build workflow 在运行前已经生成：
-#
-#   /tmp/extra-packages
-#
-# 则追加进去。
-#
-# 这样以后增加包时，不需要修改这个脚本。
-# ============================================================
-
-if [ -f /tmp/extra-packages ]; then
-
-    cat /tmp/extra-packages >> "${OUTPUT}"
-
-fi
+"
 
 
 # ============================================================
-# 清理
+# 清理空白 / 注释
 #
-# 删除：
-#   - 空行
-#   - 注释
+# CUSTOM_PACKAGES 最终保持：
 #
-# 去重。
+# 每行一个 package
 # ============================================================
 
-sed -i \
-    '/^[[:space:]]*$/d' \
-    "${OUTPUT}"
-
-sed -i \
-    '/^[[:space:]]*#/d' \
-    "${OUTPUT}"
-
-
-sort -u \
-    "${OUTPUT}" \
-    -o "${OUTPUT}"
+CUSTOM_PACKAGES="$(
+  printf '%s\n' "${CUSTOM_PACKAGES}" |
+  sed \
+    -e '/^[[:space:]]*$/d' \
+    -e '/^[[:space:]]*#/d'
+)"
 
 
 # ============================================================
-# 最终检查
+# 去重
+# ============================================================
+
+CUSTOM_PACKAGES="$(
+  printf '%s\n' "${CUSTOM_PACKAGES}" |
+  sort -u
+)"
+
+
+# ============================================================
+# 输出
 # ============================================================
 
 echo
 echo "=========================================="
-echo "Final custom package list"
+echo "CUSTOM_PACKAGES"
 echo "=========================================="
-echo
 
-cat "${OUTPUT}"
-
+printf '%s\n' "${CUSTOM_PACKAGES}"
 
 echo
-echo "=========================================="
-echo "Package count"
-echo "=========================================="
+echo "Package count:"
 
-wc -l "${OUTPUT}"
-
-
-# ============================================================
-# 必须存在的核心包检查
-# ============================================================
-
-echo
-echo "=========================================="
-echo "Checking required packages"
-echo "=========================================="
-
-REQUIRED_PACKAGES=(
-    "luci"
-    "luci-i18n-base-zh-cn"
-
-    "luci-app-package-manager"
-    "luci-i18n-package-manager-zh-cn"
-
-    "ppp"
-    "ppp-mod-pppoe"
-    "kmod-pppoe"
-
-    "mwan3"
-    "luci-app-mwan3"
-
-    "luci-app-upnp"
-
-    "luci-app-passwall"
-    "luci-i18n-passwall-zh-cn"
-
-    "geoview"
-    "xray-core"
-    "sing-box"
-    "hysteria"
-
-    "luci-app-openclash"
-
-    "luci-theme-aurora"
-    "luci-app-aurora-config"
-
-    "bandix"
-    "luci-app-bandix"
-
-    "luci-app-run"
-
-    "luci-app-filebrowser-go"
-
-    "luci-app-vlmcsd"
-
-    "luci-app-timewol"
-
-    "luci-app-autoreboot"
-)
-
-
-FAILED=0
-
-
-for PACKAGE in "${REQUIRED_PACKAGES[@]}"; do
-
-    if grep -Fxq "${PACKAGE}" "${OUTPUT}"; then
-
-        echo "OK: ${PACKAGE}"
-
-    else
-
-        echo "ERROR: Missing package:"
-        echo "       ${PACKAGE}"
-
-        FAILED=1
-
-    fi
-
-done
-
-
-if [ "${FAILED}" -ne 0 ]; then
-
-    echo
-    echo "=========================================="
-    echo "ERROR: Required package check failed."
-    echo "=========================================="
-
-    exit 1
-
-fi
-
-
-echo
-echo "=========================================="
-echo "Package list generated successfully."
-echo "=========================================="
+printf '%s\n' "${CUSTOM_PACKAGES}" | wc -l
