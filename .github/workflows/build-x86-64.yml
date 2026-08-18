@@ -40,8 +40,6 @@ on:
         type: boolean
         default: true
 
-  # Temporary automatic trigger so the repository can self-test the fixes.
-  # It can be removed after the first successful build.
   push:
     branches:
       - main
@@ -70,37 +68,21 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            curl \
-            git \
-            gzip \
-            qemu-utils \
-            wget \
-            xz-utils \
-            zstd
+          sudo apt-get install -y curl git gzip qemu-utils wget xz-utils zstd
 
       - name: Download OpenWrt ImageBuilder
         shell: bash
         run: |
           set -euxo pipefail
-
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           IB_ROOT="${RUNNER_TEMP}/imagebuilder"
-
           rm -rf "${IB_ROOT}"
           mkdir -p "${IB_ROOT}"
           cd "${IB_ROOT}"
-
           wget -q --show-progress "${BASE_URL}/${ARCHIVE}"
           tar --zstd -xf "${ARCHIVE}"
-
-          IMAGEBUILDER_DIR="$(
-            find . -mindepth 1 -maxdepth 1 -type d \
-              -name "openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64" \
-              -print -quit
-          )"
-
+          IMAGEBUILDER_DIR="$(find . -mindepth 1 -maxdepth 1 -type d -name "openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64" -print -quit)"
           test -n "${IMAGEBUILDER_DIR}"
           IMAGEBUILDER_DIR="$(cd "${IMAGEBUILDER_DIR}" && pwd)"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> "${GITHUB_ENV}"
@@ -110,20 +92,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           test -f scripts/apk-custom-packages.sh
           source scripts/apk-custom-packages.sh
-
-          CUSTOM_PACKAGES="$(
-            printf '%s\n' "${CUSTOM_PACKAGES:-}" |
-              tr '[:space:]' '\n' |
-              awk 'NF && !seen[$0]++' |
-              paste -sd ' ' -
-          )"
-
+          CUSTOM_PACKAGES="$(printf '%s\n' "${CUSTOM_PACKAGES:-}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${CUSTOM_PACKAGES}"
           echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "${GITHUB_ENV}"
-
           echo "Selected third-party packages:"
           printf '%s\n' "${CUSTOM_PACKAGES}" | tr ' ' '\n'
 
@@ -131,160 +104,75 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
-          cd "${IMAGEBUILDER_DIR}"
-
           THIRD_PARTY_REPO="${RUNNER_TEMP}/wukongdaily-apk"
           EXTRA_DIR="${RUNNER_TEMP}/extra-packages"
           PREPARED_DIR="${RUNNER_TEMP}/prepared-apk"
-
           rm -rf "${THIRD_PARTY_REPO}" "${EXTRA_DIR}" "${PREPARED_DIR}"
           mkdir -p "${EXTRA_DIR}" "${PREPARED_DIR}"
-
-          git clone --depth=1 --branch master \
-            https://github.com/wukongdaily/apk.git \
-            "${THIRD_PARTY_REPO}"
-
+          git clone --depth=1 --branch master https://github.com/wukongdaily/apk.git "${THIRD_PARTY_REPO}"
           test -d "${THIRD_PARTY_REPO}/run/x86"
           cp -a "${THIRD_PARTY_REPO}/run/x86/." "${EXTRA_DIR}/"
 
-          BASE_DIR="${EXTRA_DIR}" \
-          TARGET_DIR="${PREPARED_DIR}" \
-            scripts/apk-prepare-packages.sh
+          test -f "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
+          chmod +x "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
+          BASE_DIR="${EXTRA_DIR}" TARGET_DIR="${PREPARED_DIR}" "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
 
-          rm -rf packages
-          mkdir -p packages
-
+          rm -rf "${IMAGEBUILDER_DIR}/packages"
+          mkdir -p "${IMAGEBUILDER_DIR}/packages"
           echo "Prepared APKs:"
           find "${PREPARED_DIR}" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
           for pkg in ${CUSTOM_PACKAGES:-}; do
-            mapfile -t matches < <(
-              find "${PREPARED_DIR}" \
-                -maxdepth 1 \
-                -type f \
-                -name "${pkg}-*.apk" \
-                -printf '%p\n' |
-                sort -V
-            )
-
+            mapfile -t matches < <(find "${PREPARED_DIR}" -maxdepth 1 -type f -name "${pkg}-*.apk" -printf '%p\n' | sort -V)
             if [[ "${#matches[@]}" -eq 0 ]]; then
               echo "ERROR: third-party APK package was not prepared: ${pkg}" >&2
-              find "${PREPARED_DIR}" \
-                -maxdepth 1 \
-                -type f \
-                -name "${pkg}*.apk" \
-                -printf '%f\n' | sort >&2 || true
+              find "${PREPARED_DIR}" -maxdepth 1 -type f -name "${pkg}*.apk" -printf '%f\n' | sort >&2 || true
               exit 1
             fi
-
             src="${matches[${#matches[@]}-1]}"
-            cp -f "${src}" packages/
+            cp -f "${src}" "${IMAGEBUILDER_DIR}/packages/"
             echo "  ${pkg} <- $(basename "${src}")"
           done
 
           echo "Local third-party APK files supplied to ImageBuilder:"
-          find packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
-          test -n "$(find packages -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+          test -n "$(find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
       - name: Prepare ImageBuilder configuration
         shell: bash
         run: |
           set -euxo pipefail
-
           cd "${IMAGEBUILDER_DIR}"
-
-          case "${ROOTFS_SIZE}" in
-            1G) ROOTFS_PARTSIZE=1024 ;;
-            2G) ROOTFS_PARTSIZE=2048 ;;
-            3G) ROOTFS_PARTSIZE=3072 ;;
-            4G) ROOTFS_PARTSIZE=4096 ;;
-            *) echo "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}" >&2; exit 1 ;;
-          esac
-
+          case "${ROOTFS_SIZE}" in 1G) ROOTFS_PARTSIZE=1024 ;; 2G) ROOTFS_PARTSIZE=2048 ;; 3G) ROOTFS_PARTSIZE=3072 ;; 4G) ROOTFS_PARTSIZE=4096 ;; *) exit 1 ;; esac
           echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}" >> "${GITHUB_ENV}"
-
-          sed -i \
-            -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' \
-            -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' \
-            -e '/^CONFIG_TARGET_ROOTFS_EXT4FS=/d' \
-            -e '/^# CONFIG_TARGET_ROOTFS_EXT4FS is not set$/d' \
-            .config
-
+          sed -i -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' -e '/^CONFIG_TARGET_ROOTFS_EXT4FS=/d' -e '/^# CONFIG_TARGET_ROOTFS_EXT4FS is not set$/d' .config
           case "${FILESYSTEM}" in
-            ext4)
-              printf '%s\n' \
-                'CONFIG_TARGET_ROOTFS_SQUASHFS=n' \
-                'CONFIG_TARGET_ROOTFS_EXT4FS=y' >> .config
-              ;;
-            squashfs)
-              printf '%s\n' \
-                'CONFIG_TARGET_ROOTFS_SQUASHFS=y' \
-                'CONFIG_TARGET_ROOTFS_EXT4FS=n' >> .config
-              ;;
-            *) echo "Invalid FILESYSTEM=${FILESYSTEM}" >&2; exit 1 ;;
+            ext4) printf '%s\n' 'CONFIG_TARGET_ROOTFS_SQUASHFS=n' 'CONFIG_TARGET_ROOTFS_EXT4FS=y' >> .config ;;
+            squashfs) printf '%s\n' 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' 'CONFIG_TARGET_ROOTFS_EXT4FS=n' >> .config ;;
+            *) exit 1 ;;
           esac
-
-          sed -i \
-            -e '/^CONFIG_GRUB_IMAGES=/d' \
-            -e '/^# CONFIG_GRUB_IMAGES is not set$/d' \
-            -e '/^CONFIG_GRUB_EFI_IMAGES=/d' \
-            -e '/^# CONFIG_GRUB_EFI_IMAGES is not set$/d' \
-            -e '/^CONFIG_VDI_IMAGES=/d' \
-            -e '/^# CONFIG_VDI_IMAGES is not set$/d' \
-            -e '/^CONFIG_VMDK_IMAGES=/d' \
-            -e '/^# CONFIG_VMDK_IMAGES is not set$/d' \
-            -e '/^CONFIG_VHDX_IMAGES=/d' \
-            -e '/^# CONFIG_VHDX_IMAGES is not set$/d' \
-            -e '/^CONFIG_ISO_IMAGES=/d' \
-            -e '/^# CONFIG_ISO_IMAGES is not set$/d' \
-            .config
-
+          sed -i -e '/^CONFIG_GRUB_IMAGES=/d' -e '/^# CONFIG_GRUB_IMAGES is not set$/d' -e '/^CONFIG_GRUB_EFI_IMAGES=/d' -e '/^# CONFIG_GRUB_EFI_IMAGES is not set$/d' -e '/^CONFIG_VDI_IMAGES=/d' -e '/^# CONFIG_VDI_IMAGES is not set$/d' -e '/^CONFIG_VMDK_IMAGES=/d' -e '/^# CONFIG_VMDK_IMAGES is not set$/d' -e '/^CONFIG_VHDX_IMAGES=/d' -e '/^# CONFIG_VHDX_IMAGES is not set$/d' -e '/^CONFIG_ISO_IMAGES=/d' -e '/^# CONFIG_ISO_IMAGES is not set$/d' .config
           if [[ "${BUILD_UEFI}" == "true" ]]; then
-            printf '%s\n' \
-              'CONFIG_GRUB_IMAGES=n' \
-              'CONFIG_GRUB_EFI_IMAGES=y' \
-              'CONFIG_VDI_IMAGES=n' \
-              'CONFIG_VMDK_IMAGES=n' \
-              'CONFIG_VHDX_IMAGES=n' \
-              'CONFIG_ISO_IMAGES=n' >> .config
+            printf '%s\n' 'CONFIG_GRUB_IMAGES=n' 'CONFIG_GRUB_EFI_IMAGES=y' 'CONFIG_VDI_IMAGES=n' 'CONFIG_VMDK_IMAGES=n' 'CONFIG_VHDX_IMAGES=n' 'CONFIG_ISO_IMAGES=n' >> .config
           else
-            printf '%s\n' \
-              'CONFIG_GRUB_IMAGES=n' \
-              'CONFIG_GRUB_EFI_IMAGES=n' \
-              'CONFIG_VDI_IMAGES=n' \
-              'CONFIG_VMDK_IMAGES=n' \
-              'CONFIG_VHDX_IMAGES=n' \
-              'CONFIG_ISO_IMAGES=n' >> .config
+            printf '%s\n' 'CONFIG_GRUB_IMAGES=n' 'CONFIG_GRUB_EFI_IMAGES=n' 'CONFIG_VDI_IMAGES=n' 'CONFIG_VMDK_IMAGES=n' 'CONFIG_VHDX_IMAGES=n' 'CONFIG_ISO_IMAGES=n' >> .config
           fi
-
-          echo "Filesystem configuration:"
-          grep -E '^CONFIG_TARGET_ROOTFS_(SQUASHFS|EXT4FS)=' .config || true
-
-          echo "Image format configuration:"
-          grep -E '^(CONFIG_GRUB_IMAGES|CONFIG_GRUB_EFI_IMAGES|CONFIG_VDI_IMAGES|CONFIG_VMDK_IMAGES|CONFIG_VHDX_IMAGES|CONFIG_ISO_IMAGES)=' .config || true
 
       - name: Prepare custom files
         shell: bash
         run: |
           set -euxo pipefail
-
           mkdir -p "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
-          cp files/etc/uci-defaults/99-custom.sh \
-            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+          cp files/etc/uci-defaults/99-custom.sh "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
           chmod +x "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
-
           ESCAPED_LAN_IP="$(printf '%s' "${LAN_IP}" | sed 's/[&|\\]/\\&/g')"
-          sed -i "s|__LAN_IP__|${ESCAPED_LAN_IP}|g" \
-            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+          sed -i "s|__LAN_IP__|${ESCAPED_LAN_IP}|g" "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
       - name: Prepare proxy cores
         shell: bash
         run: |
           set -euxo pipefail
-
           cd "${IMAGEBUILDER_DIR}"
-
           mkdir -p files/etc/openclash/core
           META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64-v1.tar.gz"
           wget -qO- "${META_URL}" | tar xOvz > files/etc/openclash/core/clash_meta
@@ -293,8 +181,7 @@ jobs:
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O files/etc/openclash/GeoSite.dat
           OPENCLASH_APK_URL="$(curl -fsSL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep 'browser_download_url.*apk' | head -n1 | cut -d '\"' -f4)"
           test -n "${OPENCLASH_APK_URL}"
-          wget -q "${OPENCLASH_APK_URL}" -P packages/
-
+          wget -q "${OPENCLASH_APK_URL}" -P "${IMAGEBUILDER_DIR}/packages/"
           mkdir -p files/usr/bin
           MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz"
           wget -qO- "${MIHOMO_URL}" | gzip -dc > files/usr/bin/mihomo
@@ -304,105 +191,37 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           cd "${IMAGEBUILDER_DIR}"
-
           BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server luci-i18n-filemanager-zh-cn luci-i18n-filebrowser-go-zh-cn luci-i18n-timewol-zh-cn luci-i18n-vlmcsd-zh-cn luci-i18n-autoreboot-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-openclash"
-
-          PACKAGES="$(
-            printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" |
-              tr '[:space:]' '\n' |
-              awk 'NF && !seen[$0]++' |
-              paste -sd ' ' -
-          )"
-
+          PACKAGES="$(printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES:-}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${PACKAGES}"
-
-          echo "============================================================"
-          echo "OpenWrt version : ${OPENWRT_VERSION}"
-          echo "Target          : x86/64"
-          echo "LAN IP          : ${LAN_IP}"
-          echo "Firmware size   : ${ROOTFS_SIZE}"
-          echo "Filesystem      : ${FILESYSTEM}"
-          echo "UEFI            : ${BUILD_UEFI}"
-          echo "QCOW2           : ${BUILD_QCOW2}"
-          echo "Rootfs partsize : ${ROOTFS_PARTSIZE} MiB"
-          echo "============================================================"
-          echo
-          echo "Packages:"
-          printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
-
-          make image \
-            PROFILE="generic" \
-            PACKAGES="${PACKAGES}" \
-            FILES="${IMAGEBUILDER_DIR}/files" \
-            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
+          make image PROFILE="generic" PACKAGES="${PACKAGES}" FILES="${IMAGEBUILDER_DIR}/files" ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
       - name: Collect images
         shell: bash
         run: |
           set -euxo pipefail
-
           BUILD_DIR="${IMAGEBUILDER_DIR}/bin/targets/x86/64"
           OUT="${GITHUB_WORKSPACE}/release"
-
           rm -rf "${OUT}"
           mkdir -p "${OUT}"
           shopt -s nullglob
-
           if [[ "${BUILD_UEFI}" == "true" ]]; then
-            if [[ "${FILESYSTEM}" == "ext4" ]]; then
-              candidates=(
-                "${BUILD_DIR}"/*generic-ext4-combined-efi.img.gz
-                "${BUILD_DIR}"/*generic-ext4-combined-efi.img
-              )
-            else
-              candidates=(
-                "${BUILD_DIR}"/*generic-squashfs-combined-efi.img.gz
-                "${BUILD_DIR}"/*generic-squashfs-combined-efi.img
-              )
-            fi
-
-            if [[ "${#candidates[@]}" -eq 0 ]]; then
-              echo "ERROR: UEFI ${FILESYSTEM} image not found." >&2
-              find "${BUILD_DIR}" -maxdepth 1 -type f -printf '%f\n' | sort
-              exit 1
-            fi
-
+            if [[ "${FILESYSTEM}" == "ext4" ]]; then candidates=("${BUILD_DIR}"/*generic-ext4-combined-efi.img.gz "${BUILD_DIR}"/*generic-ext4-combined-efi.img); else candidates=("${BUILD_DIR}"/*generic-squashfs-combined-efi.img.gz "${BUILD_DIR}"/*generic-squashfs-combined-efi.img); fi
+            [[ "${#candidates[@]}" -gt 0 ]]
             src="${candidates[0]}"
             raw_img="${RUNNER_TEMP}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
-
-            case "${src}" in
-              *.gz) gzip -dc "${src}" > "${raw_img}" ;;
-              *) cp -f "${src}" "${raw_img}" ;;
-            esac
-
-            if [[ "${BUILD_QCOW2}" == "true" ]]; then
-              qemu-img convert \
-                -p \
-                -f raw \
-                -O qcow2 \
-                "${raw_img}" \
-                "${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
-            fi
-
-            rm -f "${raw_img}"
+            case "${src}" in *.gz) gzip -dc "${src}" > "${raw_img}" ;; *) cp -f "${src}" "${raw_img}" ;; esac
+            cp -f "${raw_img}" "${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
+            if [[ "${BUILD_QCOW2}" == "true" ]]; then qemu-img convert -f raw -O qcow2 "${raw_img}" "${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"; fi
           fi
-
-          echo "Final artifacts:"
-          find "${OUT}" -maxdepth 1 -type f -printf '%f\n' | sort
+          cp -f "${BUILD_DIR}"/*.manifest "${OUT}/" 2>/dev/null || true
+          cp -f "${BUILD_DIR}"/*.buildinfo "${OUT}/" 2>/dev/null || true
           test -n "$(find "${OUT}" -maxdepth 1 -type f -print -quit)"
 
-      - name: Generate SHA256
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd release
-          sha256sum * > sha256sums.txt
-
-      - name: Upload artifacts
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-x86-64-${{ env.OPENWRT_VERSION }}-${{ env.FILESYSTEM }}
-          path: release/*
+          name: openwrt-x86-64-${{ env.FILESYSTEM }}
+          path: release/
           if-no-files-found: error
