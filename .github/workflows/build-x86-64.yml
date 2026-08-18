@@ -1,8 +1,9 @@
-name: Build OpenWrt x86-64
+name: Build OpenWrt x86-64 ImageBuilder
 
 on:
   workflow_dispatch:
     inputs:
+
       openwrt_version:
         description: "OpenWrt version"
         required: true
@@ -14,7 +15,7 @@ on:
         default: "192.168.1.2"
 
       rootfs_size:
-        description: "Firmware size"
+        description: "Firmware disk/rootfs size"
         required: true
         type: choice
         default: "4G"
@@ -25,7 +26,7 @@ on:
           - "4G"
 
       filesystem:
-        description: "Filesystem"
+        description: "Filesystem format"
         required: true
         type: choice
         default: "ext4"
@@ -33,40 +34,70 @@ on:
           - "ext4"
           - "squashfs"
 
-      qcow2:
-        description: "Build QCOW2"
+      uefi:
+        description: "Build UEFI image"
         required: true
         type: boolean
         default: true
 
+      qcow2:
+        description: "Build QCOW2 image"
+        required: true
+        type: boolean
+        default: true
+
+
 jobs:
+
   build:
+
     runs-on: ubuntu-24.04
 
     env:
       OPENWRT_VERSION: ${{ inputs.openwrt_version }}
       LAN_IP: ${{ inputs.lan_ip }}
       ROOTFS_SIZE: ${{ inputs.rootfs_size }}
+      BUILD_UEFI: ${{ inputs.uefi }}
       FILESYSTEM: ${{ inputs.filesystem }}
       BUILD_QCOW2: ${{ inputs.qcow2 }}
 
+
     steps:
+
+      #######################################################################
+      # Checkout
+      #######################################################################
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
+
+      #######################################################################
+      # Install tools
+      #######################################################################
+
+      - name: Install ImageBuilder tools
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
-            curl \
-            gzip \
             qemu-utils \
+            zstd \
+            xz-utils \
+            gzip \
             tar \
             wget \
-            xz-utils \
-            zstd
+            curl \
+            git \
+            rsync
+
+
+      #######################################################################
+      # Download OpenWrt ImageBuilder
+      #######################################################################
 
       - name: Download OpenWrt x86-64 ImageBuilder
         shell: bash
@@ -74,164 +105,118 @@ jobs:
           set -euxo pipefail
 
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
-          ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
-          WORK="${RUNNER_TEMP}/imagebuilder"
-          rm -rf "${WORK}"
-          mkdir -p "${WORK}"
+          IB="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
-          cd "${WORK}"
-          wget -q --show-progress "${BASE_URL}/${ARCHIVE}"
-          tar --zstd -xf "${ARCHIVE}"
+          mkdir -p "${RUNNER_TEMP}/imagebuilder"
+
+          cd "${RUNNER_TEMP}/imagebuilder"
+
+          wget \
+            -q \
+            --show-progress \
+            "${BASE_URL}/${IB}"
+
+          tar \
+            --zstd \
+            -xf "${IB}"
 
           IMAGEBUILDER_DIR="$(
-            find "${WORK}" \
-              -mindepth 1 \
+            find . \
               -maxdepth 1 \
               -type d \
               -name 'openwrt-imagebuilder-*' \
-              -print \
-              | head -n 1
+              | head -n1
           )"
 
           test -n "${IMAGEBUILDER_DIR}"
-          test -f "${IMAGEBUILDER_DIR}/Makefile"
 
-          echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> "${GITHUB_ENV}"
+          IMAGEBUILDER_DIR="$(
+            cd "${IMAGEBUILDER_DIR}" &&
+            pwd
+          )"
 
-      - name: Load third-party APK package list
+          echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" \
+            >> "${GITHUB_ENV}"
+
+          echo
+          echo "ImageBuilder:"
+          echo "${IMAGEBUILDER_DIR}"
+
+
+      #######################################################################
+      # Prepare third-party APK packages
+      #######################################################################
+
+      - name: Prepare third-party APK repository
         shell: bash
         run: |
           set -euxo pipefail
 
           test -f scripts/apk-custom-packages.sh
 
-          # This file intentionally only defines CUSTOM_PACKAGES.
-          # It does not clone repositories and does not build packages.
-          source scripts/apk-custom-packages.sh
+          chmod +x \
+            scripts/apk-custom-packages.sh
 
-          echo "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" >> "${GITHUB_ENV}"
+          IMAGEBUILDER_DIR="${IMAGEBUILDER_DIR}" \
+            scripts/apk-custom-packages.sh
 
-          echo "Third-party APK package list:"
-          printf '%s\n' "${CUSTOM_PACKAGES}"
+          test -n "${CUSTOM_PACKAGES:-}"
 
-      - name: Download and prepare third-party APK repository
-        if: ${{ env.CUSTOM_PACKAGES != '' }}
-        shell: bash
-        run: |
-          set -euxo pipefail
+          ###################################################################
+          # IMPORTANT
+          #
+          # CUSTOM_PACKAGES MUST remain one whitespace-separated line.
+          #
+          # This prevents multiline values from being passed into the
+          # nested make/shell invocation inside OpenWrt ImageBuilder.
+          ###################################################################
 
-          test -f scripts/apk-prepare-packages.sh
-          chmod +x scripts/apk-prepare-packages.sh
+          CUSTOM_PACKAGES="$(
+            printf '%s\n' "${CUSTOM_PACKAGES:-}" |
+              tr '[:space:]' ' ' |
+              awk '{$1=$1; print}'
+          )"
 
-          REPO_DIR="${RUNNER_TEMP}/wukongdaily-apk"
-          EXTRA_DIR="${IMAGEBUILDER_DIR}/extra-packages"
-          PACKAGE_DIR="${IMAGEBUILDER_DIR}/packages"
+          test -n "${CUSTOM_PACKAGES}"
 
-          rm -rf "${REPO_DIR}" "${EXTRA_DIR}"
-          mkdir -p "${EXTRA_DIR}"
-
-          git clone --depth=1 \
-            https://github.com/wukongdaily/apk.git \
-            "${REPO_DIR}"
-
-          test -d "${REPO_DIR}/run/x86"
-
-          # Exactly the same source model used by the upstream project:
-          # copy x86 .run files and direct .apk files into extra-packages.
-          cp -a "${REPO_DIR}/run/x86/." "${EXTRA_DIR}/"
-
-          cd "${IMAGEBUILDER_DIR}"
-
-          sh "${GITHUB_WORKSPACE}/scripts/apk-prepare-packages.sh"
+          echo \
+            "CUSTOM_PACKAGES=${CUSTOM_PACKAGES}" \
+            >> "${GITHUB_ENV}"
 
           echo
-          echo "Prepared APK files:"
-          find "${PACKAGE_DIR}" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            -printf '%f\n' \
-            | sort
+          echo "Selected third-party packages:"
+          printf '%s\n' "${CUSTOM_PACKAGES}" |
+            tr ' ' '\n'
 
-          test -n "$(
-            find "${PACKAGE_DIR}" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.apk' \
-              -print \
-              -quit
-          )"
+
+      #######################################################################
+      # Prepare custom files
+      #######################################################################
 
       - name: Prepare custom files
         shell: bash
         run: |
           set -euxo pipefail
 
-          TARGET="${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
-          mkdir -p "${TARGET}"
+          mkdir -p \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
 
           cp \
             files/etc/uci-defaults/99-custom.sh \
-            "${TARGET}/99-custom.sh"
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
           sed -i \
             "s/__LAN_IP__/${LAN_IP}/g" \
-            "${TARGET}/99-custom.sh"
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
-          chmod +x "${TARGET}/99-custom.sh"
+          chmod +x \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
-      - name: Configure filesystem
-        shell: bash
-        run: |
-          set -euxo pipefail
 
-          cd "${IMAGEBUILDER_DIR}"
-          test -f .config
-
-          case "${FILESYSTEM}" in
-            ext4)
-              sed -i \
-                's/^CONFIG_TARGET_ROOTFS_SQUASHFS=.*/# CONFIG_TARGET_ROOTFS_SQUASHFS is not set/' \
-                .config || true
-
-              if grep -q '^CONFIG_TARGET_ROOTFS_EXT4FS=' .config; then
-                sed -i \
-                  's/^CONFIG_TARGET_ROOTFS_EXT4FS=.*/CONFIG_TARGET_ROOTFS_EXT4FS=y/' \
-                  .config
-              else
-                printf '%s\n' 'CONFIG_TARGET_ROOTFS_EXT4FS=y' >> .config
-              fi
-              ;;
-
-            squashfs)
-              sed -i \
-                's/^CONFIG_TARGET_ROOTFS_EXT4FS=.*/# CONFIG_TARGET_ROOTFS_EXT4FS is not set/' \
-                .config || true
-
-              if grep -q '^CONFIG_TARGET_ROOTFS_SQUASHFS=' .config; then
-                sed -i \
-                  's/^CONFIG_TARGET_ROOTFS_SQUASHFS=.*/CONFIG_TARGET_ROOTFS_SQUASHFS=y/' \
-                  .config
-              else
-                printf '%s\n' 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' >> .config
-              fi
-              ;;
-
-            *)
-              echo "Unsupported filesystem: ${FILESYSTEM}"
-              exit 1
-              ;;
-          esac
-
-          # Do not run defconfig here: ImageBuilder's shipped .config is
-          # already generated. We only change the requested rootfs selector.
-
-          echo "Filesystem configuration:"
-          grep -E \
-            '^CONFIG_TARGET_ROOTFS_(EXT4FS|SQUASHFS)=' \
-            .config \
-            || true
+      #######################################################################
+      # Build OpenWrt image
+      #######################################################################
 
       - name: Build OpenWrt image
         shell: bash
@@ -240,33 +225,182 @@ jobs:
 
           cd "${IMAGEBUILDER_DIR}"
 
+
+          ###################################################################
+          # Root filesystem size
+          ###################################################################
+
           case "${ROOTFS_SIZE}" in
-            1G) ROOTFS_PARTSIZE=1024 ;;
-            2G) ROOTFS_PARTSIZE=2048 ;;
-            3G) ROOTFS_PARTSIZE=3072 ;;
-            4G) ROOTFS_PARTSIZE=4096 ;;
-            *) echo "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}"; exit 1 ;;
+
+            1G)
+              ROOTFS_PARTSIZE=1024
+              ;;
+
+            2G)
+              ROOTFS_PARTSIZE=2048
+              ;;
+
+            3G)
+              ROOTFS_PARTSIZE=3072
+              ;;
+
+            4G)
+              ROOTFS_PARTSIZE=4096
+              ;;
+
+            *)
+              echo \
+                "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}" \
+                >&2
+
+              exit 1
+              ;;
+
           esac
 
-          BASE_PACKAGES="
-            curl
-            luci-i18n-firewall-zh-cn
-            luci-theme-argon
-            luci-app-argon-config
-            luci-i18n-argon-config-zh-cn
-            luci-i18n-package-manager-zh-cn
-            luci-i18n-ttyd-zh-cn
-            openssh-sftp-server
-          "
 
+          ###################################################################
+          # Filesystem
+          #
+          # ImageBuilder does NOT use the GitHub Actions variable
+          # FILESYSTEM automatically.
+          #
+          # Therefore explicitly modify .config.
+          ###################################################################
+
+          case "${FILESYSTEM}" in
+
+            ext4)
+
+              sed -i \
+                -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' \
+                -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' \
+                -e '/^CONFIG_TARGET_ROOTFS_EXT4FS=/d' \
+                -e '/^# CONFIG_TARGET_ROOTFS_EXT4FS is not set$/d' \
+                .config
+
+              printf '%s\n' \
+                'CONFIG_TARGET_ROOTFS_SQUASHFS=n' \
+                'CONFIG_TARGET_ROOTFS_EXT4FS=y' \
+                >> .config
+
+              ;;
+
+            squashfs)
+
+              sed -i \
+                -e '/^CONFIG_TARGET_ROOTFS_SQUASHFS=/d' \
+                -e '/^# CONFIG_TARGET_ROOTFS_SQUASHFS is not set$/d' \
+                -e '/^CONFIG_TARGET_ROOTFS_EXT4FS=/d' \
+                -e '/^# CONFIG_TARGET_ROOTFS_EXT4FS is not set$/d' \
+                .config
+
+              printf '%s\n' \
+                'CONFIG_TARGET_ROOTFS_SQUASHFS=y' \
+                'CONFIG_TARGET_ROOTFS_EXT4FS=n' \
+                >> .config
+
+              ;;
+
+            *)
+
+              echo \
+                "Invalid FILESYSTEM=${FILESYSTEM}" \
+                >&2
+
+              exit 1
+              ;;
+
+          esac
+
+
+          ###################################################################
+          # Image formats
+          #
+          # User requirement:
+          #
+          # KEEP:
+          #   UEFI
+          #   QCOW2
+          #
+          # REMOVE:
+          #   BIOS
+          #   VDI
+          #   VMDK
+          #   VHDX
+          #   ISO
+          #
+          # QCOW2 is generated afterwards by qemu-img from the UEFI RAW
+          # image. RAW is therefore only an intermediate file and is NOT
+          # uploaded as a final artifact.
+          ###################################################################
+
+          sed -i \
+            -e '/^CONFIG_GRUB_IMAGES=/d' \
+            -e '/^# CONFIG_GRUB_IMAGES is not set$/d' \
+            -e '/^CONFIG_GRUB_EFI_IMAGES=/d' \
+            -e '/^# CONFIG_GRUB_EFI_IMAGES is not set$/d' \
+            -e '/^CONFIG_VDI_IMAGES=/d' \
+            -e '/^# CONFIG_VDI_IMAGES is not set$/d' \
+            -e '/^CONFIG_VMDK_IMAGES=/d' \
+            -e '/^# CONFIG_VMDK_IMAGES is not set$/d' \
+            -e '/^CONFIG_VHDX_IMAGES=/d' \
+            -e '/^# CONFIG_VHDX_IMAGES is not set$/d' \
+            -e '/^CONFIG_ISO_IMAGES=/d' \
+            -e '/^# CONFIG_ISO_IMAGES is not set$/d' \
+            .config
+
+          printf '%s\n' \
+            'CONFIG_GRUB_IMAGES=n' \
+            'CONFIG_GRUB_EFI_IMAGES=y' \
+            'CONFIG_VDI_IMAGES=n' \
+            'CONFIG_VMDK_IMAGES=n' \
+            'CONFIG_VHDX_IMAGES=n' \
+            'CONFIG_ISO_IMAGES=n' \
+            >> .config
+
+
+          ###################################################################
+          # Base packages
+          ###################################################################
+
+          BASE_PACKAGES="curl
+          luci-i18n-firewall-zh-cn
+          luci-theme-argon
+          luci-app-argon-config
+          luci-i18n-argon-config-zh-cn
+          luci-i18n-package-manager-zh-cn
+          luci-i18n-ttyd-zh-cn
+          openssh-sftp-server"
+
+
+          ###################################################################
           # IMPORTANT:
-          # OpenWrt ImageBuilder passes PACKAGES through a nested make/shell
-          # command. Keep it as one normalized whitespace-separated line.
-          # A literal multiline PACKAGES value can break that nested quoting
-          # and produce:
-          #   bash: -c: line 5: unexpected EOF while looking for matching '"'
+          #
+          # Convert EVERYTHING into a single whitespace-separated line.
+          #
+          # DO NOT use:
+          #
+          # PACKAGES="
+          #   xxx
+          #   yyy
+          # "
+          #
+          # OpenWrt 25.12.5 ImageBuilder internally does:
+          #
+          #   USER_PACKAGES="$(PACKAGES)"
+          #
+          # through another make/shell layer.
+          #
+          # A multiline value can therefore cause:
+          #
+          #   bash: -c: unexpected EOF while looking for matching '"'
+          ###################################################################
+
           PACKAGES="$(
-            printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES}" |
+            printf '%s\n' \
+              "${BASE_PACKAGES}" \
+              "${CUSTOM_PACKAGES:-}" |
               tr '[:space:]' '\n' |
               awk 'NF && !seen[$0]++' |
               paste -sd ' ' -
@@ -274,6 +408,12 @@ jobs:
 
           test -n "${PACKAGES}"
 
+
+          ###################################################################
+          # Display build information
+          ###################################################################
+
+          echo
           echo "============================================================"
           echo "OpenWrt version : ${OPENWRT_VERSION}"
           echo "Target          : x86/64"
@@ -281,11 +421,36 @@ jobs:
           echo "Firmware size   : ${ROOTFS_SIZE}"
           echo "Filesystem      : ${FILESYSTEM}"
           echo "QCOW2           : ${BUILD_QCOW2}"
+          echo "UEFI            : ${BUILD_UEFI}"
           echo "Rootfs partsize : ${ROOTFS_PARTSIZE} MiB"
           echo "============================================================"
+
+          echo
+          echo "Filesystem configuration:"
+
+          grep \
+            -E \
+            '^CONFIG_TARGET_ROOTFS_(SQUASHFS|EXT4FS)=' \
+            .config
+
+          echo
+          echo "Image configuration:"
+
+          grep \
+            -E \
+            '^(CONFIG_GRUB_IMAGES|CONFIG_GRUB_EFI_IMAGES|CONFIG_VDI_IMAGES|CONFIG_VMDK_IMAGES|CONFIG_VHDX_IMAGES|CONFIG_ISO_IMAGES)=' \
+            .config
+
           echo
           echo "Normalized packages:"
-          printf '%s\n' "${PACKAGES}" | tr ' ' '\n'
+
+          printf '%s\n' "${PACKAGES}" |
+            tr ' ' '\n'
+
+
+          ###################################################################
+          # Build
+          ###################################################################
 
           make image \
             PROFILE="generic" \
@@ -293,84 +458,161 @@ jobs:
             FILES="${IMAGEBUILDER_DIR}/files" \
             ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
-      - name: Collect UEFI image
+
+      #######################################################################
+      # Collect requested image formats
+      #######################################################################
+
+      - name: Collect requested image formats
         shell: bash
         run: |
           set -euxo pipefail
 
           BUILD_DIR="${IMAGEBUILDER_DIR}/bin/targets/x86/64"
+
           OUT="${GITHUB_WORKSPACE}/release"
 
           rm -rf "${OUT}"
+
           mkdir -p "${OUT}"
 
           shopt -s nullglob
 
-          case "${FILESYSTEM}" in
-            ext4)
+
+          ###################################################################
+          # UEFI
+          ###################################################################
+
+          if [[ "${BUILD_UEFI}" == "true" ]]; then
+
+            if [[ "${FILESYSTEM}" == "ext4" ]]; then
+
               candidates=(
                 "${BUILD_DIR}"/*generic-ext4-combined-efi.img.gz
                 "${BUILD_DIR}"/*generic-ext4-combined-efi.img
               )
-              ;;
-            squashfs)
+
+            else
+
               candidates=(
                 "${BUILD_DIR}"/*generic-squashfs-combined-efi.img.gz
                 "${BUILD_DIR}"/*generic-squashfs-combined-efi.img
               )
-              ;;
-          esac
 
-          if (( ${#candidates[@]} == 0 )); then
-            echo "ERROR: no ${FILESYSTEM} UEFI image was generated."
-            find "${BUILD_DIR}" \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | sort
-            exit 1
+            fi
+
+
+            if [[ "${#candidates[@]}" -eq 0 ]]; then
+
+              echo
+              echo "ERROR: UEFI ${FILESYSTEM} image not found."
+
+              echo
+              echo "Available files:"
+
+              find \
+                "${BUILD_DIR}" \
+                -maxdepth 1 \
+                -type f \
+                -printf '%f\n' |
+                sort
+
+              exit 1
+
+            fi
+
+
+            SRC="${candidates[0]}"
+
+            UEFI_IMG="${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
+
+
+            case "${SRC}" in
+
+              *.gz)
+
+                gzip \
+                  -dc \
+                  "${SRC}" \
+                  > "${UEFI_IMG}"
+
+                ;;
+
+              *)
+
+                cp \
+                  "${SRC}" \
+                  "${UEFI_IMG}"
+
+                ;;
+
+            esac
+
+
+            #################################################################
+            # QCOW2
+            #################################################################
+
+            if [[ "${BUILD_QCOW2}" == "true" ]]; then
+
+              qemu-img convert \
+                -p \
+                -f raw \
+                -O qcow2 \
+                "${UEFI_IMG}" \
+                "${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
+
+            fi
+
           fi
 
-          SRC="${candidates[0]}"
-          IMG="${OUT}/openwrt-x86-64-uefi-${FILESYSTEM}.img"
 
-          case "${SRC}" in
-            *.gz) gzip -dc "${SRC}" > "${IMG}" ;;
-            *) cp "${SRC}" "${IMG}" ;;
-          esac
+          ###################################################################
+          # Final output
+          ###################################################################
 
-          test -s "${IMG}"
-          ls -lh "${IMG}"
+          echo
+          echo "============================================================"
+          echo "Generated images:"
+          echo "============================================================"
 
-      - name: Build QCOW2
-        if: ${{ inputs.qcow2 }}
-        shell: bash
-        run: |
-          set -euxo pipefail
+          find \
+            "${OUT}" \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' |
+            sort
 
-          IMG="${GITHUB_WORKSPACE}/release/openwrt-x86-64-uefi-${FILESYSTEM}.img"
-          QCOW2="${GITHUB_WORKSPACE}/release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
+          echo "============================================================"
 
-          qemu-img convert \
-            -p \
-            -f raw \
-            -O qcow2 \
-            "${IMG}" \
-            "${QCOW2}"
 
-          qemu-img info "${QCOW2}"
+      #######################################################################
+      # Generate checksums
+      #######################################################################
 
       - name: Generate checksums
         shell: bash
         run: |
           set -euxo pipefail
-          cd "${GITHUB_WORKSPACE}/release"
-          sha256sum * > sha256sums.txt
-          cat sha256sums.txt
 
-      - name: Upload firmware
+          cd release
+
+          sha256sum \
+            * \
+            > sha256sums.txt
+
+
+      #######################################################################
+      # Upload artifacts
+      #######################################################################
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
+
         with:
-          name: openwrt-x86-64-${{ inputs.openwrt_version }}-${{ inputs.filesystem }}-${{ inputs.rootfs_size }}
+
+          name: openwrt-x86-64-${{ inputs.openwrt_version }}-${{ inputs.filesystem }}
+
           path: release/*
+
           if-no-files-found: error
