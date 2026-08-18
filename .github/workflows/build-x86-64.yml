@@ -4,16 +4,10 @@ on:
 workflow_dispatch:
 inputs:
 rootfs_size:
-description: "RootFS / 固件大小"
+description: "RootFS / 固件大小 MB"
 required: true
 default: "4096"
-type: choice
-options:
-- "1024"
-- "2048"
-- "4096"
-- "8192"
-- "16384"
+type: string
 
 ```
   lan_ip:
@@ -41,7 +35,7 @@ steps:
     uses: actions/checkout@v4
 
   # ==========================================================
-  # Install build dependencies
+  # Install dependencies
   # ==========================================================
   - name: Install dependencies
     shell: bash
@@ -82,11 +76,23 @@ steps:
     run: |
       set -euo pipefail
 
+      ROOTFS_SIZE="${{ inputs.rootfs_size }}"
+      LAN_IP_VALUE="${{ inputs.lan_ip }}"
+
+      case "${ROOTFS_SIZE}" in
+        1024|2048|4096|8192|16384)
+          ;;
+        *)
+          echo "ERROR: Invalid RootFS size: ${ROOTFS_SIZE}"
+          echo "Allowed values: 1024, 2048, 4096, 8192, 16384"
+          exit 1
+          ;;
+      esac
+
       echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
       echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
-
-      echo "ROOTFS_PARTSIZE=${{ inputs.rootfs_size }}" >> "$GITHUB_ENV"
-      echo "LAN_IP=${{ inputs.lan_ip }}" >> "$GITHUB_ENV"
+      echo "ROOTFS_PARTSIZE=${ROOTFS_SIZE}" >> "$GITHUB_ENV"
+      echo "LAN_IP=${LAN_IP_VALUE}" >> "$GITHUB_ENV"
 
       echo
       echo "=========================================="
@@ -94,8 +100,8 @@ steps:
       echo "=========================================="
       echo "OpenWrt: ${OPENWRT_VERSION}"
       echo "Target: x86-64"
-      echo "RootFS: ${{ inputs.rootfs_size }} MB"
-      echo "LAN IP: ${{ inputs.lan_ip }}"
+      echo "RootFS: ${ROOTFS_SIZE} MB"
+      echo "LAN IP: ${LAN_IP_VALUE}"
 
   # ==========================================================
   # Clone OpenWrt
@@ -135,14 +141,7 @@ steps:
       ./scripts/feeds install -a
 
   # ==========================================================
-  # Load custom package list
-  #
-  # shell/apk-custom-packages.sh 必须定义：
-  #
-  # CUSTOM_PACKAGES="
-  # package1
-  # package2
-  # "
+  # Load custom packages
   # ==========================================================
   - name: Load custom packages
     shell: bash
@@ -231,7 +230,7 @@ steps:
       EOF
 
       # ------------------------------------------------------
-      # Add packages from selected-packages.txt
+      # Select custom packages
       # ------------------------------------------------------
       while IFS= read -r package; do
 
@@ -248,17 +247,16 @@ steps:
           2>/dev/null
         then
           echo "Found: ${package}"
-
           echo "CONFIG_PACKAGE_${package}=y" >> .config
         else
-          echo "WARNING: Package not found in source tree:"
+          echo "WARNING: Package not found:"
           echo "${package}"
         fi
 
       done < ../selected-packages.txt
 
       # ------------------------------------------------------
-      # Remove duplicate CONFIG_PACKAGE entries
+      # Remove duplicate configuration lines
       # ------------------------------------------------------
       awk '!seen[$0]++' .config > .config.tmp
       mv .config.tmp .config
@@ -284,8 +282,6 @@ steps:
       echo "Final selected packages"
       echo "=========================================="
 
-      FAILED=0
-
       while IFS= read -r package; do
 
         [ -z "${package}" ] && continue
@@ -297,7 +293,6 @@ steps:
           echo "OK: ${package}"
         else
           echo "WARNING: ${package} not selected"
-          FAILED=1
         fi
 
       done < ../selected-packages.txt
@@ -326,24 +321,16 @@ steps:
           echo "OK: ${package}"
         else
           echo "WARNING: ${package} missing"
-          FAILED=1
         fi
 
       done
 
       echo
       echo "=========================================="
-      echo "RootFS configuration"
+      echo "Build parameters"
       echo "=========================================="
-
       echo "ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}"
       echo "LAN_IP=${LAN_IP}"
-
-      if [ "${FAILED}" -ne 0 ]; then
-        echo
-        echo "WARNING: Some optional/custom packages were not selected."
-        echo "The build will continue."
-      fi
 
   # ==========================================================
   # Download package sources
