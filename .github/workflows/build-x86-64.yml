@@ -250,12 +250,17 @@ jobs:
           official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
           packages="$CUSTOM_PACKAGES $official luci-app-openclash"
           out="$GITHUB_WORKSPACE/release"
-          rm -rf "$out"; mkdir -p "$out"
+          raw="$RUNNER_TEMP/openwrt-x86-64-${FILESYSTEM}.raw"
+          rm -rf "$out" "$raw"
+          mkdir -p "$out"
           img="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*combined-efi.img.gz' -print -quit)"
           test -n "$img"
           cp "$img" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz"
-          gunzip -c "$img" > "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img"
-          if [[ "$BUILD_QCOW2" == true ]]; then qemu-img convert -f raw -O qcow2 "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"; fi
+          if [[ "$BUILD_QCOW2" == 'true' ]]; then
+            gunzip -c "$img" > "$raw"
+            qemu-img convert -p -f raw -O qcow2 "$raw" "$out/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2"
+            rm -f "$raw"
+          fi
           manifest="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*.manifest' -print -quit)"
           [[ -n "$manifest" ]] && cp "$manifest" "$out/openwrt-${OPENWRT_VERSION}-x86-64.manifest" || true
           {
@@ -271,6 +276,7 @@ jobs:
             printf '%s\n' $packages | sort -u | sed 's/^/- /'
           } > "$out/BUILD-INFO.md"
           sha256sum "$out"/* > "$out/SHA256SUMS"
+          test ! -e "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -286,4 +292,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="openwrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${FILESYSTEM}"
-          gh release create "$tag" release/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz release/openwrt-x86-64-uefi-${FILESYSTEM}.img release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2 release/openwrt-${OPENWRT_VERSION}-x86-64.manifest release/BUILD-INFO.md release/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/BUILD-INFO.md
+          assets=(
+            "release/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz"
+            "release/openwrt-${OPENWRT_VERSION}-x86-64.manifest"
+            "release/BUILD-INFO.md"
+            "release/SHA256SUMS"
+          )
+          if [[ "$BUILD_QCOW2" == 'true' ]]; then
+            assets+=("release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2")
+          fi
+          gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/BUILD-INFO.md
