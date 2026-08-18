@@ -301,4 +301,7 @@ jobs:
           if [[ "$BUILD_QCOW2" == 'true' ]]; then
             assets+=("release/openwrt-x86-64-uefi-${FILESYSTEM}.qcow2")
           fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
           gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/BUILD-INFO.md
