@@ -3,15 +3,15 @@ name: Build OpenWrt x86-64
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "0 18 * * *"
-
   push:
     paths:
       - ".github/workflows/build-x86-64.yml"
       - "scripts/**"
       - "configs/**"
       - "files/**"
+
+  schedule:
+    - cron: "0 18 * * *"
 
 permissions:
   contents: write
@@ -21,24 +21,14 @@ env:
   FORCE_UNSAFE_CONFIGURE: 1
 
   OPENWRT_ROOT: ${{ github.workspace }}/openwrt
-
-  # ---------------------------------------------------------------------------
-  # OpenWrt
-  # ---------------------------------------------------------------------------
   OPENWRT_REPO: https://github.com/openwrt/openwrt.git
   OPENWRT_BRANCH: main
 
-  # ---------------------------------------------------------------------------
-  # Build
-  # ---------------------------------------------------------------------------
   TARGET: x86
   SUBTARGET: 64
 
   JOBS: 2
 
-  # ---------------------------------------------------------------------------
-  # 第三方 APK
-  # ---------------------------------------------------------------------------
   THIRD_PARTY_DIR: package/third-party
 
 jobs:
@@ -51,18 +41,23 @@ jobs:
 
     steps:
 
-      # =======================================================================
-      # 1. Checkout 当前配置仓库
-      # =======================================================================
+      # ======================================================================
+      # 1. Checkout
+      # ======================================================================
 
       - name: Checkout build repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # =======================================================================
-      # 2. 基础依赖
-      # =======================================================================
+      # ======================================================================
+      # 2. 安装 Ubuntu 24.04 构建依赖
+      #
+      # 注意：
+      # Ubuntu 24.04 已经没有 python3-distutils
+      #
+      # libgmp3-dev 也改为 libgmp-dev
+      # ======================================================================
 
       - name: Install build dependencies
         shell: bash
@@ -105,7 +100,7 @@ jobs:
             libc6-dev-i386 \
             libelf-dev \
             libglib2.0-dev \
-            libgmp3-dev \
+            libgmp-dev \
             libltdl-dev \
             libmpc-dev \
             libmpfr-dev \
@@ -124,7 +119,6 @@ jobs:
             patch \
             pkgconf \
             python3 \
-            python3-distutils \
             python3-pip \
             python3-setuptools \
             python3-venv \
@@ -139,9 +133,45 @@ jobs:
             xsltproc \
             zlib1g-dev
 
-      # =======================================================================
-      # 3. Clone OpenWrt
-      # =======================================================================
+      # ======================================================================
+      # 3. 检查工具链环境
+      # ======================================================================
+
+      - name: Check build environment
+        shell: bash
+        run: |
+          set -eux
+
+          echo "Ubuntu:"
+          lsb_release -a || true
+
+          echo
+          echo "Kernel:"
+          uname -a
+
+          echo
+          echo "CPU:"
+          nproc
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h /
+
+          echo
+          echo "Python:"
+          python3 --version
+
+          echo
+          echo "Git:"
+          git --version
+
+      # ======================================================================
+      # 4. Clone OpenWrt
+      # ======================================================================
 
       - name: Clone OpenWrt
         shell: bash
@@ -159,52 +189,40 @@ jobs:
 
           cd "${OPENWRT_ROOT}"
 
+          echo
           echo "OpenWrt commit:"
           git log -1 --oneline
 
-      # =======================================================================
-      # 4. 复制配置
+      # ======================================================================
+      # 5. 准备 feeds.conf
       #
-      # 支持：
-      #
-      # configs/x86-64.config
-      #
-      # 如果你的仓库没有这个文件，则跳过。
-      # =======================================================================
+      # 如果仓库本身有 feeds.conf / feeds.conf.default，
+      # OpenWrt 使用其默认配置。
+      # ======================================================================
 
-      - name: Apply custom OpenWrt config
+      - name: Show OpenWrt feeds configuration
         shell: bash
         run: |
           set -eux
 
           cd "${OPENWRT_ROOT}"
 
-          if [[ -f "${GITHUB_WORKSPACE}/configs/x86-64.config" ]]; then
+          echo
+          echo "============================================================"
+          echo " feeds.conf"
+          echo "============================================================"
 
-            cp \
-              "${GITHUB_WORKSPACE}/configs/x86-64.config" \
-              .config
-
-          elif [[ -f "${GITHUB_WORKSPACE}/.config" ]]; then
-
-            cp \
-              "${GITHUB_WORKSPACE}/.config" \
-              .config
-
+          if [[ -f feeds.conf ]]; then
+            cat feeds.conf
+          elif [[ -f feeds.conf.default ]]; then
+            cat feeds.conf.default
           else
-
-            echo "No custom config found."
-
-            make defconfig
-
+            echo "No feeds.conf or feeds.conf.default found."
           fi
 
-      # =======================================================================
-      # 5. 更新官方 feeds
-      #
-      # 注意：
-      # 第三方 package 不在这里处理。
-      # =======================================================================
+      # ======================================================================
+      # 6. 更新官方 feeds
+      # ======================================================================
 
       - name: Update OpenWrt feeds
         shell: bash
@@ -215,19 +233,79 @@ jobs:
 
           ./scripts/feeds update -a
 
+      # ======================================================================
+      # 7. 安装官方 feeds
+      #
+      # 这里只安装官方 feed。
+      # 第三方包由 apk-custom-packages.sh 单独放入
+      # package/third-party。
+      # ======================================================================
+
+      - name: Install OpenWrt feeds
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
           ./scripts/feeds install -a
 
-      # =======================================================================
-      # 6. 准备第三方源码
+      # ======================================================================
+      # 8. 应用基础配置
       #
-      # apk-custom-packages.sh 只负责：
+      # 支持：
       #
-      #   third-party source
-      #        ↓
-      #   package/third-party
+      # configs/x86-64.config
       #
-      # 不负责编译。
-      # =======================================================================
+      # 或：
+      #
+      # .config
+      # ======================================================================
+
+      - name: Apply base OpenWrt configuration
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
+          if [[ -f "${GITHUB_WORKSPACE}/configs/x86-64.config" ]]; then
+
+            echo "Using configs/x86-64.config"
+
+            cp \
+              "${GITHUB_WORKSPACE}/configs/x86-64.config" \
+              .config
+
+          elif [[ -f "${GITHUB_WORKSPACE}/.config" ]]; then
+
+            echo "Using repository .config"
+
+            cp \
+              "${GITHUB_WORKSPACE}/.config" \
+              .config
+
+          else
+
+            echo "No custom config found."
+
+            touch .config
+
+          fi
+
+      # ======================================================================
+      # 9. 准备第三方源码
+      #
+      # 这个脚本：
+      #
+      #   只负责下载 / 整理第三方 package
+      #
+      # 不负责：
+      #
+      #   make
+      #   defconfig
+      #   APK 检查
+      # ======================================================================
 
       - name: Prepare third-party package sources
         shell: bash
@@ -238,13 +316,14 @@ jobs:
             "${GITHUB_WORKSPACE}/scripts/apk-custom-packages.sh"
 
           OPENWRT_ROOT="${OPENWRT_ROOT}" \
+          THIRD_PARTY_DIR="${THIRD_PARTY_DIR}" \
             "${GITHUB_WORKSPACE}/scripts/apk-custom-packages.sh"
 
-      # =======================================================================
-      # 7. 检查第三方 Makefile
-      # =======================================================================
+      # ======================================================================
+      # 10. 显示第三方 package
+      # ======================================================================
 
-      - name: List third-party package definitions
+      - name: Inspect third-party packages
         shell: bash
         run: |
           set -eux
@@ -256,58 +335,149 @@ jobs:
           echo " Third-party package Makefiles"
           echo "============================================================"
 
-          find \
-            package/third-party \
-            -type f \
-            -name Makefile \
-            -print \
-            | sort
+          if [[ -d "${THIRD_PARTY_DIR}" ]]; then
 
-          echo
-          echo "============================================================"
+            find \
+              "${THIRD_PARTY_DIR}" \
+              -type f \
+              -name Makefile \
+              -print \
+              | sort
 
-      # =======================================================================
-      # 8. 清理旧的第三方编译结果
-      #
-      # 非常重要：
-      #
-      # 你的日志已经出现：
-      #
-      #   hysteria 2.9.2
-      #   hysteria 2.9.3
-      #
-      #   daed r1
-      #   daed r7
-      #
-      #   v2ray-geoip 多个版本
-      #
-      # 这说明旧 APK 被保留下来了。
-      #
-      # GitHub Runner 是全新环境，但同一个工作目录的不同 build step
-      # 仍然可能产生旧 package output。
-      # =======================================================================
+          else
 
-      - name: Clean third-party package output
+            echo "Third-party directory does not exist."
+
+          fi
+
+      # ======================================================================
+      # 11. 从第三方 Makefile 提取真实 Package 名称
+      #
+      # 关键：
+      #
+      # 不再手工猜：
+      #
+      #   luci-app-xxx
+      #
+      # 而是从：
+      #
+      #   define Package/xxx
+      #
+      # 自动读取。
+      # ======================================================================
+
+      - name: Detect third-party package names
         shell: bash
         run: |
           set -eux
 
           cd "${OPENWRT_ROOT}"
 
-          rm -rf \
-            bin/packages/x86_64/third-party \
-            bin/packages/x86_64/Third-party \
-            bin/packages/x86_64/custom \
-            bin/packages/x86_64/custom-packages
+          rm -f /tmp/third-party-packages.txt
 
-          mkdir -p \
-            bin/packages/x86_64
+          touch /tmp/third-party-packages.txt
 
-      # =======================================================================
-      # 9. 重新生成配置
-      # =======================================================================
+          if [[ -d "${THIRD_PARTY_DIR}" ]]; then
 
-      - name: Refresh OpenWrt configuration
+            while IFS= read -r makefile; do
+
+              awk '
+                /^define Package\// {
+                  name=$0
+                  sub(/^define Package\//, "", name)
+                  print name
+                }
+              ' "${makefile}" \
+              >> /tmp/third-party-packages.txt
+
+            done < <(
+              find \
+                "${THIRD_PARTY_DIR}" \
+                -type f \
+                -name Makefile \
+                -print \
+                | sort
+            )
+
+          fi
+
+          sort -u \
+            /tmp/third-party-packages.txt \
+            -o /tmp/third-party-packages.txt
+
+          echo
+          echo "============================================================"
+          echo " Detected third-party packages"
+          echo "============================================================"
+
+          cat /tmp/third-party-packages.txt
+
+          if [[ ! -s /tmp/third-party-packages.txt ]]; then
+            echo
+            echo "ERROR: No third-party packages detected."
+            exit 1
+          fi
+
+      # ======================================================================
+      # 12. 将第三方 package 自动加入 .config
+      #
+      # 这里不写死 package 名称。
+      #
+      # 所有实际 Makefile 中存在的 Package/<name>
+      # 都自动设置为：
+      #
+      #   CONFIG_PACKAGE_<name>=y
+      #
+      # 这样 OpenWrt 后面的 make world 会真正把它们编译进去。
+      # ======================================================================
+
+      - name: Enable detected third-party packages
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
+          while IFS= read -r package; do
+
+            [[ -z "${package}" ]] && continue
+
+            echo "Enabling: ${package}"
+
+            ./scripts/config \
+              --enable \
+              "CONFIG_PACKAGE_${package}"
+
+          done < /tmp/third-party-packages.txt
+
+      # ======================================================================
+      # 13. 处理目标平台
+      # ======================================================================
+
+      - name: Configure x86-64 target
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
+          ./scripts/config \
+            --set-val \
+            CONFIG_TARGET_x86 \
+            y
+
+          ./scripts/config \
+            --set-val \
+            CONFIG_TARGET_x86_64 \
+            y
+
+      # ======================================================================
+      # 14. defconfig
+      #
+      # 现在第三方 package 已经进入 .config。
+      # ======================================================================
+
+      - name: Run OpenWrt defconfig
         shell: bash
         run: |
           set -eux
@@ -316,14 +486,43 @@ jobs:
 
           make defconfig
 
-      # =======================================================================
-      # 10. 下载源码
-      #
-      # 不直接 make world。
-      # 先 download，可以更早发现第三方源码问题。
-      # =======================================================================
+      # ======================================================================
+      # 15. 显示第三方配置
+      # ======================================================================
 
-      - name: Download package sources
+      - name: Verify selected third-party packages
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
+          echo
+          echo "============================================================"
+          echo " Selected third-party packages"
+          echo "============================================================"
+
+          while IFS= read -r package; do
+
+            [[ -z "${package}" ]] && continue
+
+            if grep -q "^CONFIG_PACKAGE_${package}=y" .config; then
+
+              echo "OK: ${package}"
+
+            else
+
+              echo "MISSING FROM CONFIG: ${package}"
+
+            fi
+
+          done < /tmp/third-party-packages.txt
+
+      # ======================================================================
+      # 16. 下载所有源码
+      # ======================================================================
+
+      - name: Download OpenWrt sources
         shell: bash
         run: |
           set -eux
@@ -334,38 +533,75 @@ jobs:
             -j"${JOBS}" \
             V=s
 
-      # =======================================================================
-      # 11. 编译第三方 APK
+      # ======================================================================
+      # 17. 清理旧 package 编译结果
       #
-      # 这里不再自己根据目录名猜 package。
+      # 防止出现：
       #
-      # OpenWrt package Makefile 自己决定 Package/<name>。
+      #   hysteria 2.9.2
+      #   hysteria 2.9.3
       #
-      # 采用 package compile 目标。
-      # =======================================================================
+      #   daed r1
+      #   daed r7
+      #
+      # 等旧版本混杂。
+      # ======================================================================
 
-      - name: Build third-party APK packages
+      - name: Clean package build output
         shell: bash
         run: |
           set -eux
 
           cd "${OPENWRT_ROOT}"
 
-          echo
-          echo "============================================================"
-          echo " Building third-party packages"
-          echo "============================================================"
+          rm -rf \
+            bin/packages \
+            bin/targets
+
+          mkdir -p bin
+
+      # ======================================================================
+      # 18. 重新生成配置
+      # ======================================================================
+
+      - name: Refresh final configuration
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
+
+          make defconfig
+
+      # ======================================================================
+      # 19. 编译整个 OpenWrt
+      #
+      # 不再：
+      #
+      #   make package/third-party/compile
+      #
+      # 因为 package/third-party 不是一个合法的统一 package target。
+      #
+      # 现在所有 CONFIG_PACKAGE_xxx=y 的 package
+      # 由 OpenWrt Buildroot 自动处理。
+      # ======================================================================
+
+      - name: Build OpenWrt x86-64
+        shell: bash
+        run: |
+          set -eux
+
+          cd "${OPENWRT_ROOT}"
 
           make \
-            package/third-party/compile \
             -j"${JOBS}" \
             V=s
 
-      # =======================================================================
-      # 12. 显示实际生成的 APK
-      # =======================================================================
+      # ======================================================================
+      # 20. 显示所有生成 APK
+      # ======================================================================
 
-      - name: List generated third-party APK packages
+      - name: List generated APK packages
         shell: bash
         run: |
           set -eux
@@ -378,26 +614,29 @@ jobs:
           echo "============================================================"
 
           find \
-            bin/packages/x86_64 \
+            bin/packages \
             -type f \
             -name '*.apk' \
             -printf '%p\n' \
             | sort
 
-      # =======================================================================
-      # 13. 第三方 APK 验证
+      # ======================================================================
+      # 21. 验证第三方 APK
       #
-      # 只检查：
+      # 注意：
+      #
+      # apk-package-list.sh 如果使用上一版：
+      #
+      #   REQUIRED_PACKAGES
+      #
+      # 那些包名会按照：
       #
       #   package-name-*.apk
       #
-      # 不检查版本。
+      # 判断。
       #
-      # 注意：
-      # REQUIRED_PACKAGES 只放“固件必须存在”的核心包。
-      #
-      # 其它包即使没生成，也不阻止整个构建。
-      # =======================================================================
+      # 不检查版本号。
+      # ======================================================================
 
       - name: Verify third-party APK packages
         shell: bash
@@ -408,63 +647,12 @@ jobs:
             "${GITHUB_WORKSPACE}/scripts/apk-package-list.sh"
 
           OPENWRT_ROOT="${OPENWRT_ROOT}" \
-          APK_ROOT="${OPENWRT_ROOT}/bin/packages/x86_64" \
+          APK_ROOT="${OPENWRT_ROOT}/bin/packages" \
             "${GITHUB_WORKSPACE}/scripts/apk-package-list.sh"
 
-      # =======================================================================
-      # 14. 重新执行 defconfig
-      #
-      # 确保第三方 package 被纳入最终 package dependency。
-      # =======================================================================
-
-      - name: Finalize package configuration
-        shell: bash
-        run: |
-          set -eux
-
-          cd "${OPENWRT_ROOT}"
-
-          make defconfig
-
-      # =======================================================================
-      # 15. 检查最终 .config
-      # =======================================================================
-
-      - name: Show selected third-party packages
-        shell: bash
-        run: |
-          set -eux
-
-          cd "${OPENWRT_ROOT}"
-
-          echo
-          echo "============================================================"
-          echo " Selected third-party packages"
-          echo "============================================================"
-
-          grep -E \
-            '^CONFIG_PACKAGE_(luci-app-|luci-theme-|bandix|geoview|xray|sing-box|hysteria|mosdns|nikki|clashoo|dae|daed|lucky|quickfile|quickstart|rtp2httpd)' \
-            .config \
-            || true
-
-      # =======================================================================
-      # 16. 编译 OpenWrt 固件
-      # =======================================================================
-
-      - name: Build OpenWrt firmware
-        shell: bash
-        run: |
-          set -eux
-
-          cd "${OPENWRT_ROOT}"
-
-          make \
-            -j"${JOBS}" \
-            V=s
-
-      # =======================================================================
-      # 17. 整理固件
-      # =======================================================================
+      # ======================================================================
+      # 22. 收集固件
+      # ======================================================================
 
       - name: Collect firmware
         shell: bash
@@ -472,6 +660,9 @@ jobs:
           set -eux
 
           cd "${OPENWRT_ROOT}"
+
+          rm -rf \
+            "${GITHUB_WORKSPACE}/release"
 
           mkdir -p \
             "${GITHUB_WORKSPACE}/release"
@@ -495,15 +686,18 @@ jobs:
               "${GITHUB_WORKSPACE}/release/" \;
 
           echo
-          echo "Firmware artifacts:"
+          echo "============================================================"
+          echo " Firmware artifacts"
+          echo "============================================================"
+
           ls -lah \
             "${GITHUB_WORKSPACE}/release"
 
-      # =======================================================================
-      # 18. 收集第三方 APK
-      # =======================================================================
+      # ======================================================================
+      # 23. 收集 APK
+      # ======================================================================
 
-      - name: Collect third-party APK packages
+      - name: Collect APK packages
         shell: bash
         run: |
           set -eux
@@ -514,20 +708,27 @@ jobs:
             "${GITHUB_WORKSPACE}/release/apk"
 
           find \
-            bin/packages/x86_64 \
+            bin/packages \
             -type f \
             -name '*.apk' \
             -exec cp -f {} \
               "${GITHUB_WORKSPACE}/release/apk/" \;
 
           echo
-          echo "Third-party APK artifacts:"
-          ls -lah \
-            "${GITHUB_WORKSPACE}/release/apk"
+          echo "============================================================"
+          echo " APK artifacts"
+          echo "============================================================"
 
-      # =======================================================================
-      # 19. 生成 APK 清单
-      # =======================================================================
+          find \
+            "${GITHUB_WORKSPACE}/release/apk" \
+            -type f \
+            -name '*.apk' \
+            -printf '%f\n' \
+            | sort
+
+      # ======================================================================
+      # 24. 生成 APK 清单
+      # ======================================================================
 
       - name: Generate APK manifest
         shell: bash
@@ -544,56 +745,89 @@ jobs:
             | sort -u \
             > release/third-party-apk-list.txt
 
+          echo
+          echo "============================================================"
+          echo " Third-party APK manifest"
+          echo "============================================================"
+
           cat \
             release/third-party-apk-list.txt
 
-      # =======================================================================
-      # 20. 上传 GitHub Actions Artifact
-      # =======================================================================
+      # ======================================================================
+      # 25. 生成构建信息
+      # ======================================================================
 
-      - name: Upload firmware artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-x86-64
-          path: |
-            release/
-          if-no-files-found: error
-          retention-days: 7
-
-      # =======================================================================
-      # 21. 输出构建信息
-      # =======================================================================
-
-      - name: Build summary
+      - name: Generate build information
         shell: bash
         run: |
           set -eux
 
           cd "${OPENWRT_ROOT}"
 
+          {
+            echo "OpenWrt build information"
+            echo
+            echo "Commit:"
+            git log -1 --oneline
+            echo
+            echo "Branch:"
+            git branch --show-current
+            echo
+            echo "Target:"
+            echo "x86/64"
+            echo
+            echo "Date:"
+            date -u
+            echo
+            echo "Third-party packages:"
+            cat /tmp/third-party-packages.txt
+          } > \
+            "${GITHUB_WORKSPACE}/release/build-info.txt"
+
+      # ======================================================================
+      # 26. 上传最终 Artifact
+      # ======================================================================
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-64
+          path: |
+            release/
+          if-no-files-found: error
+          retention-days: 14
+
+      # ======================================================================
+      # 27. 最终摘要
+      # ======================================================================
+
+      - name: Build summary
+        shell: bash
+        run: |
+          set -eux
+
           echo
           echo "============================================================"
-          echo " OpenWrt build completed"
+          echo " OpenWrt x86-64 build completed"
           echo "============================================================"
           echo
 
-          echo "OpenWrt commit:"
-          git log -1 --oneline
-
-          echo
-          echo "Target:"
-          echo "  x86/64"
-
-          echo
-          echo "Firmware:"
-          ls -lh \
+          echo "Firmware files:"
+          find \
             "${GITHUB_WORKSPACE}/release" \
-            || true
+            -maxdepth 1 \
+            -type f \
+            -printf '  %f\n' \
+            | sort
 
           echo
-          echo "Third-party APK count:"
+          echo "APK count:"
+
           find \
             "${GITHUB_WORKSPACE}/release/apk" \
             -type f \
             -name '*.apk' \
             | wc -l
+
+          echo
+          echo "Build finished successfully."
