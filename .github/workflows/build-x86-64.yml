@@ -1,12 +1,24 @@
+```yaml
 name: Build OpenWrt x86-64
 
 on:
   workflow_dispatch:
+    inputs:
+      rootfs_partsize:
+        description: "固件 RootFS 大小（MB）"
+        required: true
+        type: choice
+        default: "4096"
+        options:
+          - "512"
+          - "1024"
+          - "2048"
+          - "4096"
+          - "8192"
 
 env:
   TZ: Asia/Shanghai
   OPENWRT_VERSION: "25.12.5"
-  ROOTFS_PARTSIZE: "4096"
   LAN_IP: "192.168.1.2"
 
 jobs:
@@ -22,7 +34,28 @@ jobs:
         uses: actions/checkout@v4
 
       # ==========================================================
-      # Install build dependencies
+      # Set build variables
+      # ==========================================================
+      - name: Set build variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ROOTFS_PARTSIZE=${{ inputs.rootfs_partsize }}" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
+
+          echo
+          echo "=========================================="
+          echo "Build information"
+          echo "=========================================="
+          echo "OpenWrt       : ${OPENWRT_VERSION}"
+          echo "Target        : x86-64"
+          echo "RootFS size   : ${{ inputs.rootfs_partsize }} MB"
+          echo "LAN IP        : ${LAN_IP}"
+
+      # ==========================================================
+      # Install dependencies
       # ==========================================================
       - name: Install dependencies
         shell: bash
@@ -57,26 +90,6 @@ jobs:
             qemu-utils
 
       # ==========================================================
-      # Build information
-      # ==========================================================
-      - name: Set build information
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date +%H%M%S)" >> "$GITHUB_ENV"
-
-          echo
-          echo "=========================================="
-          echo "Build information"
-          echo "=========================================="
-          echo "OpenWrt: ${OPENWRT_VERSION}"
-          echo "Target: x86-64"
-          echo "RootFS: ${ROOTFS_PARTSIZE} MB"
-          echo "LAN IP: ${LAN_IP}"
-
-      # ==========================================================
       # Clone OpenWrt
       # ==========================================================
       - name: Clone OpenWrt
@@ -102,7 +115,7 @@ jobs:
           git describe --tags --always
 
       # ==========================================================
-      # Feeds
+      # Update official feeds
       # ==========================================================
       - name: Update feeds
         working-directory: openwrt
@@ -116,17 +129,12 @@ jobs:
       # ==========================================================
       # Load custom package list
       #
-      # IMPORTANT:
-      # shell/apk-custom-packages.sh 必须是：
+      # shell/apk-custom-packages.sh 必须定义：
       #
       # CUSTOM_PACKAGES="
       # package1
       # package2
       # "
-      #
-      # 不能写成：
-      #
-      # CUSTOM_PACKAGES:
       # ==========================================================
       - name: Load custom packages
         shell: bash
@@ -148,7 +156,8 @@ jobs:
           printf '%s\n' "${CUSTOM_PACKAGES}" \
             > selected-packages.txt
 
-          sed -i '/^[[:space:]]*$/d' selected-packages.txt
+          sed -i '/^[[:space:]]*$/d' \
+            selected-packages.txt
 
           sort -u \
             selected-packages.txt \
@@ -156,7 +165,7 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "Selected packages"
+          echo "Requested custom packages"
           echo "=========================================="
 
           cat selected-packages.txt
@@ -179,7 +188,7 @@ jobs:
           CONFIG_TARGET_IMAGES_GZIP=y
           CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 
-          CONFIG_GRUB_IMAGES=n
+          CONFIG_GRUB_IMAGES=y
           CONFIG_GRUB_EFI_IMAGES=y
 
           CONFIG_PACKAGE_luci=y
@@ -207,6 +216,8 @@ jobs:
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
 
+          CONFIG_PACKAGE_luci-app-package-manager=y
+
           CONFIG_PACKAGE_kmod-nft-socket=y
           CONFIG_PACKAGE_kmod-nft-tproxy=y
 
@@ -214,8 +225,15 @@ jobs:
 
           EOF
 
+          # ------------------------------------------------------
+          # Add custom packages
+          # ------------------------------------------------------
           while IFS= read -r package; do
+
             [ -z "${package}" ] && continue
+
+            echo
+            echo "Checking package: ${package}"
 
             if grep -R \
               -q \
@@ -224,18 +242,39 @@ jobs:
               feeds \
               2>/dev/null
             then
-              echo "Selecting: ${package}"
-              echo "CONFIG_PACKAGE_${package}=y" >> .config
+
+              echo "Found: ${package}"
+
+              echo \
+                "CONFIG_PACKAGE_${package}=y" \
+                >> .config
+
             else
-              echo "Not found in source tree: ${package}"
+
+              echo "WARNING: Package not found in source tree:"
+              echo "${package}"
+
             fi
 
           done < ../selected-packages.txt
 
+          # ------------------------------------------------------
+          # Remove duplicate configuration entries
+          # ------------------------------------------------------
+          awk -F= '!seen[$1]++ || $1 !~ /^CONFIG_PACKAGE_/' \
+            .config > .config.tmp
+
+          mv \
+            .config.tmp \
+            .config
+
+          # ------------------------------------------------------
+          # Resolve dependencies
+          # ------------------------------------------------------
           make defconfig
 
       # ==========================================================
-      # Show final configuration
+      # Verify configuration
       # ==========================================================
       - name: Verify configuration
         working-directory: openwrt
@@ -245,19 +284,24 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "Final selected packages"
+          echo "Selected custom packages"
           echo "=========================================="
 
           while IFS= read -r package; do
+
             [ -z "${package}" ] && continue
 
             if grep -qx \
               "CONFIG_PACKAGE_${package}=y" \
               .config
             then
+
               echo "OK: ${package}"
+
             else
+
               echo "WARNING: ${package} not selected"
+
             fi
 
           done < ../selected-packages.txt
@@ -267,30 +311,64 @@ jobs:
           echo "Important packages"
           echo "=========================================="
 
-          for package in \
-            luci \
-            luci-i18n-base-zh-cn \
-            luci-app-mwan3 \
-            luci-app-upnp \
-            luci-app-ttyd \
-            luci-app-openclash \
-            kmod-nft-socket \
-            kmod-nft-tproxy
-          do
+          REQUIRED_PACKAGES="
+          luci
+          luci-ssl
+          luci-i18n-base-zh-cn
+          luci-app-package-manager
+          luci-app-mwan3
+          luci-app-upnp
+          luci-app-ttyd
+          luci-app-openclash
+          kmod-nft-socket
+          kmod-nft-tproxy
+          ppp
+          ppp-mod-pppoe
+          kmod-pppoe
+          odhcp6c
+          odhcpd-ipv6only
+          "
+
+          FAILED=0
+
+          while IFS= read -r package; do
+
+            [ -z "${package}" ] && continue
 
             if grep -qx \
               "CONFIG_PACKAGE_${package}=y" \
               .config
             then
+
               echo "OK: ${package}"
+
             else
+
               echo "WARNING: ${package} missing"
+              FAILED=1
+
             fi
 
-          done
+          done <<< "${REQUIRED_PACKAGES}"
+
+          if [ "${FAILED}" -ne 0 ]; then
+
+            echo
+            echo "WARNING: Some base packages were not selected."
+
+          fi
+
+          echo
+          echo "=========================================="
+          echo "RootFS configuration"
+          echo "=========================================="
+
+          grep \
+            '^CONFIG_TARGET_ROOTFS_PARTSIZE=' \
+            .config || true
 
       # ==========================================================
-      # Download package sources
+      # Download sources
       # ==========================================================
       - name: Download package sources
         working-directory: openwrt
@@ -324,7 +402,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          make -j"$(nproc)" \
+          make \
+            -j"$(nproc)" \
             V=s
 
       # ==========================================================
@@ -341,7 +420,8 @@ jobs:
           echo "Firmware images"
           echo "=========================================="
 
-          find bin/targets/x86/64 \
+          find \
+            bin/targets/x86/64 \
             -maxdepth 1 \
             -type f \
             -printf '%f\n' |
@@ -355,9 +435,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          rm -rf artifacts
           mkdir -p artifacts
 
-          find openwrt/bin/targets/x86/64 \
+          find \
+            openwrt/bin/targets/x86/64 \
             -maxdepth 1 \
             -type f \
             \( \
@@ -383,11 +465,12 @@ jobs:
           ls -lah artifacts
 
       # ==========================================================
-      # Upload artifacts
+      # Upload firmware
       # ==========================================================
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64
+          name: openwrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ inputs.rootfs_partsize }}MB
           path: artifacts/
           if-no-files-found: error
+```
