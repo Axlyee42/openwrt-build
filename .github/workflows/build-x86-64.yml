@@ -53,24 +53,15 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.openwrt_version }}
         run: |
           set -euo pipefail
-
           if [[ "${REQUESTED_VERSION:-}" != "" && "${REQUESTED_VERSION}" != "auto" ]]; then
             VERSION="${REQUESTED_VERSION}"
             SHOULD_BUILD=true
             echo "Manual build requested: ${VERSION}"
           else
-            LATEST_TAG="$(curl -fsSL --retry 3 --retry-delay 2 \
-              -H 'Accept: application/vnd.github+json' \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              https://api.github.com/repos/openwrt/openwrt/releases/latest | jq -r '.tag_name')"
+            LATEST_TAG="$(curl -fsSL --retry 3 --retry-delay 2 -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" https://api.github.com/repos/openwrt/openwrt/releases/latest | jq -r '.tag_name')"
             VERSION="${LATEST_TAG#v}"
             [[ -n "${VERSION}" && "${VERSION}" != "null" ]] || { echo "ERROR: cannot resolve latest OpenWrt release" >&2; exit 1; }
-
-            if curl -fsSL --retry 3 --retry-delay 2 \
-              -H 'Accept: application/vnd.github+json' \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' \
-              | jq -e --arg prefix "openwrt-${VERSION}-x86-64-" '.[] | select(.tag_name | startswith($prefix))' >/dev/null; then
+            if curl -fsSL --retry 3 --retry-delay 2 -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" 'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' | jq -e --arg prefix "openwrt-${VERSION}-x86-64-" '.[] | select(.tag_name | startswith($prefix))' >/dev/null; then
               SHOULD_BUILD=false
               echo "OpenWrt ${VERSION} already has a release; nothing to build."
             else
@@ -78,7 +69,6 @@ jobs:
               echo "New OpenWrt release detected: ${VERSION}"
             fi
           fi
-
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "should_build=${SHOULD_BUILD}" >> "${GITHUB_OUTPUT}"
 
@@ -92,6 +82,10 @@ jobs:
       ROOTFS_SIZE: ${{ inputs.rootfs_size || '1G' }}
       FILESYSTEM: ${{ inputs.filesystem || 'ext4' }}
       BUILD_QCOW2: ${{ inputs.qcow2 == '' && 'true' || inputs.qcow2 }}
+      WAN1_USER: ${{ secrets.WAN1_USER }}
+      WAN1_PASS: ${{ secrets.WAN1_PASS }}
+      WAN2_USER: ${{ secrets.WAN2_USER }}
+      WAN2_PASS: ${{ secrets.WAN2_PASS }}
 
     steps:
       - name: Checkout
@@ -166,10 +160,9 @@ jobs:
               exit 1
             fi
           done
-          echo "Prepared APKs:"
-          find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+          echo "Third-party APK preparation completed."
 
-      - name: Prepare custom files
+      - name: Prepare custom files and dual-WAN network
         shell: bash
         run: |
           set -euo pipefail
@@ -179,6 +172,75 @@ jobs:
           ESCAPED_LAN_IP="$(printf '%s' "${LAN_IP}" | sed 's/[&|\\]/\\&/g')"
           sed -i "s|__LAN_IP__|${ESCAPED_LAN_IP}|g" "${TARGET}/99-custom.sh"
           chmod +x "${TARGET}/99-custom.sh"
+
+          WAN1_USER_B64="$(printf '%s' "${WAN1_USER}" | base64 -w0)"
+          WAN1_PASS_B64="$(printf '%s' "${WAN1_PASS}" | base64 -w0)"
+          WAN2_USER_B64="$(printf '%s' "${WAN2_USER}" | base64 -w0)"
+          WAN2_PASS_B64="$(printf '%s' "${WAN2_PASS}" | base64 -w0)"
+
+          cat > "${TARGET}/98-network.sh" <<EOF
+#!/bin/sh
+set -eu
+
+WAN1_USER_B64='${WAN1_USER_B64}'
+WAN1_PASS_B64='${WAN1_PASS_B64}'
+WAN2_USER_B64='${WAN2_USER_B64}'
+WAN2_PASS_B64='${WAN2_PASS_B64}'
+LAN_IP='${LAN_IP}'
+
+WAN1_USER="\$(printf '%s' "\${WAN1_USER_B64}" | base64 -d)"
+WAN1_PASS="\$(printf '%s' "\${WAN1_PASS_B64}" | base64 -d)"
+WAN2_USER="\$(printf '%s' "\${WAN2_USER_B64}" | base64 -d)"
+WAN2_PASS="\$(printf '%s' "\${WAN2_PASS_B64}" | base64 -d)"
+
+uci -q delete network.wan || true
+uci set network.wan='interface'
+uci set network.wan.device='eth0'
+uci set network.wan.proto='pppoe'
+uci set network.wan.username="\${WAN1_USER}"
+uci set network.wan.password="\${WAN1_PASS}"
+
+uci -q delete network.wanb || true
+uci set network.wanb='interface'
+uci set network.wanb.device='eth1'
+uci set network.wanb.proto='pppoe'
+uci set network.wanb.username="\${WAN2_USER}"
+uci set network.wanb.password="\${WAN2_PASS}"
+
+uci -q delete network.wan6 || true
+uci set network.wan6='interface'
+uci set network.wan6.device='@wan'
+uci set network.wan6.proto='dhcpv6'
+uci set network.wan6.reqaddress='try'
+uci set network.wan6.reqprefix='auto'
+
+uci -q delete network.wanb6 || true
+uci set network.wanb6='interface'
+uci set network.wanb6.device='@wanb'
+uci set network.wanb6.proto='dhcpv6'
+uci set network.wanb6.reqaddress='try'
+uci set network.wanb6.reqprefix='auto'
+
+uci -q delete network.br_lan || true
+uci set network.br_lan='device'
+uci set network.br_lan.type='bridge'
+uci add_list network.br_lan.ports='eth2'
+uci add_list network.br_lan.ports='eth3'
+uci add_list network.br_lan.ports='eth4'
+uci add_list network.br_lan.ports='eth5'
+
+uci -q delete network.lan || true
+uci set network.lan='interface'
+uci set network.lan.device='br-lan'
+uci set network.lan.proto='static'
+uci set network.lan.ipaddr="\${LAN_IP}"
+uci set network.lan.netmask='255.255.255.0'
+uci set network.lan.ip6assign='64'
+
+uci commit network
+exit 0
+EOF
+          chmod +x "${TARGET}/98-network.sh"
 
       - name: Configure filesystem
         shell: bash
@@ -217,7 +279,7 @@ jobs:
           set -euo pipefail
           cd "${IMAGEBUILDER_DIR}"
           case "${ROOTFS_SIZE}" in 1G) ROOTFS_PARTSIZE=1024;; 2G) ROOTFS_PARTSIZE=2048;; 3G) ROOTFS_PARTSIZE=3072;; 4G) ROOTFS_PARTSIZE=4096;; *) echo "Invalid ROOTFS_SIZE=${ROOTFS_SIZE}" >&2; exit 1;; esac
-          BASE_PACKAGES="curl bash luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server"
+          BASE_PACKAGES="curl bash luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy ip-full unzip luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn luci-i18n-ttyd-zh-cn openssh-sftp-server"
           PACKAGES="$(printf '%s\n' "${BASE_PACKAGES}" "${CUSTOM_PACKAGES}" | tr '[:space:]' '\n' | awk 'NF && !seen[$0]++' | paste -sd ' ' -)"
           test -n "${PACKAGES}"
           echo "OpenWrt version : ${OPENWRT_VERSION}"
@@ -226,6 +288,7 @@ jobs:
           echo "Firmware size   : ${ROOTFS_SIZE}"
           echo "Filesystem      : ${FILESYSTEM}"
           echo "QCOW2           : ${BUILD_QCOW2}"
+          echo "Network         : eth0=WAN(PPPoE), eth1=WANB(PPPoE), eth2-eth5=LAN"
           make image PROFILE="generic" PACKAGES="${PACKAGES}" FILES="${IMAGEBUILDER_DIR}/files" ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
 
       - name: Collect images and release metadata
@@ -265,21 +328,20 @@ jobs:
             echo "| Filesystem | ${FILESYSTEM} |"
             echo "| Rootfs size | ${ROOTFS_SIZE} |"
             echo "| LAN IP | ${LAN_IP} |"
+            echo "| WAN | eth0 / PPPoE |"
+            echo "| WANB | eth1 / PPPoE |"
+            echo "| LAN | eth2, eth3, eth4, eth5 |"
             echo "| QCOW2 | ${BUILD_QCOW2} |"
             echo "| Git commit | ${GITHUB_SHA} |"
             echo "| Workflow run | ${GITHUB_RUN_NUMBER} |"
             echo
-            echo "## 包含的第三方 APK"
+            echo "## 包含的 APK"
             echo
             printf '%s\n' "${CUSTOM_PACKAGES}" | tr ' ' '\n' | sed '/^$/d' | sed 's/^/- `/' | sed 's/$/`/'
             echo
-            echo "## 实际随镜像提供的 APK 文件"
-            echo
-            find "${IMAGEBUILDER_DIR}/packages" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort | sed 's/^/- `/' | sed 's/$/`/'
-            echo
             echo "## 固件文件"
             echo
-            find "${OUT}" -maxdepth 1 -type f -printf '%f\n' | sort | sed 's/^/- `/' | sed 's/$/`/'
+            find "${OUT}" -maxdepth 1 -type f ! -name 'RELEASE.md' -printf '%f\n' | sort | sed 's/^/- `/' | sed 's/$/`/'
           } > "${OUT}/RELEASE.md"
           (cd "${OUT}" && sha256sum * > sha256sums.txt)
           cat "${OUT}/RELEASE.md"
