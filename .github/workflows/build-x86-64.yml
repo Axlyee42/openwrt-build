@@ -153,11 +153,9 @@ jobs:
           b="$IMAGEBUILDER_DIR/files/usr/bin"
           r="$IMAGEBUILDER_DIR/files/root"
           mkdir -p "$d" "$b" "$r"
-
           cat > "$d/98-network.sh" <<'EOF'
           #!/bin/sh
           set -eu
-          # eth0 = WAN; eth1 = WANB; eth2-eth5 = LAN
           uci -q delete network.wan || true
           uci set network.wan='interface'
           uci set network.wan.device='eth0'
@@ -186,13 +184,11 @@ jobs:
           exit 0
           EOF
           chmod +x "$d/98-network.sh"
-
           cat > "$b/setup-dual-wan" <<'EOF'
           #!/bin/ash
           set -eu
           echo 'OpenWrt dual-WAN first-boot setup'
           echo 'eth0 = WAN, eth1 = WANB, eth2-eth5 = LAN'
-          echo
           printf 'WAN PPPoE username: '; read WAN1_USER
           printf 'WAN PPPoE password: '; read -s WAN1_PASS; echo
           printf 'WANB PPPoE username: '; read WAN2_USER
@@ -211,24 +207,16 @@ jobs:
           uci set network.wanb.auto='1'
           uci commit network
           /etc/init.d/network restart
-          echo
           echo 'PPPoE credentials are stored only on this router.'
-          echo 'They are not embedded in the firmware or Git repository.'
           EOF
           chmod +x "$b/setup-dual-wan"
-
           cat > "$r/README-FIRST-BOOT.txt" <<'EOF'
           OpenWrt first-boot network setup
           LAN: eth2, eth3, eth4, eth5 / 192.168.1.2
           WAN: eth0 / PPPoE
           WANB: eth1 / PPPoE
-
           PPPoE credentials are NOT stored in the firmware.
-          After boot, connect to LAN and run:
-
-            setup-dual-wan
-
-          Enter the WAN and WANB PPPoE usernames and passwords when prompted.
+          After boot, connect to LAN and run: setup-dual-wan
           EOF
 
       - name: Build OpenWrt image
@@ -263,18 +251,34 @@ jobs:
           fi
           manifest="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f -name '*.manifest' -print -quit)"
           [[ -n "$manifest" ]] && cp "$manifest" "$out/openwrt-${OPENWRT_VERSION}-x86-64.manifest" || true
+          build_date="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          package_count="$(printf '%s\n' $packages | sort -u | sed '/^$/d' | wc -l | tr -d ' ')"
           {
-            echo '# OpenWrt x86-64 build'; echo
-            echo "- Build date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "- OpenWrt: $OPENWRT_VERSION"
-            echo "- Filesystem: $FILESYSTEM"
-            echo "- Root partition: $ROOTFS_SIZE"
-            echo '- eth0: WAN (PPPoE)'; echo '- eth1: WANB (PPPoE)'; echo '- eth2-eth5: LAN'; echo
-            echo '- PPPoE credentials: configured on first boot; not embedded in firmware'
+            echo '# OpenWrt x86-64 详细构建信息'; echo
+            echo '## 基本信息';
+            echo "- 编译日期：$build_date";
+            echo "- OpenWrt 版本：$OPENWRT_VERSION";
+            echo "- 架构：x86-64 (generic)";
+            echo "- 文件系统：$FILESYSTEM";
+            echo "- Rootfs 分区：$ROOTFS_SIZE";
+            echo "- 包数量：$package_count";
             echo
-            echo '## Included APK packages'
+            echo '## 网络配置';
+            echo '- LAN 地址：192.168.1.2';
+            echo '- LAN 网关：br-lan（eth2、eth3、eth4、eth5）';
+            echo '- WAN：eth0，PPPoE';
+            echo '- WANB：eth1，PPPoE';
+            echo '- LAN 物理口：eth2、eth3、eth4、eth5';
+            echo '- WAN/WANB PPPoE 账号密码：首次启动后手动配置，不写入固件，不写入 GitHub 仓库';
+            echo
+            echo '## 镜像文件';
+            echo '- UEFI：openwrt-x86-64-uefi-'"$FILESYSTEM"'.img.gz';
+            [[ "$BUILD_QCOW2" == 'true' ]] && echo '- QCOW2：openwrt-x86-64-uefi-'"$FILESYSTEM"'.qcow2';
+            echo
+            echo '## Included APK packages';
             printf '%s\n' $packages | sort -u | sed 's/^/- /'
           } > "$out/BUILD-INFO.md"
+          cp "$out/BUILD-INFO.md" "$out/RELEASE-NOTES.md"
           sha256sum "$out"/* > "$out/SHA256SUMS"
           test ! -e "$out/openwrt-x86-64-uefi-${FILESYSTEM}.img"
 
@@ -296,6 +300,7 @@ jobs:
             "release/openwrt-x86-64-uefi-${FILESYSTEM}.img.gz"
             "release/openwrt-${OPENWRT_VERSION}-x86-64.manifest"
             "release/BUILD-INFO.md"
+            "release/RELEASE-NOTES.md"
             "release/SHA256SUMS"
           )
           if [[ "$BUILD_QCOW2" == 'true' ]]; then
@@ -304,4 +309,4 @@ jobs:
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
           fi
-          gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/BUILD-INFO.md
+          gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "OpenWrt ${OPENWRT_VERSION} x86-64 ${ROOTFS_SIZE} ${FILESYSTEM}" --notes-file release/RELEASE-NOTES.md
