@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y qemu-utils zstd xz-utils curl ca-certificates tar gzip jq
+          sudo apt-get install -y qemu-utils zstd xz-utils curl ca-certificates tar gzip jq build-essential rsync
 
       - name: Download official OpenWrt ImageBuilder
         run: |
@@ -68,8 +68,10 @@ jobs:
             *.tar.gz) gzip -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
             *) echo "Unsupported archive: ${file}" >&2; exit 1 ;;
           esac
+          rm -rf imagebuilder
           mkdir -p imagebuilder
           tar -xf /tmp/imagebuilder.tar -C imagebuilder --strip-components=1
+          test -f imagebuilder/Makefile
           test -x imagebuilder/make
 
       - name: Prepare custom packages
@@ -87,6 +89,7 @@ jobs:
       - name: Configure base files
         run: |
           set -euxo pipefail
+          rm -rf files
           mkdir -p files/etc/uci-defaults
           cat > files/etc/uci-defaults/99-openwrt-build <<EOF
           #!/bin/sh
@@ -103,7 +106,7 @@ jobs:
           set -euxo pipefail
           cd imagebuilder
           packages="$(tr '\n' ' ' < /tmp/custom-packages.txt)"
-          ./make image PROFILE='generic' ROOTFS_PARTSIZE="${ROOTFS_SIZE}" FILES="${GITHUB_WORKSPACE}/files" PACKAGES="${packages}"
+          make image PROFILE='generic' ROOTFS_PARTSIZE="${ROOTFS_SIZE}" FILES="${GITHUB_WORKSPACE}/files" PACKAGES="${packages}"
 
       - name: Convert EFI ext4 image to QCOW2
         run: |
