@@ -44,7 +44,7 @@ permissions:
 
 jobs:
   build:
-    if: ${{ github.event_name != 'push' || github.sha == 'a3aa50af502ae9da78e07b7eb60a085cdc78c1bf' }}
+    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, '[one-shot-build]') }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
