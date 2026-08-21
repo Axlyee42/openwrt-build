@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x shell/prepare-feeds.sh
-          shell/prepare-feeds.sh "$VERSION" "imagebuilder/files"
+          shell/prepare-feeds.sh "$VERSION" "$(pwd)/imagebuilder" "$(pwd)/imagebuilder/files"
 
       - name: Prepare default system settings
         run: |
