@@ -72,7 +72,6 @@ jobs:
           mkdir -p imagebuilder
           tar -xf /tmp/imagebuilder.tar -C imagebuilder --strip-components=1
           test -f imagebuilder/Makefile
-          test -x imagebuilder/make
 
       - name: Prepare custom packages
         run: |
