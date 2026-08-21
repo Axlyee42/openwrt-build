@@ -60,13 +60,11 @@ jobs:
           curl -fsSL "${base}/" -o /tmp/index.html
           file="$(grep -oE "openwrt-imagebuilder-[^\"'[:space:]]+\.tar\.(zst|xz|gz)" /tmp/index.html | head -n1)"
           test -n "${file}"
-          echo "ImageBuilder archive: ${file}"
           curl -fL "${base}/${file}" -o /tmp/imagebuilder.archive
           case "${file}" in
             *.tar.zst) zstd -d /tmp/imagebuilder.archive -o /tmp/imagebuilder.tar ;;
             *.tar.xz) xz -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
             *.tar.gz) gzip -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
-            *) echo "Unsupported archive: ${file}" >&2; exit 1 ;;
           esac
           rm -rf imagebuilder
           mkdir -p imagebuilder
@@ -77,15 +75,11 @@ jobs:
         run: |
           set -euxo pipefail
           CUSTOM_PACKAGES=""
-          if [ -f scripts/apk-custom-packages.sh ]; then
-            . scripts/apk-custom-packages.sh >/dev/null
-          fi
+          . scripts/apk-custom-packages.sh || true
           CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-} ${INPUT_PACKAGES:-}"
           printf '%s\n' "${CUSTOM_PACKAGES}" | xargs -n1 | sed '/^$/d' | sort -u > /tmp/custom-packages.txt
-          echo "Selected packages:"
-          cat /tmp/custom-packages.txt || true
 
-      - name: Configure base files
+      - name: Configure base files and PassWall APK feed
         run: |
           set -euxo pipefail
           rm -rf files
@@ -99,6 +93,8 @@ jobs:
           EOF
           sed -i 's/^[[:space:]]*//' files/etc/uci-defaults/99-openwrt-build
           chmod +x files/etc/uci-defaults/99-openwrt-build
+          chmod +x scripts/apk-prepare-passwall.sh
+          OPENWRT_VERSION="${OPENWRT_VERSION}" scripts/apk-prepare-passwall.sh files
 
       - name: Build image
         run: |
@@ -111,15 +107,9 @@ jobs:
         run: |
           set -euxo pipefail
           img="$(find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*generic-ext4-combined-efi.img.gz' | head -n1)"
-          if [ -z "${img}" ]; then
-            echo 'EXT4 EFI image not found. Available EFI images:' >&2
-            find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*efi*' -print >&2
-            exit 1
-          fi
-          echo "Using EXT4 EFI image: ${img}"
+          test -n "${img}"
           gzip -cd "${img}" > /tmp/openwrt-ext4.img
           qemu-img convert -f raw -O qcow2 -c /tmp/openwrt-ext4.img openwrt-x86-64-uefi-ext4.qcow2
-          qemu-img info openwrt-x86-64-uefi-ext4.qcow2
 
       - name: Generate build information
         run: |
