@@ -14,7 +14,7 @@ on:
       lan_ip:
         description: 'Default LAN IP address'
         required: true
-        default: '192.168.1.1'
+        default: '192.168.1.2'
       custom_packages:
         description: 'Third-party APK packages (space-separated; optional)'
         required: false
