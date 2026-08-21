@@ -4,134 +4,165 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: 'OpenWrt release version, e.g. 25.12.5'
-        required: true
-        default: '25.12.5'
-      rootfs_size:
-        description: 'Rootfs partition size in MB'
-        required: true
-        default: '4096'
-      lan_ip:
-        description: 'Default LAN IP address'
-        required: true
-        default: '192.168.1.2'
-      custom_packages:
-        description: 'Third-party APK packages (space-separated; optional)'
+        description: 'OpenWrt 版本（留空使用 latest-version.txt）'
         required: false
         default: ''
-      publish_release:
-        description: 'Publish GitHub Release'
-        type: boolean
+        type: string
+      rootfs_size:
+        description: '根文件系统大小'
         required: true
-        default: true
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-x86-64.yml'
-      - 'scripts/**'
-      - 'files/**'
-      - 'latest-version.txt'
+        default: '1G'
+        type: choice
+        options:
+          - '1G'
+          - '2G'
+          - '3G'
+          - '4G'
+  workflow_call:
+    inputs:
+      openwrt_version:
+        required: false
+        type: string
+      rootfs_size:
+        required: false
+        type: string
+        default: '1G'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    env:
-      OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.5' }}
-      ROOTFS_SIZE: ${{ inputs.rootfs_size || '4096' }}
-      LAN_IP: ${{ inputs.lan_ip || '192.168.1.1' }}
-      INPUT_PACKAGES: ${{ inputs.custom_packages || '' }}
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Resolve OpenWrt version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version }}
         run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y qemu-utils zstd xz-utils curl ca-certificates tar gzip jq build-essential rsync
+          set -euo pipefail
+          version="${INPUT_VERSION:-}"
+          if [ -z "$version" ]; then
+            version="$(cat latest-version.txt)"
+          fi
+          version="${version#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Download official OpenWrt ImageBuilder
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -euxo pipefail
-          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
-          curl -fsSL "${base}/" -o /tmp/index.html
-          file="$(grep -oE "openwrt-imagebuilder-[^\"'[:space:]]+\.tar\.(zst|xz|gz)" /tmp/index.html | head -n1)"
-          test -n "${file}"
-          curl -fL "${base}/${file}" -o /tmp/imagebuilder.archive
-          case "${file}" in
-            *.tar.zst) zstd -d /tmp/imagebuilder.archive -o /tmp/imagebuilder.tar ;;
-            *.tar.xz) xz -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
-            *.tar.gz) gzip -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          url="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64/openwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64.tar.zst"
+          curl -fL "$url" -o imagebuilder.tar.zst
+          mkdir imagebuilder
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C imagebuilder --strip-components=1
+
+      - name: Prepare PassWall and DAED feeds
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x shell/prepare-feeds.sh
+          shell/prepare-feeds.sh "$VERSION" "imagebuilder/files"
+
+      - name: Prepare default system settings
+        run: |
+          set -euo pipefail
+          mkdir -p imagebuilder/files/etc/config imagebuilder/files/etc/uci-defaults
+          printf '%s\n' \
+            "config system" \
+            "        option hostname 'OpenWrt'" \
+            "        option timezone 'CST-8'" \
+            "        option zonename 'Asia/Shanghai'" \
+            > imagebuilder/files/etc/config/system
+          printf '%s\n' \
+            '#!/bin/sh' \
+            "uci -q set luci.main.lang='zh_cn'" \
+            'uci -q commit luci' \
+            'exit 0' \
+            > imagebuilder/files/etc/uci-defaults/99-default-locale
+          chmod 0755 imagebuilder/files/etc/uci-defaults/99-default-locale
+
+      - name: Resolve selected APK packages
+        run: |
+          set -euo pipefail
+          chmod +x shell/apk-custom-packages.sh
+          PACKAGES="$(shell/apk-custom-packages.sh)"
+          printf '%s\n' "$PACKAGES" > selected-packages.txt
+          echo "Selected packages:"
+          echo "$PACKAGES"
+
+      - name: Build UEFI EXT4 image
+        env:
+          ROOTFS_SIZE: ${{ inputs.rootfs_size || github.event.inputs.rootfs_size }}
+        run: |
+          set -euo pipefail
+          case "${ROOTFS_SIZE:-1G}" in
+            1G) size=1024 ;;
+            2G) size=2048 ;;
+            3G) size=3072 ;;
+            4G) size=4096 ;;
+            *) echo 'Invalid rootfs size'; exit 1 ;;
           esac
-          rm -rf imagebuilder
-          mkdir -p imagebuilder
-          tar -xf /tmp/imagebuilder.tar -C imagebuilder --strip-components=1
-          test -f imagebuilder/Makefile
-
-      - name: Prepare custom packages
-        run: |
-          set -euxo pipefail
-          CUSTOM_PACKAGES=""
-          . scripts/apk-custom-packages.sh || true
-          CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-} ${INPUT_PACKAGES:-}"
-          printf '%s\n' "${CUSTOM_PACKAGES}" | xargs -n1 | sed '/^$/d' | sort -u > /tmp/custom-packages.txt
-
-      - name: Configure base files and PassWall APK feed
-        run: |
-          set -euxo pipefail
-          rm -rf files
-          mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-openwrt-build <<EOF
-          #!/bin/sh
-          uci set network.lan.ipaddr='${LAN_IP}'
-          uci set network.lan.netmask='255.255.255.0'
-          uci commit network
-          exit 0
-          EOF
-          sed -i 's/^[[:space:]]*//' files/etc/uci-defaults/99-openwrt-build
-          chmod +x files/etc/uci-defaults/99-openwrt-build
-          chmod +x scripts/apk-prepare-passwall.sh
-          OPENWRT_VERSION="${OPENWRT_VERSION}" scripts/apk-prepare-passwall.sh files
-
-      - name: Build image
-        run: |
-          set -euxo pipefail
           cd imagebuilder
-          packages="$(tr '\n' ' ' < /tmp/custom-packages.txt)"
-          make image PROFILE='generic' ROOTFS_PARTSIZE="${ROOTFS_SIZE}" FILES="${GITHUB_WORKSPACE}/files" PACKAGES="${packages}"
+          make image \
+            PROFILE='generic' \
+            PACKAGES="$(cat ../selected-packages.txt)" \
+            FILES='files' \
+            ROOTFS_PARTSIZE="$size"
 
-      - name: Convert EXT4 EFI image to QCOW2
+      - name: Create QCOW2
         run: |
-          set -euxo pipefail
-          img="$(find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*generic-ext4-combined-efi.img.gz' | head -n1)"
-          test -n "${img}"
-          gzip -cd "${img}" > /tmp/openwrt-ext4.img
-          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt-ext4.img openwrt-x86-64-uefi-ext4.qcow2
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-utils
+          img=$(find imagebuilder/bin/targets/x86/64 -type f -name '*ext4-combined-efi.img.gz' | head -1)
+          test -n "$img"
+          gzip -dc "$img" > openwrt-x86-64-ext4-uefi.img
+          qemu-img convert -f raw -O qcow2 -c \
+            openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
 
-      - name: Generate build information
+      - name: Generate release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ROOTFS_SIZE: ${{ inputs.rootfs_size || github.event.inputs.rootfs_size }}
         run: |
-          set -euxo pipefail
-          chmod +x scripts/generate-info.sh
-          OPENWRT_VERSION="${OPENWRT_VERSION}" ROOTFS_SIZE="${ROOTFS_SIZE}" LAN_IP="${LAN_IP}" scripts/generate-info.sh
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-x86-64-uefi-ext4
-          path: |
-            openwrt-x86-64-uefi-ext4.qcow2
-            release-info/build-info.txt
+          set -euo pipefail
+          {
+            echo "# OpenWrt ${VERSION} x86-64"
+            echo
+            echo "- 官方 OpenWrt ImageBuilder"
+            echo "- x86-64 / UEFI / EXT4"
+            echo "- QCOW2"
+            echo "- 根文件系统：${ROOTFS_SIZE:-1G}"
+            echo "- 默认语言：简体中文"
+            echo "- 默认时区：Asia/Shanghai"
+            echo "- 软件选择：shell/apk-custom-packages.sh"
+            echo "- PassWall APK 源：已加入"
+            echo "- DAE/DAED APK 源：已加入"
+            echo
+            echo "## 本次选择的软件包"
+            echo
+            sed 's/^/- `/' selected-packages.txt | sed 's/$/`/'
+          } > release-notes.md
 
       - name: Publish Release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release || github.event_name == 'push' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
-          name: OpenWrt x86-64 ${{ env.OPENWRT_VERSION }} UEFI EXT4 QCOW2
-          body_path: release-info/build-info.txt
+          tag_name: openwrt-${{ steps.version.outputs.version }}
+          name: OpenWrt ${{ steps.version.outputs.version }} x86-64
+          body_path: release-notes.md
           files: |
-            openwrt-x86-64-uefi-ext4.qcow2
-            release-info/build-info.txt
+            imagebuilder/bin/targets/x86/64/*ext4-combined-efi.img.gz
+            openwrt-x86-64-ext4-uefi.img
+            openwrt-x86-64.qcow2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
