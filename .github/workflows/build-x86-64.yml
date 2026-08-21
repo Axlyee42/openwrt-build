@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: 'OpenWrt release version, e.g. 25.12.0'
+        description: 'OpenWrt release version, e.g. 25.12.5'
         required: true
-        default: '25.12.0'
+        default: '25.12.5'
       rootfs_size:
         description: 'Rootfs partition size in MB'
         required: true
@@ -24,6 +24,13 @@ on:
         type: boolean
         required: true
         default: true
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-x86-64.yml'
+      - 'scripts/**'
+      - 'files/**'
+      - 'latest-version.txt'
 
 permissions:
   contents: write
@@ -32,10 +39,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      OPENWRT_VERSION: ${{ inputs.openwrt_version }}
-      ROOTFS_SIZE: ${{ inputs.rootfs_size }}
-      LAN_IP: ${{ inputs.lan_ip }}
-      INPUT_PACKAGES: ${{ inputs.custom_packages }}
+      OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.5' }}
+      ROOTFS_SIZE: ${{ inputs.rootfs_size || '4096' }}
+      LAN_IP: ${{ inputs.lan_ip || '192.168.1.1' }}
+      INPUT_PACKAGES: ${{ inputs.custom_packages || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,9 +57,7 @@ jobs:
         run: |
           set -euxo pipefail
           base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
-          index="${base}/"
-          echo "Checking ${index}"
-          curl -fsSL "${index}" -o /tmp/index.html
+          curl -fsSL "${base}/" -o /tmp/index.html
           file="$(grep -oE 'openwrt-imagebuilder-[^"'"' ]+\.tar\.(zst|xz|gz)' /tmp/index.html | head -n1)"
           test -n "${file}"
           curl -fL "${base}/${file}" -o /tmp/imagebuilder.tar
@@ -69,11 +74,9 @@ jobs:
       - name: Prepare custom packages
         run: |
           set -euxo pipefail
+          CUSTOM_PACKAGES=""
           if [ -f scripts/apk-custom-packages.sh ]; then
-            chmod +x scripts/apk-custom-packages.sh
-            . scripts/apk-custom-packages.sh
-          else
-            CUSTOM_PACKAGES=""
+            . scripts/apk-custom-packages.sh >/dev/null
           fi
           CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-} ${INPUT_PACKAGES:-}"
           printf '%s\n' "${CUSTOM_PACKAGES}" | xargs -n1 | sed '/^$/d' | sort -u > /tmp/custom-packages.txt
@@ -113,19 +116,7 @@ jobs:
       - name: Generate build information
         run: |
           set -euxo pipefail
-          mkdir -p release-info
-          {
-            echo "OpenWrt Version: ${OPENWRT_VERSION}"
-            echo "Target: x86-64"
-            echo "Firmware: UEFI + EXT4 + QCOW2"
-            echo "Rootfs Size: ${ROOTFS_SIZE} MB"
-            echo "LAN IP: ${LAN_IP}"
-            echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo
-            echo "Included custom APK/packages:"
-            cat /tmp/custom-packages.txt || true
-          } > release-info/build-info.txt
-          cat release-info/build-info.txt
+          OPENWRT_VERSION="${OPENWRT_VERSION}" ROOTFS_SIZE="${ROOTFS_SIZE}" LAN_IP="${LAN_IP}" scripts/generate-info.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -136,7 +127,7 @@ jobs:
             release-info/build-info.txt
 
       - name: Publish Release
-        if: ${{ inputs.publish_release }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release || github.event_name == 'push' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: openwrt-${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
