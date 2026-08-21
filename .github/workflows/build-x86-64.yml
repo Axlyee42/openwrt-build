@@ -1,6 +1,8 @@
 name: Build OpenWrt x86-64
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -42,6 +44,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'push' || github.sha == 'a3aa50af502ae9da78e07b7eb60a085cdc78c1bf' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -163,17 +166,12 @@ jobs:
           PACKAGES="$(shell/apk-custom-packages.sh)"
           printf '%s\n' "$PACKAGES" > selected-packages.txt
 
-          # These four language packages are listed by the historical wukongdaily
-          # style selector but are not present in the current OpenWrt 25.12 feeds.
-          # Keep the selector intact while preventing a known-failing build.
           sed -i \
             -e 's/\<luci-i18n-appfilter-zh-cn\>//g' \
             -e 's/\<luci-i18n-autoreboot-zh-cn\>//g' \
             -e 's/\<luci-i18n-timewol-zh-cn\>//g' \
             -e 's/\<luci-i18n-vlmcsd-zh-cn\>//g' \
             selected-packages.txt
-
-          # Remove empty whitespace-only lines and normalize spaces.
           sed -i 's/[[:space:]]\+/ /g; s/^ //; s/ $//' selected-packages.txt
 
           echo "Selected packages:"
