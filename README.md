@@ -1,102 +1,194 @@
 # OpenWrt x86-64 ImageBuilder
 
-这是一个基于官方 OpenWrt ImageBuilder 的 x86-64 镜像构建项目，参考并简化了 `wukongdaily/ImmortalWrt-ImageBuilder` 的实现方式。
+这是一个基于官方 OpenWrt ImageBuilder 的 x86-64 镜像构建项目。
 
-本项目只针对 **x86-64**，使用官方 ImageBuilder 制作镜像，不编译完整的 OpenWrt 源代码树。
+本项目使用官方 ImageBuilder 制作 OpenWrt 固件，不编译完整 OpenWrt 源代码树，主要面向 x86-64 软路由设备（例如 N100/N150/i226 多网口小主机）。
 
-## 构建功能
+## 构建特性
 
-GitHub Actions 支持以下参数：
+GitHub Actions 支持自动构建：
 
-- OpenWrt 版本（默认：`25.12.5`，也支持自动检测最新稳定版）
-- LAN IP（默认：`192.168.1.2`）
-- RootFS 容量：`1G / 2G / 3G / 4G`
-- 文件系统：`ext4 / squashfs`
-- UEFI 镜像
-- 可选 QCOW2 镜像
+- OpenWrt 25.12+（支持自动检测最新稳定版本）
+- x86-64 UEFI 镜像
+- ext4 / squashfs 文件系统
+- 1G / 2G / 3G / 4G RootFS 容量
+- QCOW2 虚拟机镜像
 - GitHub Release 自动发布
+- 构建信息自动生成
+- SHA256 校验文件生成
 
-## 网络接口规划
+## 默认网络规划（单 WAN 稳定版）
 
-本项目的默认网络接口固定为：
+当前版本采用简单稳定的单 WAN 网络结构：
 
-| 网口 | 用途 | 协议 |
+| 网口 | 用途 | 配置 |
 |---|---|---|
-| `eth0` | WAN | PPPoE |
-| `eth1` | WANB | PPPoE |
+| `eth0` | WAN | 未配置协议，用户自行设置 |
+| `eth1` | LAN | 加入 LAN Bridge |
 | `eth2` | LAN | 加入 LAN Bridge |
 | `eth3` | LAN | 加入 LAN Bridge |
 | `eth4` | LAN | 加入 LAN Bridge |
 | `eth5` | LAN | 加入 LAN Bridge |
 
-因此适用于具有 **6 个物理 2.5G 网口**的 x86-64 小主机：两个网口作为双 WAN，其余四个网口作为 LAN。
+默认 LAN 地址：
 
-WAN 和 WANB 的 PPPoE 用户名、密码通过 GitHub Actions Repository Secrets 提供，不应写入仓库文件。
+```
+192.168.1.2
+```
 
-## 第三方 APK
+WAN 口：
 
-第三方 APK 使用预编译的 x86 APK，不在本项目中重新编译第三方源码。
+```
+eth0
+```
 
-构建时会检查 APK 是否存在并将需要的软件包加入 OpenWrt ImageBuilder。
+默认不写入：
 
-当前镜像包含的主要第三方/扩展组件包括：
+- PPPoE 用户名
+- PPPoE 密码
+- 宽带账号信息
+
+首次使用时，请通过 LuCI 页面手动配置 WAN。
+
+## 已移除功能
+
+当前版本为精简稳定版，不包含：
+
+- 双 WAN
+- WANB
+- mwan3
+- 多拨
+- 负载均衡
+- 多 WAN 分流策略
+
+如果未来需要以上功能，可以在运行中的 OpenWrt 中自行安装相关软件包。
+
+## 代理与网络组件
+
+固件保留代理运行环境：
 
 - OpenClash
 - Mihomo
-- geoview
 - xray-core
 - sing-box
 - hysteria
-- luci-compat
-- kmod-tun
-- kmod-inet-diag
-- kmod-nft-tproxy
-- bash
-- curl
-- ip-full
-- unzip
+- naiveproxy
+- geoview
 
-具体构建版本及完整 APK 清单会写入每次 GitHub Release 的构建信息中。
+内核及网络支持：
+
+- kmod-tun
+- kmod-nft-tproxy
+- kmod-nft-socket
+- kmod-inet-diag
+
+适用于：
+
+- OpenClash
+- PassWall
+- TProxy 透明代理
+- 自定义代理规则
+
+## PassWall 安装方式
+
+OpenWrt 25.12+ 使用 APK 包管理方式。
+
+本项目不直接把 PassWall LuCI 软件包固定写入固件，而是在镜像中预留官方 APK 源配置方式。
+
+安装 PassWall 时使用官方 APK feed：
+
+```bash
+apk update
+apk add luci-app-passwall luci-i18n-passwall-zh-cn
+```
+
+这样可以避免依赖不完整，并方便后续升级。
+
+## 第三方 APK
+
+第三方组件使用预编译 APK，不在本项目重新编译第三方源码。
+
+构建时会检查软件包完整性，并将需要的软件加入 ImageBuilder。
+
+Release 信息中会显示当前固件实际包含的软件包名称。
+
+Release 不单独上传第三方 APK 文件。
 
 ## 镜像输出
 
-正式 Release 主要提供：
+正式 Release 包含：
 
-- UEFI `ext4` 镜像
-- UEFI `squashfs` 镜像（按构建参数选择）
-- QCOW2 镜像（启用 QCOW2 时）
+- UEFI ext4 镜像
+- UEFI squashfs 镜像（根据参数选择）
+- QCOW2 虚拟机镜像
 - manifest
 - SHA256 校验文件
-- 构建信息及包含的 APK 清单
+- BUILD-INFO.md
 
-Release 页面只列出镜像实际包含的 APK 名称，不单独发布第三方 APK 文件。
+## PVE 使用
 
-## OpenWrt 版本自动检测
+QCOW2 镜像适用于 Proxmox VE：
 
-工作流支持自动检测 OpenWrt 最新稳定版本。
+建议：
 
-如果对应版本已经存在正式 Release，则不会重复构建；如果发现新的 OpenWrt 版本，则自动开始新的构建。
+- BIOS：OVMF (UEFI)
+- 网卡模型：VirtIO
+- 网络通过 vmbr 桥接
 
-## 安全注意事项
+推荐结构：
 
-**本仓库用于个人路由器/家庭网络镜像构建时，建议设置为 Private（私有仓库）。**
+```
+物理网口
+  |
+PVE vmbr
+  |
+OpenWrt VM
+```
 
-尤其不要把宽带 PPPoE 用户名、密码或其他敏感凭据直接写入代码、配置文件、Issue、Release 说明或日志中。
+无需 PCI 直通即可满足千兆及多千兆软路由需求。
 
-虽然 GitHub Actions Repository Secrets 不会直接显示给普通访问者，但如果构建过程把凭据写入最终固件，那么下载固件的人仍可能从固件配置中恢复凭据。因此，包含个人宽带配置的正式镜像不适合公开发布。
+## 自动构建逻辑
 
-如果仓库或包含宽带凭据的镜像曾经公开过，建议更换宽带 PPPoE 密码，然后重新构建正式镜像。
+工作流支持：
+
+- 手动触发构建
+- 自动检测 OpenWrt 新版本
+- 新版本自动构建
+- 自动生成 Release
+
+如果对应版本已经存在 Release，则不会重复构建。
+
+## 安全说明
+
+建议将仓库设置为 Private。
+
+不要把以下信息写入仓库：
+
+- 宽带账号
+- 宽带密码
+- VPN 密钥
+- 私人配置文件
+
+敏感信息应通过：
+
+```
+GitHub Actions Repository Secrets
+```
+
+或首次启动后手动配置。
 
 ## 项目定位
 
-这是一个面向个人 x86-64 软路由设备的 OpenWrt ImageBuilder 项目，重点是：
+这是一个面向个人 x86-64 软路由设备的 OpenWrt 固件构建项目。
 
-- 双 WAN
+目标：
+
+- 简洁稳定
+- 单 WAN
 - 多 LAN
-- PPPoE
-- OpenClash / Mihomo
-- 第三方 APK
+- PVE 虚拟化运行
+- OpenClash / PassWall 支持
+- 第三方 APK 扩展
 - UEFI
-- 4G RootFS
-- GitHub Actions 自动构建
-- GitHub Release 自动发布
+- QCOW2
+- GitHub Actions 自动化构建
