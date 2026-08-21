@@ -137,21 +137,35 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "# OpenWrt ${VERSION} x86-64"
+            echo "# OpenWrt ${VERSION} x86-64 固件"
             echo
-            echo "- 官方 OpenWrt ImageBuilder"
-            echo "- x86-64 / UEFI / EXT4"
-            echo "- QCOW2"
+            echo "## 基础信息"
+            echo
+            echo "- 基础系统：OpenWrt 官方 ImageBuilder"
+            echo "- 目标平台：x86-64"
+            echo "- 固件格式：UEFI + EXT4"
+            echo "- 虚拟机格式：QCOW2"
             echo "- 根文件系统：${ROOTFS_SIZE:-1G}"
             echo "- 默认语言：简体中文"
-            echo "- 默认时区：Asia/Shanghai"
-            echo "- 软件选择：shell/apk-custom-packages.sh"
+            echo "- 默认时区：中国标准时间（Asia/Shanghai）"
+            echo
+            echo "## 第三方软件源"
+            echo
             echo "- PassWall APK 源：已加入"
-            echo "- DAE/DAED APK 源：已加入"
+            echo "- DAE / DAED APK 源：已加入"
             echo
-            echo "## 本次选择的软件包"
+            echo "## 本次额外选择的软件包"
             echo
-            sed 's/^/- `/' selected-packages.txt | sed 's/$/`/'
+            if ./scripts/release-package-list.sh selected-packages.txt | grep -q .; then
+              ./scripts/release-package-list.sh selected-packages.txt | while IFS= read -r pkg; do
+                echo "- \`$pkg\`"
+              done
+            else
+              echo "- 无（仅使用默认基础组件）"
+            fi
+            echo
+            echo "> 以下默认基础组件不在本列表重复显示：LuCI、软件包管理器、LuCI 简体中文、Firewall 简体中文、软件包管理器简体中文。"
+            echo "> 各第三方 LuCI 应用的 \`luci-i18n-*-zh-cn\` 中文语言包同样不单独列出。"
           } > release-notes.md
 
       - name: Publish Release
