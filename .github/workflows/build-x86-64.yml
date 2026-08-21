@@ -1,6 +1,8 @@
 name: Build OpenWrt x86-64
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -63,7 +65,7 @@ jobs:
             tag="$(curl -fsSL --retry 3 https://api.github.com/repos/openwrt/openwrt/releases/latest | jq -r .tag_name)"
             version="${tag#v}"
             test -n "$version" && test "$version" != null
-            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME}" == "push" ]]; then
               should_build=true
             elif curl -fsSL --retry 3 'https://api.github.com/repos/Axlyee42/openwrt-build/releases?per_page=100' | jq -e --arg p "openwrt-${version}-x86-64-" '.[] | select(.tag_name | startswith($p))' >/dev/null; then
               should_build=false
