@@ -145,7 +145,23 @@ jobs:
           wget -qO- --tries=3 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz' | gzip -dc > files/usr/bin/mihomo
           chmod +x files/usr/bin/mihomo
 
-      - name: Configure dual WAN and LAN
+      - name: Add PassWall APK feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$IMAGEBUILDER_DIR/files/etc/apk/keys"
+          mkdir -p "$IMAGEBUILDER_DIR/files/etc/apk/repositories.d"
+
+          wget -O "$IMAGEBUILDER_DIR/files/etc/apk/keys/openwrt-passwall-build.pem" \
+            https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub
+
+          cat > "$IMAGEBUILDER_DIR/files/etc/apk/repositories.d/passwall.list" <<EOF
+https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_luci/packages.adb
+https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall_packages/packages.adb
+https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/x86_64/passwall2/packages.adb
+EOF
+
+      - name: Configure single WAN and LAN
         shell: bash
         run: |
           set -euo pipefail
@@ -169,6 +185,7 @@ jobs:
           uci -q delete network.br_lan || true
           uci set network.br_lan='device'
           uci set network.br_lan.type='bridge'
+          uci add_list network.br_lan.ports='eth1'
           uci add_list network.br_lan.ports='eth2'
           uci add_list network.br_lan.ports='eth3'
           uci add_list network.br_lan.ports='eth4'
@@ -184,32 +201,6 @@ jobs:
           exit 0
           EOF
           chmod +x "$d/98-network.sh"
-          cat > "$b/setup-dual-wan" <<'EOF'
-          #!/bin/ash
-          set -eu
-          echo 'OpenWrt dual-WAN first-boot setup'
-          echo 'eth0 = WAN, eth1 = WANB, eth2-eth5 = LAN'
-          printf 'WAN PPPoE username: '; read WAN1_USER
-          printf 'WAN PPPoE password: '; read -s WAN1_PASS; echo
-          printf 'WANB PPPoE username: '; read WAN2_USER
-          printf 'WANB PPPoE password: '; read -s WAN2_PASS; echo
-          uci set network.wan='interface'
-          uci set network.wan.device='eth0'
-          uci set network.wan.proto='pppoe'
-          uci set network.wan.username="$WAN1_USER"
-          uci set network.wan.password="$WAN1_PASS"
-          uci set network.wan.auto='1'
-          uci set network.wanb='interface'
-          uci set network.wanb.device='eth1'
-          uci set network.wanb.proto='pppoe'
-          uci set network.wanb.username="$WAN2_USER"
-          uci set network.wanb.password="$WAN2_PASS"
-          uci set network.wanb.auto='1'
-          uci commit network
-          /etc/init.d/network restart
-          echo 'PPPoE credentials are stored only on this router.'
-          EOF
-          chmod +x "$b/setup-dual-wan"
           cat > "$r/README-FIRST-BOOT.txt" <<'EOF'
           OpenWrt first-boot network setup
           LAN: eth2, eth3, eth4, eth5 / 192.168.1.2
@@ -225,7 +216,7 @@ jobs:
           set -euo pipefail
           cd "$IMAGEBUILDER_DIR"
           case "$ROOTFS_SIZE" in 1G) part=1024;; 2G) part=2048;; 3G) part=3072;; 4G) part=4096;; *) exit 1;; esac
-          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
+          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy kmod-nft-socket bash curl ip-full unzip'
           source "$GITHUB_WORKSPACE/scripts/apk-custom-packages.sh"
           packages="$CUSTOM_PACKAGES $official luci-app-openclash"
           make image PROFILE=generic FILESYSTEM="$FILESYSTEM" ROOTFS_PARTSIZE="$part" PACKAGES="$packages"
@@ -235,7 +226,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/apk-custom-packages.sh"
-          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip'
+          official='luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy kmod-nft-socket bash curl ip-full unzip'
           packages="$CUSTOM_PACKAGES $official luci-app-openclash"
           out="$GITHUB_WORKSPACE/release"
           raw="$RUNNER_TEMP/openwrt-x86-64-${FILESYSTEM}.raw"
@@ -265,10 +256,12 @@ jobs:
             echo
             echo '## 网络配置';
             echo '- LAN 地址：192.168.1.2';
-            echo '- LAN 网关：br-lan（eth2、eth3、eth4、eth5）';
-            echo '- WAN：eth0，PPPoE';
-            echo '- WANB：eth1，PPPoE';
-            echo '- LAN 物理口：eth2、eth3、eth4、eth5';
+            echo '- LAN 网桥：br-lan';
+            echo '- WAN：eth0';
+            echo '- LAN IP：192.168.1.2';
+            echo '- LAN 物理口：eth1、eth2、eth3、eth4、eth5';
+            echo '- Dual WAN：Disabled';
+            echo '- mwan3：Not included';
             echo '- WAN/WANB PPPoE 账号密码：首次启动后手动配置，不写入固件，不写入 GitHub 仓库';
             echo
             echo '## 镜像文件';
