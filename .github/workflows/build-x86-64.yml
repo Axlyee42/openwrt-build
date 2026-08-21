@@ -58,6 +58,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
           url="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64/openwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64.tar.zst"
           curl -fL "$url" -o imagebuilder.tar.zst
           mkdir imagebuilder
@@ -75,18 +77,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p imagebuilder/files/etc/config imagebuilder/files/etc/uci-defaults
-          cat > imagebuilder/files/etc/config/system <<'EOF'
-config system
-        option hostname 'OpenWrt'
-        option timezone 'CST-8'
-        option zonename 'Asia/Shanghai'
-EOF
-          cat > imagebuilder/files/etc/uci-defaults/99-default-locale <<'EOF'
-#!/bin/sh
-uci -q set luci.main.lang='zh_cn'
-uci -q commit luci
-exit 0
-EOF
+          printf '%s\n' \
+            "config system" \
+            "        option hostname 'OpenWrt'" \
+            "        option timezone 'CST-8'" \
+            "        option zonename 'Asia/Shanghai'" \
+            > imagebuilder/files/etc/config/system
+          printf '%s\n' \
+            '#!/bin/sh' \
+            "uci -q set luci.main.lang='zh_cn'" \
+            'uci -q commit luci' \
+            'exit 0' \
+            > imagebuilder/files/etc/uci-defaults/99-default-locale
           chmod 0755 imagebuilder/files/etc/uci-defaults/99-default-locale
 
       - name: Resolve selected APK packages
