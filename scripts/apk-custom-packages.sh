@@ -38,14 +38,14 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-firewall-zh-cn"
 # naiveproxy
 # ==========================
 
-#CUSTOM_PACKAGES="$CUSTOM_PACKAGES naiveproxy"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES naiveproxy"
 
 
 # ==========================
 # DAE / DAED eBPF透明代理
 # ==========================
 
-#CUSTOM_PACKAGES="$CUSTOM_PACKAGES dae daed luci-app-daede"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES dae daed luci-app-daede"
 
 
 # ==========================
@@ -66,8 +66,8 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-firewall-zh-cn"
 # Themes
 # ==========================
 
-#CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-aurora luci-app-aurora-config luci-i18n-aurora-config-zh-cn"
-#CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-shadcn"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-aurora luci-app-aurora-config luci-i18n-aurora-config-zh-cn"
+CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-theme-shadcn"
 
 
 # ==========================
