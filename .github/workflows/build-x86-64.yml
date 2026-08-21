@@ -102,18 +102,19 @@ jobs:
       - name: Sync wukongdaily third-party APK repository
         run: |
           set -euo pipefail
-          rm -rf /tmp/wukongdaily-apk
+          rm -rf /tmp/wukongdaily-apk extra-packages packages
           git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/wukongdaily-apk
-          mkdir -p imagebuilder/packages
-          if [ -d /tmp/wukongdaily-apk/run/x86 ]; then
-            find /tmp/wukongdaily-apk/run/x86 -maxdepth 2 -type f \( -name '*.apk' -o -name '*.run' \) -exec cp -v {} imagebuilder/packages/ \;
-          fi
+          mkdir -p extra-packages
+          cp -a /tmp/wukongdaily-apk/run/x86/. extra-packages/
+
           chmod +x shell/apk-prepare-packages.sh
-          if [ -d imagebuilder/packages ]; then
-            find imagebuilder/packages -type f -name '*.run' -delete
-          fi
+          shell/apk-prepare-packages.sh
+
+          mkdir -p imagebuilder/packages
+          find packages -maxdepth 1 -type f -name '*.apk' -exec cp -v {} imagebuilder/packages/ \;
+
           echo 'Third-party APK repository synced:'
-          find imagebuilder/packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort || true
+          find imagebuilder/packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
       - name: Prepare default system and network settings
         env:
@@ -199,8 +200,7 @@ jobs:
           src=$(find imagebuilder/bin/targets/x86/64 -type f -name '*ext4-combined-efi.img.gz' | head -1)
           test -n "$src"
           gzip -dc "$src" > /tmp/openwrt-x86-64-ext4-uefi.img
-          qemu-img convert -f raw -O qcow2 -c \
-            /tmp/openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
+          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
           rm -f /tmp/openwrt-x86-64-ext4-uefi.img
 
       - name: Generate release notes
