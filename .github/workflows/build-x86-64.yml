@@ -8,10 +8,15 @@ on:
         required: false
         default: ''
         type: string
+      lan_ip:
+        description: 'LAN 默认 IP 地址'
+        required: true
+        default: '192.168.1.2'
+        type: string
       rootfs_size:
         description: '根文件系统大小'
         required: true
-        default: '1G'
+        default: '4G'
         type: choice
         options:
           - '1G'
@@ -23,10 +28,14 @@ on:
       openwrt_version:
         required: false
         type: string
+      lan_ip:
+        required: false
+        type: string
+        default: '192.168.1.2'
       rootfs_size:
         required: false
         type: string
-        default: '1G'
+        default: '4G'
 
 permissions:
   contents: write
@@ -53,6 +62,23 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve LAN IP
+        id: network
+        shell: bash
+        env:
+          INPUT_LAN_IP: ${{ inputs.lan_ip || github.event.inputs.lan_ip }}
+        run: |
+          set -euo pipefail
+          lan_ip="${INPUT_LAN_IP:-192.168.1.2}"
+          python3 - "$lan_ip" <<'PY'
+          import ipaddress, sys
+          ip = ipaddress.ip_address(sys.argv[1])
+          if ip.version != 4:
+              raise SystemExit('LAN IP must be an IPv4 address')
+          print(f'lan_ip={ip}')
+          PY
+          echo "lan_ip=$lan_ip" >> "$GITHUB_OUTPUT"
+
       - name: Download official OpenWrt ImageBuilder
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -73,22 +99,44 @@ jobs:
           chmod +x shell/prepare-feeds.sh
           shell/prepare-feeds.sh "$VERSION" "$(pwd)/imagebuilder" "$(pwd)/imagebuilder/files"
 
-      - name: Prepare default system settings
+      - name: Prepare default system and network settings
+        env:
+          LAN_IP: ${{ steps.network.outputs.lan_ip }}
         run: |
           set -euo pipefail
           mkdir -p imagebuilder/files/etc/config imagebuilder/files/etc/uci-defaults
-          printf '%s\n' \
-            "config system" \
-            "        option hostname 'OpenWrt'" \
-            "        option timezone 'CST-8'" \
-            "        option zonename 'Asia/Shanghai'" \
-            > imagebuilder/files/etc/config/system
-          printf '%s\n' \
-            '#!/bin/sh' \
-            "uci -q set luci.main.lang='zh_cn'" \
-            'uci -q commit luci' \
-            'exit 0' \
-            > imagebuilder/files/etc/uci-defaults/99-default-locale
+
+          cat > imagebuilder/files/etc/config/system <<'EOF'
+          config system
+                  option hostname 'OpenWrt'
+                  option timezone 'CST-8'
+                  option zonename 'Asia/Shanghai'
+          EOF
+
+          cat > imagebuilder/files/etc/config/network <<EOF
+          config interface 'loopback'
+                  option device 'lo'
+                  option proto 'static'
+                  option ipaddr '127.0.0.1'
+                  option netmask '255.0.0.0'
+
+          config device
+                  option name 'br-lan'
+                  option type 'bridge'
+
+          config interface 'lan'
+                  option device 'br-lan'
+                  option proto 'static'
+                  option ipaddr '${LAN_IP}'
+                  option netmask '255.255.255.0'
+          EOF
+
+          cat > imagebuilder/files/etc/uci-defaults/99-default-locale <<'EOF'
+          #!/bin/sh
+          uci -q set luci.main.lang='zh_cn'
+          uci -q commit luci
+          exit 0
+          EOF
           chmod 0755 imagebuilder/files/etc/uci-defaults/99-default-locale
 
       - name: Resolve selected APK packages
@@ -105,7 +153,7 @@ jobs:
           ROOTFS_SIZE: ${{ inputs.rootfs_size || github.event.inputs.rootfs_size }}
         run: |
           set -euo pipefail
-          case "${ROOTFS_SIZE:-1G}" in
+          case "${ROOTFS_SIZE:-4G}" in
             1G) size=1024 ;;
             2G) size=2048 ;;
             3G) size=3072 ;;
@@ -133,6 +181,7 @@ jobs:
       - name: Generate release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          LAN_IP: ${{ steps.network.outputs.lan_ip }}
           ROOTFS_SIZE: ${{ inputs.rootfs_size || github.event.inputs.rootfs_size }}
         run: |
           set -euo pipefail
@@ -145,7 +194,8 @@ jobs:
             echo "- 目标平台：x86-64"
             echo "- 固件格式：UEFI + EXT4"
             echo "- 虚拟机格式：QCOW2"
-            echo "- 根文件系统：${ROOTFS_SIZE:-1G}"
+            echo "- 根文件系统：${ROOTFS_SIZE:-4G}"
+            echo "- 默认 LAN 地址：${LAN_IP}"
             echo "- 默认语言：简体中文"
             echo "- 默认时区：中国标准时间（Asia/Shanghai）"
             echo
