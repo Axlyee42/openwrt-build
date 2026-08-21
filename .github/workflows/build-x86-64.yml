@@ -1,8 +1,6 @@
 name: Build OpenWrt x86-64
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -44,7 +42,6 @@ permissions:
 
 jobs:
   build:
-    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, '[one-shot-build]') }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
