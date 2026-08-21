@@ -99,6 +99,22 @@ jobs:
           chmod +x shell/prepare-feeds.sh
           shell/prepare-feeds.sh "$VERSION" "$(pwd)/imagebuilder" "$(pwd)/imagebuilder/files"
 
+      - name: Sync wukongdaily third-party APK repository
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/wukongdaily-apk
+          git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/wukongdaily-apk
+          mkdir -p imagebuilder/packages
+          if [ -d /tmp/wukongdaily-apk/run/x86 ]; then
+            find /tmp/wukongdaily-apk/run/x86 -maxdepth 2 -type f \( -name '*.apk' -o -name '*.run' \) -exec cp -v {} imagebuilder/packages/ \;
+          fi
+          chmod +x shell/apk-prepare-packages.sh
+          if [ -d imagebuilder/packages ]; then
+            find imagebuilder/packages -type f -name '*.run' -delete
+          fi
+          echo 'Third-party APK repository synced:'
+          find imagebuilder/packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort || true
+
       - name: Prepare default system and network settings
         env:
           LAN_IP: ${{ steps.network.outputs.lan_ip }}
@@ -212,6 +228,7 @@ jobs:
             echo
             echo "- PassWall APK 源：已加入"
             echo "- DAE / DAED APK 源：已加入"
+            echo "- wukongdaily 25.12.x 第三方 APK：已同步"
             echo
             echo "## 固件文件"
             echo
