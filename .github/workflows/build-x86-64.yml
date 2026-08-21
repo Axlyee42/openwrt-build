@@ -167,14 +167,12 @@ jobs:
             FILES='files' \
             ROOTFS_PARTSIZE="$size"
 
-      - name: Prepare IMG and compressed IMG
+      - name: Prepare compressed IMG
         run: |
           set -euo pipefail
           src=$(find imagebuilder/bin/targets/x86/64 -type f -name '*ext4-combined-efi.img.gz' | head -1)
           test -n "$src"
-          gzip -dc "$src" > openwrt-x86-64-ext4-uefi.img
-          gzip -9 -c openwrt-x86-64-ext4-uefi.img > openwrt-x86-64-ext4-uefi.img.gz
-          test -s openwrt-x86-64-ext4-uefi.img
+          gzip -dc "$src" | gzip -9 -c > openwrt-x86-64-ext4-uefi.img.gz
           test -s openwrt-x86-64-ext4-uefi.img.gz
 
       - name: Create QCOW2
@@ -182,8 +180,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y qemu-utils
+          src=$(find imagebuilder/bin/targets/x86/64 -type f -name '*ext4-combined-efi.img.gz' | head -1)
+          test -n "$src"
+          gzip -dc "$src" > /tmp/openwrt-x86-64-ext4-uefi.img
           qemu-img convert -f raw -O qcow2 -c \
-            openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
+            /tmp/openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
+          rm -f /tmp/openwrt-x86-64-ext4-uefi.img
 
       - name: Generate release notes
         env:
@@ -213,7 +215,6 @@ jobs:
             echo
             echo "## 固件文件"
             echo
-            echo "- UEFI EXT4 IMG：openwrt-x86-64-ext4-uefi.img"
             echo "- UEFI EXT4 压缩镜像：openwrt-x86-64-ext4-uefi.img.gz"
             echo "- QCOW2：openwrt-x86-64.qcow2"
             echo
@@ -235,7 +236,6 @@ jobs:
           name: OpenWrt ${{ steps.version.outputs.version }} x86-64
           body_path: release-notes.md
           files: |
-            openwrt-x86-64-ext4-uefi.img
             openwrt-x86-64-ext4-uefi.img.gz
             openwrt-x86-64.qcow2
         env:
