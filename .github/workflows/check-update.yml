@@ -1,0 +1,44 @@
+name: Check OpenWrt release
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          latest="$(curl -fsSL https://downloads.openwrt.org/releases/ | grep -oE 'href="[0-9]+\.[0-9]+\.[0-9]+/' | sed -E 's/href="|\///g' | sort -V | tail -n1)"
+          test -n "${latest}"
+          current="$(tr -d '[:space:]' < latest-version.txt)"
+          echo "Current: ${current}"
+          echo "Latest:  ${latest}"
+          if [ "${latest}" = "${current}" ]; then
+            echo 'OpenWrt version unchanged.'
+            exit 0
+          fi
+          printf '%s\n' "${latest}" > latest-version.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest-version.txt
+          git commit -m "chore: track OpenWrt ${latest}"
+          git push
+          gh workflow run build-x86-64.yml \
+            -f openwrt_version="${latest}" \
+            -f rootfs_size=4096 \
+            -f lan_ip=192.168.1.1 \
+            -f custom_packages='' \
+            -f publish_release=true
