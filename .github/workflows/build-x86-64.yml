@@ -58,17 +58,18 @@ jobs:
           set -euxo pipefail
           base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           curl -fsSL "${base}/" -o /tmp/index.html
-          file="$(grep -oE 'openwrt-imagebuilder-[^"'"' ]+\.tar\.(zst|xz|gz)' /tmp/index.html | head -n1)"
+          file="$(grep -oE "openwrt-imagebuilder-[^\"'[:space:]]+\.tar\.(zst|xz|gz)" /tmp/index.html | head -n1)"
           test -n "${file}"
-          curl -fL "${base}/${file}" -o /tmp/imagebuilder.tar
+          echo "ImageBuilder archive: ${file}"
+          curl -fL "${base}/${file}" -o /tmp/imagebuilder.archive
           case "${file}" in
-            *.tar.zst) unzstd /tmp/imagebuilder.tar -o /tmp/imagebuilder.tar.uncompressed ;;
-            *.tar.xz) unxz -c /tmp/imagebuilder.tar > /tmp/imagebuilder.tar.uncompressed ;;
-            *.tar.gz) gzip -cd /tmp/imagebuilder.tar > /tmp/imagebuilder.tar.uncompressed ;;
+            *.tar.zst) zstd -d /tmp/imagebuilder.archive -o /tmp/imagebuilder.tar ;;
+            *.tar.xz) xz -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
+            *.tar.gz) gzip -d -c /tmp/imagebuilder.archive > /tmp/imagebuilder.tar ;;
             *) echo "Unsupported archive: ${file}" >&2; exit 1 ;;
           esac
           mkdir -p imagebuilder
-          tar -xf /tmp/imagebuilder.tar.uncompressed -C imagebuilder --strip-components=1
+          tar -xf /tmp/imagebuilder.tar -C imagebuilder --strip-components=1
           test -x imagebuilder/make
 
       - name: Prepare custom packages
