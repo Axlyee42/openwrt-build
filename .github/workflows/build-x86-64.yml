@@ -107,18 +107,24 @@ jobs:
           packages="$(tr '\n' ' ' < /tmp/custom-packages.txt)"
           make image PROFILE='generic' ROOTFS_PARTSIZE="${ROOTFS_SIZE}" FILES="${GITHUB_WORKSPACE}/files" PACKAGES="${packages}"
 
-      - name: Convert EFI ext4 image to QCOW2
+      - name: Convert EXT4 EFI image to QCOW2
         run: |
           set -euxo pipefail
-          img="$(find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*combined-efi.img.gz' | head -n1)"
-          test -n "${img}"
-          gzip -cd "${img}" > /tmp/openwrt.img
-          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt.img openwrt-x86-64-uefi-ext4.qcow2
+          img="$(find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*generic-ext4-combined-efi.img.gz' | head -n1)"
+          if [ -z "${img}" ]; then
+            echo 'EXT4 EFI image not found. Available EFI images:' >&2
+            find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*efi*' -print >&2
+            exit 1
+          fi
+          echo "Using EXT4 EFI image: ${img}"
+          gzip -cd "${img}" > /tmp/openwrt-ext4.img
+          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt-ext4.img openwrt-x86-64-uefi-ext4.qcow2
           qemu-img info openwrt-x86-64-uefi-ext4.qcow2
 
       - name: Generate build information
         run: |
           set -euxo pipefail
+          chmod +x scripts/generate-info.sh
           OPENWRT_VERSION="${OPENWRT_VERSION}" ROOTFS_SIZE="${ROOTFS_SIZE}" LAN_IP="${LAN_IP}" scripts/generate-info.sh
 
       - name: Upload artifact
