@@ -163,9 +163,6 @@ jobs:
             else
               echo "- 无（仅使用默认基础组件）"
             fi
-            echo
-            echo "> 以下默认基础组件不在本列表重复显示：LuCI、软件包管理器、LuCI 简体中文、Firewall 简体中文、软件包管理器简体中文。"
-            echo "> 各第三方 LuCI 应用的 \`luci-i18n-*-zh-cn\` 中文语言包同样不单独列出。"
           } > release-notes.md
 
       - name: Publish Release
