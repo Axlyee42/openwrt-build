@@ -1,0 +1,147 @@
+name: Build OpenWrt x86-64
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'OpenWrt release version, e.g. 25.12.0'
+        required: true
+        default: '25.12.0'
+      rootfs_size:
+        description: 'Rootfs partition size in MB'
+        required: true
+        default: '4096'
+      lan_ip:
+        description: 'Default LAN IP address'
+        required: true
+        default: '192.168.1.1'
+      custom_packages:
+        description: 'Third-party APK packages (space-separated; optional)'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Publish GitHub Release'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      OPENWRT_VERSION: ${{ inputs.openwrt_version }}
+      ROOTFS_SIZE: ${{ inputs.rootfs_size }}
+      LAN_IP: ${{ inputs.lan_ip }}
+      INPUT_PACKAGES: ${{ inputs.custom_packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils zstd xz-utils curl ca-certificates tar gzip jq
+
+      - name: Download official OpenWrt ImageBuilder
+        run: |
+          set -euxo pipefail
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
+          index="${base}/"
+          echo "Checking ${index}"
+          curl -fsSL "${index}" -o /tmp/index.html
+          file="$(grep -oE 'openwrt-imagebuilder-[^"'"' ]+\.tar\.(zst|xz|gz)' /tmp/index.html | head -n1)"
+          test -n "${file}"
+          curl -fL "${base}/${file}" -o /tmp/imagebuilder.tar
+          case "${file}" in
+            *.tar.zst) unzstd /tmp/imagebuilder.tar -o /tmp/imagebuilder.tar.uncompressed ;;
+            *.tar.xz) unxz -c /tmp/imagebuilder.tar > /tmp/imagebuilder.tar.uncompressed ;;
+            *.tar.gz) gzip -cd /tmp/imagebuilder.tar > /tmp/imagebuilder.tar.uncompressed ;;
+            *) echo "Unsupported archive: ${file}" >&2; exit 1 ;;
+          esac
+          mkdir -p imagebuilder
+          tar -xf /tmp/imagebuilder.tar.uncompressed -C imagebuilder --strip-components=1
+          test -x imagebuilder/make
+
+      - name: Prepare custom packages
+        run: |
+          set -euxo pipefail
+          if [ -f scripts/apk-custom-packages.sh ]; then
+            chmod +x scripts/apk-custom-packages.sh
+            . scripts/apk-custom-packages.sh
+          else
+            CUSTOM_PACKAGES=""
+          fi
+          CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-} ${INPUT_PACKAGES:-}"
+          printf '%s\n' "${CUSTOM_PACKAGES}" | xargs -n1 | sed '/^$/d' | sort -u > /tmp/custom-packages.txt
+          echo "Selected packages:"
+          cat /tmp/custom-packages.txt || true
+
+      - name: Configure base files
+        run: |
+          set -euxo pipefail
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-openwrt-build <<EOF
+          #!/bin/sh
+          uci set network.lan.ipaddr='${LAN_IP}'
+          uci set network.lan.netmask='255.255.255.0'
+          uci commit network
+          exit 0
+          EOF
+          sed -i 's/^[[:space:]]*//' files/etc/uci-defaults/99-openwrt-build
+          chmod +x files/etc/uci-defaults/99-openwrt-build
+
+      - name: Build image
+        run: |
+          set -euxo pipefail
+          cd imagebuilder
+          packages="$(tr '\n' ' ' < /tmp/custom-packages.txt)"
+          ./make image PROFILE='generic' ROOTFS_PARTSIZE="${ROOTFS_SIZE}" FILES="${GITHUB_WORKSPACE}/files" PACKAGES="${packages}"
+
+      - name: Convert EFI ext4 image to QCOW2
+        run: |
+          set -euxo pipefail
+          img="$(find imagebuilder/bin/targets/x86/64 -maxdepth 1 -type f -name '*combined-efi.img.gz' | head -n1)"
+          test -n "${img}"
+          gzip -cd "${img}" > /tmp/openwrt.img
+          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt.img openwrt-x86-64-uefi-ext4.qcow2
+          qemu-img info openwrt-x86-64-uefi-ext4.qcow2
+
+      - name: Generate build information
+        run: |
+          set -euxo pipefail
+          mkdir -p release-info
+          {
+            echo "OpenWrt Version: ${OPENWRT_VERSION}"
+            echo "Target: x86-64"
+            echo "Firmware: UEFI + EXT4 + QCOW2"
+            echo "Rootfs Size: ${ROOTFS_SIZE} MB"
+            echo "LAN IP: ${LAN_IP}"
+            echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo
+            echo "Included custom APK/packages:"
+            cat /tmp/custom-packages.txt || true
+          } > release-info/build-info.txt
+          cat release-info/build-info.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-64-uefi-ext4
+          path: |
+            openwrt-x86-64-uefi-ext4.qcow2
+            release-info/build-info.txt
+
+      - name: Publish Release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
+          name: OpenWrt x86-64 ${{ env.OPENWRT_VERSION }} UEFI EXT4 QCOW2
+          body_path: release-info/build-info.txt
+          files: |
+            openwrt-x86-64-uefi-ext4.qcow2
+            release-info/build-info.txt
