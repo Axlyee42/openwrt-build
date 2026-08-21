@@ -116,7 +116,7 @@ jobs:
           echo 'Third-party APK repository synced:'
           find imagebuilder/packages -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
 
-      - name: Prepare default system and network settings
+      - name: Prepare default system and wukongdaily-style network settings
         env:
           LAN_IP: ${{ steps.network.outputs.lan_ip }}
         run: |
@@ -130,23 +130,11 @@ jobs:
                   option zonename 'Asia/Shanghai'
           EOF
 
-          cat > imagebuilder/files/etc/config/network <<EOF
-          config interface 'loopback'
-                  option device 'lo'
-                  option proto 'static'
-                  option ipaddr '127.0.0.1'
-                  option netmask '255.0.0.0'
+          printf '%s\n' "$LAN_IP" > imagebuilder/files/etc/config/custom_router_ip.txt
+          chmod 0644 imagebuilder/files/etc/config/custom_router_ip.txt
 
-          config device
-                  option name 'br-lan'
-                  option type 'bridge'
-
-          config interface 'lan'
-                  option device 'br-lan'
-                  option proto 'static'
-                  option ipaddr '${LAN_IP}'
-                  option netmask '255.255.255.0'
-          EOF
+          install -m 0755 files/etc/uci-defaults/99-custom.sh \
+            imagebuilder/files/etc/uci-defaults/99-custom.sh
 
           cat > imagebuilder/files/etc/uci-defaults/99-default-locale <<'EOF'
           #!/bin/sh
@@ -209,7 +197,8 @@ jobs:
           src=$(find imagebuilder/bin/targets/x86/64 -type f -name '*ext4-combined-efi.img.gz' | head -1)
           test -n "$src"
           gzip -dc "$src" > /tmp/openwrt-x86-64-ext4-uefi.img
-          qemu-img convert -f raw -O qcow2 -c /tmp/openwrt-x86-64-ext4-uefi.img openwrt-x86-64.qcow2
+          qemu-img convert -f raw -O qcow2 -c \
+            /tmp/openwrt-x86-64-ext4-uefi.img openwrt-x86-64-ext4-uefi.qcow2
           rm -f /tmp/openwrt-x86-64-ext4-uefi.img
 
       - name: Generate release notes
@@ -227,9 +216,12 @@ jobs:
             echo "- 基础系统：OpenWrt 官方 ImageBuilder"
             echo "- 目标平台：x86-64"
             echo "- 固件格式：UEFI + EXT4"
-            echo "- 虚拟机格式：QCOW2"
+            echo "- 虚拟机格式：UEFI + EXT4 QCOW2"
             echo "- 根文件系统：${ROOTFS_SIZE:-4G}"
             echo "- 默认 LAN 地址：${LAN_IP}"
+            echo "- 多网口模式：第一个物理网口作为 WAN，其余物理网口全部加入 br-lan"
+            echo "- WAN：DHCP"
+            echo "- LAN：静态 IP + DHCP 服务"
             echo "- 默认语言：简体中文"
             echo "- 默认时区：中国标准时间（Asia/Shanghai）"
             echo
@@ -241,8 +233,8 @@ jobs:
             echo
             echo "## 固件文件"
             echo
-            echo "- UEFI EXT4 压缩镜像：openwrt-x86-64-ext4-uefi.img.gz"
-            echo "- QCOW2：openwrt-x86-64.qcow2"
+            echo "- UEFI + EXT4 压缩镜像：openwrt-x86-64-ext4-uefi.img.gz"
+            echo "- UEFI + EXT4 QCOW2：openwrt-x86-64-ext4-uefi.qcow2"
             echo
             echo "## 本次额外选择的软件包"
             echo
@@ -263,6 +255,6 @@ jobs:
           body_path: release-notes.md
           files: |
             openwrt-x86-64-ext4-uefi.img.gz
-            openwrt-x86-64.qcow2
+            openwrt-x86-64-ext4-uefi.qcow2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
