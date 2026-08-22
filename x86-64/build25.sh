@@ -32,13 +32,11 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
   ls -lah "$PACKAGES_DIR" || true
 fi
 
+# Only packages available from the official OpenWrt 25.12.5 x86/64 repositories
+# Third-party packages are selected exclusively through shell/apk-custom-packages.sh.
 PACKAGES=""
 PACKAGES="$PACKAGES curl"
-PACKAGES="$PACKAGES luci-i18n-diskman-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
-PACKAGES="$PACKAGES luci-theme-argon"
-PACKAGES="$PACKAGES luci-app-argon-config"
-PACKAGES="$PACKAGES luci-i18n-argon-config-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-ttyd-zh-cn"
 PACKAGES="$PACKAGES openssh-sftp-server"
