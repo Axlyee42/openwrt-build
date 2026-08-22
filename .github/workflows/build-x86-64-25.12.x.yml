@@ -1,6 +1,9 @@
 name: Build 25.12.x x86-64
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       custom_router_ip:
@@ -55,6 +58,10 @@ jobs:
     env:
       OPENWRT_VERSION: "25.12.5"
       IMAGEBUILDER_DIR: "${{ github.workspace }}/imagebuilder"
+      CUSTOM_ROUTER_IP: "192.168.100.1"
+      PROFILE_INPUT: "1G"
+      INCLUDE_DOCKER: "yes"
+      ENABLE_PPPOE: "no"
 
     steps:
       - name: Checkout code
@@ -81,36 +88,51 @@ jobs:
       - name: Save Custom Router IP into OpenWrt files
         run: |
           mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
-          echo "${{ github.event.inputs.custom_router_ip }}" > "${IMAGEBUILDER_DIR}/files/etc/config/custom_router_ip.txt"
-          echo "您设置的路由器管理地址是:${{ github.event.inputs.custom_router_ip }}"
+          echo "${CUSTOM_ROUTER_IP}" > "${IMAGEBUILDER_DIR}/files/etc/config/custom_router_ip.txt"
+          echo "您设置的路由器管理地址是:${CUSTOM_ROUTER_IP}"
 
-      - name: Validate PPPoE Inputs
+      - name: Prepare PPPoE settings
         run: |
-          if [[ "${{ inputs.enable_pppoe }}" == "yes" ]]; then
-            if [[ -z "${{ inputs.pppoe_account }}" || -z "${{ inputs.pppoe_password }}" ]]; then
-              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
-              exit 1
-            fi
-          fi
+          mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
+          cat > "${IMAGEBUILDER_DIR}/files/etc/config/pppoe-settings" <<EOF
+          enable_pppoe=${ENABLE_PPPOE}
+          pppoe_account=
+          pppoe_password=
+          EOF
 
       - name: Enable Store integration
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_store == 'true' }}
         run: |
-          if [ "${{ github.event.inputs.enable_store }}" == "true" ]; then
-            printf '\nCUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"\n' >> shell/apk-custom-packages.sh
-            echo "✅ 已追加 luci-app-store"
-          else
-            echo "❎ 未启用 luci-app-store"
-          fi
+          printf '\nCUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"\n' >> shell/apk-custom-packages.sh
+          echo "✅ 已追加 luci-app-store"
+
+      - name: Install wukongdaily custom defaults
+        run: |
+          mkdir -p "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
+          install -m 0755 files/etc/uci-defaults/99-custom.sh \
+            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
 
       - name: Build OpenWrt x86-64 EFI 25.12.5
-        env:
-          PROFILE_INPUT: ${{ github.event.inputs.profile }}
-          INCLUDE_DOCKER: ${{ github.event.inputs.include_docker }}
-          ENABLE_PPPOE: ${{ inputs.enable_pppoe }}
-          PPPOE_ACCOUNT: ${{ inputs.pppoe_account }}
-          PPPOE_PASSWORD: ${{ inputs.pppoe_password }}
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PROFILE_INPUT="${{ github.event.inputs.profile }}"
+            CUSTOM_ROUTER_IP="${{ github.event.inputs.custom_router_ip }}"
+            INCLUDE_DOCKER="${{ github.event.inputs.include_docker }}"
+            ENABLE_PPPOE="${{ github.event.inputs.enable_pppoe }}"
+            if [ "$ENABLE_PPPOE" = "yes" ]; then
+              test -n "${{ github.event.inputs.pppoe_account }}"
+              test -n "${{ github.event.inputs.pppoe_password }}"
+            fi
+            mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
+            printf '%s\n' "$CUSTOM_ROUTER_IP" > "${IMAGEBUILDER_DIR}/files/etc/config/custom_router_ip.txt"
+            cat > "${IMAGEBUILDER_DIR}/files/etc/config/pppoe-settings" <<EOF
+          enable_pppoe=${ENABLE_PPPOE}
+          pppoe_account=${{ github.event.inputs.pppoe_account }}
+          pppoe_password=${{ github.event.inputs.pppoe_password }}
+          EOF
+          fi
+
           case "$PROFILE_INPUT" in
             1G) PROFILE=1024 ;;
             2G) PROFILE=2048 ;;
@@ -126,15 +148,15 @@ jobs:
         run: |
           cat > "${{ github.workspace }}/router-info.md" <<EOF
           ## 📡 路由器后台信息
-          
-          - 🏠 **后台地址**: ${{ github.event.inputs.custom_router_ip }}
+
+          - 🏠 **后台地址**: ${CUSTOM_ROUTER_IP}
           - 👤 **用户名**: root
           - 🔑 **密码**: 无
           - 🧩 **基础系统**: OpenWrt ${OPENWRT_VERSION} x86-64
-          - 💾 **软件包空间**: ${{ github.event.inputs.profile }}
+          - 💾 **软件包空间**: ${PROFILE_INPUT}
           EOF
 
-          if [ "${{ github.event.inputs.include_docker }}" == "yes" ]; then
+          if [ "${INCLUDE_DOCKER}" == "yes" ]; then
             echo -e "\n#### 默认带docker" >> "${{ github.workspace }}/router-info.md"
           else
             echo -e "\n#### 不带docker" >> "${{ github.workspace }}/router-info.md"
