@@ -1,118 +1,28 @@
-# OpenWrt x86-64 ImageBuilder
+# OpenWrt-ImageBuilder
 
-本项目采用 **wukongdaily/ImmortalWrt-ImageBuilder 的 ImageBuilder 思路**，但基础系统改为 **OpenWrt 官方 25.12+ ImageBuilder**。
+基于 CI 的 ImageBuilder 工作流，用于自动化构建 **OpenWrt 官方 x86-64 固件**。
 
-## 当前范围
+本项目的目录组织、第三方 APK 集成方式、首次启动网络初始化方式参考并保留 wukongdaily/ImmortalWrt-ImageBuilder 的 x86-64 方案；基础系统改为 OpenWrt 官方 ImageBuilder，当前固定版本为 **25.12.5**。
 
-只保留：
+## 基本用法
 
-- x86-64
-- UEFI
-- EXT4
-- QCOW2
+1. 进入 GitHub Actions。
+2. 运行 `Build 25.12.x x86-64`。
+3. 选择固件空间大小、管理地址、Docker、Store 和 PPPoE。
+4. 第三方 APK 在 `shell/apk-custom-packages.sh` 中按需取消注释。
 
-不再维护其他硬件型号。
+## x86-64 网络逻辑
 
-## 基础配置
+- 单网口：LAN 默认 DHCP，自动从上级网络获取地址。
+- 多网口：第一个物理网口作为 WAN，其余物理网口加入 `br-lan`。
+- WAN 默认 DHCP；可在工作流中启用 PPPoE。
+- 多网口 LAN 默认管理地址为 `192.168.100.1`，可通过工作流参数修改。
+- 首次启动由 `files/etc/uci-defaults/99-custom.sh` 完成网络初始化。
 
-固件默认：
+## 第三方 APK
 
-- LuCI
-- LuCI 简体中文
-- 软件包管理器
-- 软件包管理器中文包
-- 中国时区 `Asia/Shanghai`
-- LuCI 默认语言 `zh_cn`
+构建脚本按需同步 `wukongdaily/apk` 的 `run/x86` 内容，并使用 `shell/apk-prepare-packages.sh` 整理 APK 后交给官方 ImageBuilder。
 
-## 软件选择
+## 固件
 
-所有可选软件统一在：
-
-```text
-shell/apk-custom-packages.sh
-```
-
-采用注释/取消注释方式选择 APK，保持 wukongdaily ImageBuilder 的使用习惯。
-
-workflow 不再维护重复的软件包列表。
-
-## 第三方 APK 源
-
-### PassWall
-
-固件写入：
-
-```text
-/etc/apk/repositories.d/customfeeds.list
-```
-
-包含：
-
-- `passwall_luci`
-- `passwall_packages`
-- `passwall2`
-
-并安装 PassWall 官方教程使用的 APK 公钥。
-
-### DAE / DAED
-
-加入 kenzok8/openwrt-daede 对应的 25.12 x86_64 APK 源。
-
-可选：
-
-```text
-dae
-daed
-luci-app-daede
-vmlinux-btf
-```
-
-注意：daed 使用 CO-RE eBPF，官方 OpenWrt 内核可能没有 BTF。选择 daed 时应同时选择匹配的 `vmlinux-btf` 包。
-
-## OpenWrt 版本自动更新
-
-`.github/workflows/check-update.yml` 每天检查 OpenWrt 官方仓库的稳定版本标签。
-
-只有当：
-
-```text
-latest OpenWrt version != latest-version.txt
-```
-
-时才会：
-
-1. 更新 `latest-version.txt`
-2. 自动触发 `build-x86-64.yml`
-3. 使用新的 OpenWrt 官方 ImageBuilder 构建固件
-4. 发布到 GitHub Release
-
-普通代码提交不会自动构建固件。
-
-## Release
-
-每个 OpenWrt 版本发布：
-
-- UEFI EXT4 压缩镜像
-- EXT4 RAW 镜像
-- QCOW2 镜像
-- Release Notes
-- 本次构建实际选择的软件包列表
-
-## 目录结构
-
-```text
-.github/workflows/
-├── build-x86-64.yml
-└── check-update.yml
-
-shell/
-├── apk-custom-packages.sh
-└── prepare-feeds.sh
-
-latest-version.txt
-README.md
-```
-
-## 许可证
-
-ImageBuilder 的整体结构参考并改造自 wukongdaily/ImmortalWrt-ImageBuilder；相关上游项目及第三方组件的版权和许可证保持原样。
+当前构建目标仅为 OpenWrt 官方 x86-64，使用 UEFI EFI 镜像。
