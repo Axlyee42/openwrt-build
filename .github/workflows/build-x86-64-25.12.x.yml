@@ -1,8 +1,18 @@
 name: Build 25.12.x x86-64
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
+      luci_version:
+        description: "选择 OpenWrt 版本"
+        required: false
+        default: "25.12.5"
+        type: choice
+        options:
+          - 25.12.5
       custom_router_ip:
         description: "请设置路由器的管理地址(仅对多网口路由器有效) 格式:192.168.x.1 或 10.x.x.1"
         required: true
@@ -24,7 +34,8 @@ on:
         type: boolean
         default: false
       include_docker:
-        description: "是否编译 Docker 插件"
+        description: |
+          是否编译 Docker 插件
         required: true
         default: 'yes'
         type: choice
@@ -37,8 +48,8 @@ on:
         default: 'no'
         type: choice
         options:
-          - 'yes'
-          - 'no'
+        - 'yes'
+        - 'no'
       pppoe_account:
         description: "宽带账号 (若启用PPPoE)"
         required: false
@@ -52,84 +63,66 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    env:
-      OPENWRT_VERSION: "25.12.5"
-      IMAGEBUILDER_DIR: "${{ github.workspace }}/imagebuilder"
-      CUSTOM_ROUTER_IP: "192.168.100.1"
-      PROFILE_INPUT: "1G"
-      INCLUDE_DOCKER: "yes"
-      ENABLE_PPPOE: "no"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zstd curl wget git
-
-      - name: Download official OpenWrt ImageBuilder
-        run: |
-          set -euo pipefail
-          url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-          curl -fL "$url" -o /tmp/imagebuilder.tar.zst
-          rm -rf "$IMAGEBUILDER_DIR"
-          mkdir -p "$IMAGEBUILDER_DIR"
-          tar --use-compress-program=unzstd -xf /tmp/imagebuilder.tar.zst -C "$IMAGEBUILDER_DIR" --strip-components=1
-          test -f "$IMAGEBUILDER_DIR/Makefile"
-
       - name: Set executable permissions
-        run: chmod +x "${{ github.workspace }}/x86-64/build25.sh"
+        run: chmod +x ${{ github.workspace }}/x86-64/build25.sh
 
       - name: Save Custom Router IP into OpenWrt files
         run: |
-          mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
-          echo "${CUSTOM_ROUTER_IP}" > "${IMAGEBUILDER_DIR}/files/etc/config/custom_router_ip.txt"
-          echo "您设置的路由器管理地址是:${CUSTOM_ROUTER_IP}"
+          mkdir -p "${{ github.workspace }}/custom"
+          echo "${{ github.event.inputs.custom_router_ip || '192.168.100.1' }}" > "${{ github.workspace }}/custom/custom_router_ip.txt"
+          echo "您设置的路由器管理地址是:$(cat "${{ github.workspace }}/custom/custom_router_ip.txt")"
 
-      - name: Prepare PPPoE settings
+      - name: Validate PPPoE Inputs
         run: |
-          mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
-          cat > "${IMAGEBUILDER_DIR}/files/etc/config/pppoe-settings" <<EOF
-          enable_pppoe=${ENABLE_PPPOE}
-          pppoe_account=
-          pppoe_password=
-          EOF
+          if [[ "${{ inputs.enable_pppoe }}" == "yes" ]]; then
+            if [[ -z "${{ inputs.pppoe_account }}" || -z "${{ inputs.pppoe_password }}" ]]; then
+              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
+              exit 1
+            fi
+          fi
 
       - name: Enable Store integration
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_store == 'true' }}
         run: |
-          printf '\nCUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"\n' >> shell/apk-custom-packages.sh
+          echo 'CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"' >> shell/apk-custom-packages.sh
           echo "✅ 已追加 luci-app-store"
+
+      - name: Download official OpenWrt ImageBuilder
+        env:
+          OPENWRT_VERSION: ${{ github.event.inputs.luci_version || '25.12.5' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zstd curl wget git
+          url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+          curl -fL "$url" -o /tmp/openwrt-imagebuilder.tar.zst
+          rm -rf "${{ github.workspace }}/imagebuilder"
+          mkdir -p "${{ github.workspace }}/imagebuilder"
+          tar --use-compress-program=unzstd -xf /tmp/openwrt-imagebuilder.tar.zst -C "${{ github.workspace }}/imagebuilder" --strip-components=1
+          test -f "${{ github.workspace }}/imagebuilder/Makefile"
 
       - name: Install wukongdaily custom defaults
         run: |
-          mkdir -p "${IMAGEBUILDER_DIR}/files/etc/uci-defaults"
-          install -m 0755 files/etc/uci-defaults/99-custom.sh \
-            "${IMAGEBUILDER_DIR}/files/etc/uci-defaults/99-custom.sh"
+          mkdir -p "${{ github.workspace }}/imagebuilder/files/etc/uci-defaults"
+          install -m 0755 files/etc/uci-defaults/99-custom.sh "${{ github.workspace }}/imagebuilder/files/etc/uci-defaults/99-custom.sh"
+          mkdir -p "${{ github.workspace }}/imagebuilder/files/etc/config"
+          cp "${{ github.workspace }}/custom/custom_router_ip.txt" "${{ github.workspace }}/imagebuilder/files/etc/config/custom_router_ip.txt"
 
-      - name: Build OpenWrt x86-64 EFI 25.12.5
+      - name: Build OpenWrt-x86-64-efi
+        env:
+          PROFILE_INPUT: ${{ github.event.inputs.profile || '1G' }}
+          INCLUDE_DOCKER: ${{ github.event.inputs.include_docker || 'yes' }}
+          ENABLE_PPPOE: ${{ github.event.inputs.enable_pppoe || 'no' }}
+          PPPOE_ACCOUNT: ${{ github.event.inputs.pppoe_account || '' }}
+          PPPOE_PASSWORD: ${{ github.event.inputs.pppoe_password || '' }}
+          IMAGEBUILDER_DIR: ${{ github.workspace }}/imagebuilder
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PROFILE_INPUT="${{ github.event.inputs.profile }}"
-            CUSTOM_ROUTER_IP="${{ github.event.inputs.custom_router_ip }}"
-            INCLUDE_DOCKER="${{ github.event.inputs.include_docker }}"
-            ENABLE_PPPOE="${{ github.event.inputs.enable_pppoe }}"
-            if [ "$ENABLE_PPPOE" = "yes" ]; then
-              test -n "${{ github.event.inputs.pppoe_account }}"
-              test -n "${{ github.event.inputs.pppoe_password }}"
-            fi
-            mkdir -p "${IMAGEBUILDER_DIR}/files/etc/config"
-            printf '%s\n' "$CUSTOM_ROUTER_IP" > "${IMAGEBUILDER_DIR}/files/etc/config/custom_router_ip.txt"
-            cat > "${IMAGEBUILDER_DIR}/files/etc/config/pppoe-settings" <<EOF
-          enable_pppoe=${ENABLE_PPPOE}
-          pppoe_account=${{ github.event.inputs.pppoe_account }}
-          pppoe_password=${{ github.event.inputs.pppoe_password }}
-          EOF
-          fi
-
           case "$PROFILE_INPUT" in
             1G) PROFILE=1024 ;;
             2G) PROFILE=2048 ;;
@@ -137,14 +130,28 @@ jobs:
             4G) PROFILE=4096 ;;
             *) echo "Invalid profile: $PROFILE_INPUT"; exit 1 ;;
           esac
-          export PROFILE INCLUDE_DOCKER ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD
+          export PROFILE INCLUDE_DOCKER ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD IMAGEBUILDER_DIR
+          mkdir -p "$IMAGEBUILDER_DIR/files/etc/config"
+          cat > "$IMAGEBUILDER_DIR/files/etc/config/pppoe-settings" <<EOF
+          enable_pppoe=${ENABLE_PPPOE}
+          pppoe_account=${PPPOE_ACCOUNT}
+          pppoe_password=${PPPOE_PASSWORD}
+          EOF
           cd "$IMAGEBUILDER_DIR"
           bash "${GITHUB_WORKSPACE}/x86-64/build25.sh"
 
       - name: Create info
+        env:
+          OPENWRT_VERSION: ${{ github.event.inputs.luci_version || '25.12.5' }}
+          CUSTOM_ROUTER_IP: ${{ github.event.inputs.custom_router_ip || '192.168.100.1' }}
+          PROFILE_INPUT: ${{ github.event.inputs.profile || '1G' }}
+          INCLUDE_DOCKER: ${{ github.event.inputs.include_docker || 'yes' }}
         run: |
           cat > "${{ github.workspace }}/router-info.md" <<EOF
           ## 📡 路由器后台信息
+          <a href="https://wkdaily.cpolar.cn/archives/1">
+           <img src="https://img.shields.io/badge/若下载慢可套用国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge"/>
+          </a>
 
           - 🏠 **后台地址**: ${CUSTOM_ROUTER_IP}
           - 👤 **用户名**: root
