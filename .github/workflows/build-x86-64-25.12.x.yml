@@ -1,6 +1,9 @@
 name: Build 25.12.x x86-64
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       luci_version:
@@ -93,7 +96,7 @@ jobs:
 
       - name: Download official OpenWrt ImageBuilder
         env:
-          OPENWRT_VERSION: ${{ inputs.luci_version }}
+          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -114,11 +117,11 @@ jobs:
 
       - name: Build OpenWrt-x86-64-efi
         env:
-          PROFILE_INPUT: ${{ inputs.profile }}
-          INCLUDE_DOCKER: ${{ inputs.include_docker }}
-          ENABLE_PPPOE: ${{ inputs.enable_pppoe }}
-          PPPOE_ACCOUNT: ${{ inputs.pppoe_account }}
-          PPPOE_PASSWORD: ${{ inputs.pppoe_password }}
+          PROFILE_INPUT: ${{ inputs.profile || '4G' }}
+          INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
+          ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
+          PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
           IMAGEBUILDER_DIR: ${{ github.workspace }}/imagebuilder
         run: |
           set -euo pipefail
@@ -135,10 +138,10 @@ jobs:
 
       - name: Create info
         env:
-          OPENWRT_VERSION: ${{ inputs.luci_version }}
-          CUSTOM_ROUTER_IP: ${{ inputs.custom_router_ip }}
-          PROFILE_INPUT: ${{ inputs.profile }}
-          INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+          CUSTOM_ROUTER_IP: ${{ inputs.custom_router_ip || '192.168.1.2' }}
+          PROFILE_INPUT: ${{ inputs.profile || '4G' }}
+          INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
         run: |
           cat > "${{ github.workspace }}/router-info.md" <<EOF
           ## 📡 路由器后台信息
