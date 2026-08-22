@@ -19,10 +19,26 @@ cat > "$APK_DIR/aurora.list" <<'EOF'
 https://openwrt.eamonxg.fun/packages/packages.adb
 EOF
 
+# kenzok8 openwrt-daede source installer
+cat > "$IMAGE_FILES_DIR/etc/uci-defaults/100-daede-source" <<'EOF'
+#!/bin/sh
+mkdir -p /etc/apk/repositories.d
+
+# kenzok8/openwrt-daede provides dae, daed and luci-app-daede.
+# Keep the installer method here because the feed URL/key may change upstream.
+wget -O /tmp/daede-feed-setup.sh https://raw.githubusercontent.com/kenzok8/openwrt-daede/main/scripts/install.sh 2>/dev/null || true
+
+if [ -s /tmp/daede-feed-setup.sh ]; then
+    chmod +x /tmp/daede-feed-setup.sh
+    /tmp/daede-feed-setup.sh || true
+fi
+
+exit 0
+EOF
+
 # PassWall public key installation on first boot
 cat > "$IMAGE_FILES_DIR/etc/uci-defaults/99-thirdparty-apk-sources" <<'EOF'
 #!/bin/sh
-
 mkdir -p /etc/apk/keys /etc/apk/repositories.d
 
 wget -O /etc/apk/keys/openwrt-passwall-build.pem \
@@ -36,3 +52,4 @@ exit 0
 EOF
 
 chmod +x "$IMAGE_FILES_DIR/etc/uci-defaults/99-thirdparty-apk-sources"
+chmod +x "$IMAGE_FILES_DIR/etc/uci-defaults/100-daede-source"
