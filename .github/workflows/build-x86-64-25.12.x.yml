@@ -1,9 +1,6 @@
 name: Build 25.12.x x86-64
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       custom_router_ip:
