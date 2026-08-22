@@ -28,8 +28,8 @@ on:
       enable_store:
         description: "集成 store 商店"
         required: false
-        default: false
         type: boolean
+        default: false
       include_docker:
         description: |
           是否编译 Docker 插件
@@ -42,19 +42,17 @@ on:
       enable_pppoe:
         description: "是否配置PPPoE拨号信息?"
         required: true
-        default: 'yes'
+        default: 'no'
         type: choice
         options:
-          - 'yes'
-          - 'no'
+        - 'yes'
+        - 'no'
       pppoe_account:
         description: "宽带账号 (若启用PPPoE)"
         required: false
-        type: string
       pppoe_password:
         description: "宽带密码 (若启用PPPoE)"
         required: false
-        type: string
 
 permissions:
   contents: write
@@ -73,7 +71,7 @@ jobs:
       - name: Save Custom Router IP into OpenWrt files
         run: |
           mkdir -p "${{ github.workspace }}/custom"
-          echo "${{ inputs.custom_router_ip }}" > "${{ github.workspace }}/custom/custom_router_ip.txt"
+          echo "${{ github.event.inputs.custom_router_ip || '192.168.1.2' }}" > "${{ github.workspace }}/custom/custom_router_ip.txt"
           echo "您设置的路由器管理地址是:$(cat "${{ github.workspace }}/custom/custom_router_ip.txt")"
 
       - name: Validate PPPoE Inputs
@@ -86,7 +84,7 @@ jobs:
           fi
 
       - name: Enable Store integration
-        if: ${{ inputs.enable_store == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_store == 'true' }}
         run: |
           echo 'CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"' >> shell/apk-custom-packages.sh
           echo "✅ 已追加 luci-app-store"
@@ -97,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y zstd curl wget git
+          sudo apt-get install -y zstd curl wget git qemu-utils
           url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           curl -fL "$url" -o /tmp/openwrt-imagebuilder.tar.zst
           rm -rf "${{ github.workspace }}/imagebuilder"
@@ -133,6 +131,22 @@ jobs:
           cd "$IMAGEBUILDER_DIR"
           bash "${GITHUB_WORKSPACE}/x86-64/build25.sh"
 
+      - name: Prepare QCOW2 image
+        env:
+          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+        run: |
+          set -euo pipefail
+          IMAGE_GZ=$(find "${{ github.workspace }}/imagebuilder/bin/targets/x86/64" -maxdepth 1 -type f -name '*squashfs-combined-efi.img.gz' | head -n 1)
+          test -n "$IMAGE_GZ"
+          IMAGE_DIR=$(dirname "$IMAGE_GZ")
+          IMAGE_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-squashfs-combined-efi.img"
+          QCOW2_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-squashfs-combined-efi.qcow2"
+          gunzip -c "$IMAGE_GZ" > "$IMAGE_DIR/$IMAGE_NAME"
+          qemu-img convert -f raw -O qcow2 -p "$IMAGE_DIR/$IMAGE_NAME" "$IMAGE_DIR/$QCOW2_NAME"
+          test -s "$IMAGE_DIR/$QCOW2_NAME"
+          rm -f "$IMAGE_DIR/$IMAGE_NAME"
+          echo "QCOW2: $IMAGE_DIR/$QCOW2_NAME"
+
       - name: Create info
         env:
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
@@ -162,6 +176,7 @@ jobs:
           body_path: ${{ github.workspace }}/router-info.md
           files: |
             ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*squashfs-combined-efi.img.gz
+            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*squashfs-combined-efi.qcow2
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
