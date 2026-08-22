@@ -10,173 +10,328 @@ on:
         type: choice
         options:
           - 25.12.5
+
       custom_router_ip:
-        description: "请设置路由器的管理地址(仅对多网口路由器有效) 格式:192.168.x.1 或 10.x.x.1"
+        description: "路由器管理地址"
         required: true
         default: "192.168.1.2"
         type: string
+
       profile:
-        description: '选择软件包空间大小'
+        description: "选择软件包空间大小"
         required: true
+        default: "4G"
         type: choice
-        default: '4G'
         options:
-          - '1G'
-          - '2G'
-          - '3G'
-          - '4G'
+          - 1G
+          - 2G
+          - 3G
+          - 4G
+
       enable_store:
-        description: "集成 store 商店"
+        description: "集成 store"
         required: false
-        type: boolean
         default: false
+        type: boolean
+
       include_docker:
-        description: |
-          是否编译 Docker 插件
+        description: "是否编译 Docker"
         required: true
-        default: 'no'
+        default: "no"
         type: choice
         options:
-          - 'yes'
-          - 'no'
+          - yes
+          - no
+
       enable_pppoe:
-        description: "是否配置PPPoE拨号信息?"
+        description: "是否配置 PPPoE"
         required: true
-        default: 'no'
+        default: "no"
         type: choice
         options:
-        - 'yes'
-        - 'no'
+          - yes
+          - no
+
       pppoe_account:
-        description: "宽带账号 (若启用PPPoE)"
+        description: "宽带账号"
         required: false
+
       pppoe_password:
-        description: "宽带密码 (若启用PPPoE)"
+        description: "宽带密码"
         required: false
+
 
 permissions:
   contents: write
 
+
 jobs:
+
   build:
+
     runs-on: ubuntu-22.04
 
+
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set executable permissions
-        run: chmod +x ${{ github.workspace }}/x86-64/build25.sh
 
-      - name: Save Custom Router IP into OpenWrt files
+      - name: Set executable permissions
         run: |
-          mkdir -p "${{ github.workspace }}/custom"
-          echo "${{ github.event.inputs.custom_router_ip || '192.168.1.2' }}" > "${{ github.workspace }}/custom/custom_router_ip.txt"
-          echo "您设置的路由器管理地址是:$(cat "${{ github.workspace }}/custom/custom_router_ip.txt")"
+          chmod +x x86-64/build25.sh
+
+
+      - name: Save router IP
+        run: |
+          mkdir -p custom
+          echo "${{ inputs.custom_router_ip }}" > custom/custom_router_ip.txt
+
 
       - name: Validate PPPoE Inputs
         run: |
           if [[ "${{ inputs.enable_pppoe }}" == "yes" ]]; then
             if [[ -z "${{ inputs.pppoe_account }}" || -z "${{ inputs.pppoe_password }}" ]]; then
-              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
+              echo "PPPoE账号密码不能为空"
               exit 1
             fi
           fi
 
-      - name: Enable Store integration
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_store == 'true' }}
-        run: |
-          echo 'CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"' >> shell/apk-custom-packages.sh
-          echo "✅ 已追加 luci-app-store"
 
-      - name: Download official OpenWrt ImageBuilder
+      - name: Download ImageBuilder
+
         env:
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y zstd curl wget git qemu-utils
-          url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-          curl -fL "$url" -o /tmp/openwrt-imagebuilder.tar.zst
-          rm -rf "${{ github.workspace }}/imagebuilder"
-          mkdir -p "${{ github.workspace }}/imagebuilder"
-          tar --use-compress-program=unzstd -xf /tmp/openwrt-imagebuilder.tar.zst -C "${{ github.workspace }}/imagebuilder" --strip-components=1
-          test -f "${{ github.workspace }}/imagebuilder/Makefile"
 
-      - name: Install wukongdaily custom defaults
         run: |
-          mkdir -p "${{ github.workspace }}/imagebuilder/files/etc/uci-defaults"
-          install -m 0755 files/etc/uci-defaults/99-custom.sh "${{ github.workspace }}/imagebuilder/files/etc/uci-defaults/99-custom.sh"
-          mkdir -p "${{ github.workspace }}/imagebuilder/files/etc/config"
-          cp "${{ github.workspace }}/custom/custom_router_ip.txt" "${{ github.workspace }}/imagebuilder/files/etc/config/custom_router_ip.txt"
 
-      - name: Build OpenWrt-x86-64-efi
+          sudo apt update
+
+          sudo apt install -y \
+            zstd \
+            curl \
+            wget \
+            git \
+            qemu-utils
+
+
+          curl -fL \
+          https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst \
+          -o /tmp/imagebuilder.tar.zst
+
+
+          rm -rf imagebuilder
+
+          mkdir imagebuilder
+
+
+          tar \
+          --use-compress-program=unzstd \
+          -xf /tmp/imagebuilder.tar.zst \
+          -C imagebuilder \
+          --strip-components=1
+
+
+          test -f imagebuilder/Makefile
+
+
+      - name: Install custom defaults
+
+        run: |
+
+          mkdir -p imagebuilder/files/etc/uci-defaults
+
+          install \
+          -m0755 \
+          files/etc/uci-defaults/99-custom.sh \
+          imagebuilder/files/etc/uci-defaults/99-custom.sh
+
+
+          mkdir -p imagebuilder/files/etc/config
+
+          cp custom/custom_router_ip.txt \
+          imagebuilder/files/etc/config/custom_router_ip.txt
+
+
+      - name: Build OpenWrt ext4 EFI
+
         env:
+
           PROFILE_INPUT: ${{ inputs.profile || '4G' }}
+
           INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
+
           ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
+
           PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
+
           PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
+
           IMAGEBUILDER_DIR: ${{ github.workspace }}/imagebuilder
+
+
         run: |
-          set -euo pipefail
+
           case "$PROFILE_INPUT" in
+
             1G) PROFILE=1024 ;;
             2G) PROFILE=2048 ;;
             3G) PROFILE=3072 ;;
             4G) PROFILE=4096 ;;
-            *) echo "Invalid profile: $PROFILE_INPUT"; exit 1 ;;
+
           esac
-          export PROFILE INCLUDE_DOCKER ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD IMAGEBUILDER_DIR
+
+
+          export PROFILE
+
+          export INCLUDE_DOCKER
+
+          export ENABLE_PPPOE
+
+          export PPPOE_ACCOUNT
+
+          export PPPOE_PASSWORD
+
+
           cd "$IMAGEBUILDER_DIR"
-          bash "${GITHUB_WORKSPACE}/x86-64/build25.sh"
 
-      - name: Prepare QCOW2 image
+
+          bash ${GITHUB_WORKSPACE}/x86-64/build25.sh
+                - name: Prepare QCOW2 image
+
         env:
+
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+
+
         run: |
+
           set -euo pipefail
-          IMAGE_GZ=$(find "${{ github.workspace }}/imagebuilder/bin/targets/x86/64" -maxdepth 1 -type f -name '*squashfs-combined-efi.img.gz' | head -n 1)
-          test -n "$IMAGE_GZ"
-          IMAGE_DIR=$(dirname "$IMAGE_GZ")
-          IMAGE_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-squashfs-combined-efi.img"
-          QCOW2_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-squashfs-combined-efi.qcow2"
-          gunzip -c "$IMAGE_GZ" > "$IMAGE_DIR/$IMAGE_NAME"
-          qemu-img convert -f raw -O qcow2 -p "$IMAGE_DIR/$IMAGE_NAME" "$IMAGE_DIR/$QCOW2_NAME"
-          test -s "$IMAGE_DIR/$QCOW2_NAME"
-          rm -f "$IMAGE_DIR/$IMAGE_NAME"
-          echo "QCOW2: $IMAGE_DIR/$QCOW2_NAME"
 
-      - name: Create info
+
+          IMAGE_GZ=$(find \
+          "${{ github.workspace }}/imagebuilder/bin/targets/x86/64" \
+          -maxdepth 1 \
+          -type f \
+          -name '*ext4-combined-efi.img.gz' \
+          | head -n 1)
+
+
+          test -n "$IMAGE_GZ"
+
+
+          IMAGE_DIR=$(dirname "$IMAGE_GZ")
+
+
+          IMAGE_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-ext4-combined-efi.img"
+
+
+          QCOW2_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-ext4-combined-efi.qcow2"
+
+
+
+          gunzip -c "$IMAGE_GZ" \
+          > "$IMAGE_DIR/$IMAGE_NAME"
+
+
+
+          qemu-img convert \
+          -f raw \
+          -O qcow2 \
+          -p \
+          "$IMAGE_DIR/$IMAGE_NAME" \
+          "$IMAGE_DIR/$QCOW2_NAME"
+
+
+
+          test -s "$IMAGE_DIR/$QCOW2_NAME"
+
+
+
+          rm -f "$IMAGE_DIR/$IMAGE_NAME"
+
+
+
+          echo "QCOW2 generated:"
+          echo "$IMAGE_DIR/$QCOW2_NAME"
+
+
+
+      - name: Create release information
+
         env:
+
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+
           CUSTOM_ROUTER_IP: ${{ inputs.custom_router_ip || '192.168.1.2' }}
+
           PROFILE_INPUT: ${{ inputs.profile || '4G' }}
+
           INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
+
+
         run: |
-          cat > "${{ github.workspace }}/router-info.md" <<EOF
-          ## 📡 路由器后台信息
-          - 🏠 **后台地址**: ${CUSTOM_ROUTER_IP}
-          - 👤 **用户名**: root
-          - 🔑 **密码**: 无
-          - 🧩 **基础系统**: OpenWrt ${OPENWRT_VERSION} x86-64
-          - 💾 **软件包空间**: ${PROFILE_INPUT}
+
+          cat > router-info.md <<EOF
+
+          ## 📡 OpenWrt x86-64 路由器固件
+
+          - 🏠 管理地址: ${CUSTOM_ROUTER_IP}
+
+          - 👤 用户名: root
+
+          - 🔑 密码: 无
+
+          - 🧩 系统版本: OpenWrt ${OPENWRT_VERSION}
+
+          - 💾 软件空间: ${PROFILE_INPUT}
+
+          - 💿 镜像格式: ext4 EFI
+
           EOF
 
-          if [ "${INCLUDE_DOCKER}" == "yes" ]; then
-            echo -e "\n#### 默认带docker" >> "${{ github.workspace }}/router-info.md"
+
+
+          if [ "${INCLUDE_DOCKER}" = "yes" ]; then
+
+            echo "" >> router-info.md
+
+            echo "#### 🐳 已包含 Docker" >> router-info.md
+
           else
-            echo -e "\n#### 不带docker" >> "${{ github.workspace }}/router-info.md"
+
+            echo "" >> router-info.md
+
+            echo "#### 未包含 Docker" >> router-info.md
+
           fi
 
-      - name: Upload OpenWrt as release assets
+
+
+
+      - name: Upload OpenWrt ext4 EFI images
+
         uses: softprops/action-gh-release@v3
+
+
         with:
+
           tag_name: Autobuild-x86-64
-          body_path: ${{ github.workspace }}/router-info.md
+
+          body_path: router-info.md
+
+
           files: |
-            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*squashfs-combined-efi.img.gz
-            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*squashfs-combined-efi.qcow2
+
+            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.img.gz
+
+            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.qcow2
+
+
           token: ${{ secrets.GITHUB_TOKEN }}
+
+
         env:
+
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
