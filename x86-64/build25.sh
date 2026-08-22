@@ -27,7 +27,9 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
   rm -rf "$EXTRA_DIR"
   mkdir -p "$EXTRA_DIR"
   cp -r /tmp/store-apk-repo/run/x86/* "$EXTRA_DIR/"
-  "$REPO_ROOT/shell/apk-prepare-packages.sh"
+  # Invoke explicitly with bash so the build does not depend on the executable bit
+  # of a script checked out from GitHub.
+  bash "$REPO_ROOT/shell/apk-prepare-packages.sh"
   echo "✅ Run files copied to extra-packages"
   ls -lah "$PACKAGES_DIR" || true
 fi
