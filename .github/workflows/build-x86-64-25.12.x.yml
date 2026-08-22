@@ -75,7 +75,7 @@ jobs:
     steps:
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
 
       - name: Set executable permissions
@@ -100,12 +100,9 @@ jobs:
 
 
       - name: Download ImageBuilder
-
         env:
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
-
         run: |
-
           sudo apt update
 
           sudo apt install -y \
@@ -137,9 +134,7 @@ jobs:
 
 
       - name: Install custom defaults
-
         run: |
-
           mkdir -p imagebuilder/files/etc/uci-defaults
 
           install \
@@ -155,24 +150,14 @@ jobs:
 
 
       - name: Build OpenWrt ext4 EFI
-
         env:
-
           PROFILE_INPUT: ${{ inputs.profile || '4G' }}
-
           INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
-
           ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
-
           PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
-
           PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
-
           IMAGEBUILDER_DIR: ${{ github.workspace }}/imagebuilder
-
-
         run: |
-
           case "$PROFILE_INPUT" in
 
             1G) PROFILE=1024 ;;
@@ -198,15 +183,12 @@ jobs:
 
 
           bash ${GITHUB_WORKSPACE}/x86-64/build25.sh
-                - name: Prepare QCOW2 image
 
+
+      - name: Prepare QCOW2 image
         env:
-
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
-
-
         run: |
-
           set -euo pipefail
 
 
@@ -257,22 +239,13 @@ jobs:
           echo "$IMAGE_DIR/$QCOW2_NAME"
 
 
-
       - name: Create release information
-
         env:
-
           OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
-
           CUSTOM_ROUTER_IP: ${{ inputs.custom_router_ip || '192.168.1.2' }}
-
           PROFILE_INPUT: ${{ inputs.profile || '4G' }}
-
           INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
-
-
         run: |
-
           cat > router-info.md <<EOF
 
           ## 📡 OpenWrt x86-64 路由器固件
@@ -308,30 +281,14 @@ jobs:
           fi
 
 
-
-
       - name: Upload OpenWrt ext4 EFI images
-
         uses: softprops/action-gh-release@v3
-
-
         with:
-
           tag_name: Autobuild-x86-64
-
           body_path: router-info.md
-
-
           files: |
-
             ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.img.gz
-
             ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.qcow2
-
-
           token: ${{ secrets.GITHUB_TOKEN }}
-
-
         env:
-
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
