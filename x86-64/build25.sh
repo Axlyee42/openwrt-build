@@ -21,6 +21,9 @@ pppoe_account=${PPPOE_ACCOUNT:-}
 pppoe_password=${PPPOE_PASSWORD:-}
 EOF
 
+# 写入第三方 APK 软件源配置
+bash "$REPO_ROOT/shell/apk-prepare-thirdparty-sources.sh"
+
 if [ -n "${CUSTOM_PACKAGES:-}" ]; then
   echo "同步第三方 apk 仓库"
   rm -rf /tmp/store-apk-repo
