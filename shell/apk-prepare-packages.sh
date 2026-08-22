@@ -1,5 +1,4 @@
 #!/bin/sh
-set -eu
 
 BASE_DIR="extra-packages"
 TEMP_DIR="$BASE_DIR/temp-unpack"
