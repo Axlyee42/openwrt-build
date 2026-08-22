@@ -37,6 +37,7 @@ fi
 # OpenWrt 25.12.5 基础组件，默认安装，不放入 apk-custom-packages.sh
 PACKAGES=""
 PACKAGES="$PACKAGES curl"
+PACKAGES="$PACKAGES unzip"
 PACKAGES="$PACKAGES luci"
 PACKAGES="$PACKAGES luci-base"
 PACKAGES="$PACKAGES uhttpd"
