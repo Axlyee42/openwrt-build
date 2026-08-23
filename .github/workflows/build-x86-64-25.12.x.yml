@@ -36,8 +36,8 @@ on:
 
       include_docker:
         description: "是否编译 Docker"
-        required: false
-        default: "no"
+        required: true
+        default: false
         type: choice
         options:
           - yes
