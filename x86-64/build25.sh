@@ -11,7 +11,6 @@ EXTRA_DIR="$IMAGEBUILDER_DIR/extra-packages"
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
 
 echo "第三方 apk 软件包: ${CUSTOM_PACKAGES:-无}"
-
 echo "编译固件大小: ${PROFILE:-1024} MB"
 
 mkdir -p "$FILES_DIR/etc/config"
@@ -21,7 +20,6 @@ pppoe_account=${PPPOE_ACCOUNT:-}
 pppoe_password=${PPPOE_PASSWORD:-}
 EOF
 
-# 写入第三方 APK 软件源配置
 bash "$REPO_ROOT/shell/apk-prepare-thirdparty-sources.sh"
 
 if [ -n "${CUSTOM_PACKAGES:-}" ]; then
@@ -51,6 +49,9 @@ PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
 PACKAGES="$PACKAGES kmod-nft-socket"
 PACKAGES="$PACKAGES kmod-nft-tproxy"
 PACKAGES="$PACKAGES openssh-sftp-server"
+
+# daed/dae eBPF 支持：vmlinux-btf 默认加入，不依赖 apk-custom-packages.sh
+PACKAGES="$PACKAGES vmlinux-btf"
 
 # 第三方 APK 由 apk-custom-packages.sh 管理
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
