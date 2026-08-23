@@ -16,7 +16,7 @@ CUSTOM_PACKAGES="$CUSTOM_PACKAGES bandix luci-app-bandix luci-i18n-bandix-zh-cn"
 # PassWall2
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES geoview xray-core sing-box hysteria kmod-nft-socket kmod-nft-tproxy luci-app-passwall2 luci-i18n-passwall2-zh-cn"
 # DAE / DAED (replaced by kenzok8/openwrt-daede)
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-daede dae daed vmlinux-btf"
+#CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-daede dae daed vmlinux-btf"
 # OpenClash
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-openclash luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip"
 # Nikki
