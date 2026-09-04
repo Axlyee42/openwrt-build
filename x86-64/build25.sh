@@ -74,6 +74,22 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
 fi
 
+# OpenClash is not part of the official OpenWrt feeds. Its current APK is
+# published directly by the upstream project, so fetch it into the local
+# package directory and sign it together with the other third-party APKs.
+if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
+    OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
+    OPENCLASH_URL="$(curl -fsSL "$OPENCLASH_API" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").endswith(".apk") and a.get("name","").startswith("luci-app-openclash-")), "") )')"
+    if [ -z "$OPENCLASH_URL" ]; then
+        echo "ERROR: could not find the latest OpenClash APK release asset."
+        exit 1
+    fi
+    OPENCLASH_FILE="$PACKAGES_DIR/$(basename "$OPENCLASH_URL")"
+    curl -fL "$OPENCLASH_URL" -o "$OPENCLASH_FILE"
+    test -s "$OPENCLASH_FILE"
+    echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
+fi
+
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
 echo "Third-party APK files: $APK_COUNT"
 if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
@@ -97,29 +113,28 @@ if [ "$APK_COUNT" -gt 0 ]; then
     # OpenWrt 25.12.x ImageBuilder has a regression with local APK entries:
     # the signed packages.adb is valid, but apk may fail to resolve a local
     # package by name with "package mentioned in index not found". Install
-    # the actual local APK files directly while keeping the signed index for
+    # actual local APK files directly while keeping the signed index for
     # repository metadata and dependency resolution.
+    #
+    # CUSTOM_PACKAGES contains both locally supplied third-party packages
+    # and packages expected from the normal OpenWrt feeds. Only packages
+    # that actually exist in PACKAGES_DIR are filtered from BUILD_PACKAGES.
+    # Feed packages remain in BUILD_PACKAGES and are resolved normally.
     LOCAL_APK_NAMES=""
-    MISSING_APK_NAMES=""
     for pkg in $CUSTOM_PACKAGES; do
         if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then
             LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"
-        else
-            MISSING_APK_NAMES="$MISSING_APK_NAMES $pkg"
         fi
     done
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
-    MISSING_APK_NAMES="$(printf '%s\n' "$MISSING_APK_NAMES" | xargs)"
-    if [ -n "$MISSING_APK_NAMES" ]; then
-        echo "ERROR: custom packages missing from local APK set: $MISSING_APK_NAMES"
+    if [ -z "$LOCAL_APK_NAMES" ]; then
+        echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."
         echo "Available local APKs:"
         find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
         exit 1
     fi
-    if [ -z "$LOCAL_APK_NAMES" ]; then
-        echo "ERROR: failed to map custom package names to local APK files."
-        exit 1
-    fi
+    echo "Local APK packages: $LOCAL_APK_NAMES"
+
     export OPENWRT_BUILD_LOCAL_APK_WORKAROUND=1
     python3 - "$IMAGEBUILDER_DIR/Makefile" "$LOCAL_APK_NAMES" <<'PY'
 from pathlib import Path
