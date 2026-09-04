@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenWrt 25.12.x third-party APK package list.
-# Only packages supplied by the third-party APK repository belong here.
-# Official OpenWrt packages are kept in x86-64/build25.sh.
+# Only packages supplied by the third-party APK repository or fetched explicitly
+# below belong here. Official OpenWrt packages are kept in x86-64/build25.sh.
 
 CUSTOM_PACKAGES="
   luci-theme-aurora
