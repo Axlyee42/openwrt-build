@@ -10,34 +10,16 @@ EXTRA_DIR="$IMAGEBUILDER_DIR/extra-packages"
 KEY_DIR="$IMAGEBUILDER_DIR/keys"
 
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
-
 mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
 
 APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
 OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
-
-if [ ! -x "$APK_BIN" ]; then
-    APK_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/apk' -perm -111 -print -quit 2>/dev/null || true)"
-fi
-if [ ! -x "$OPENSSL_BIN" ]; then
-    OPENSSL_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/openssl' -perm -111 -print -quit 2>/dev/null || true)"
-fi
-
-if [ ! -x "$APK_BIN" ]; then
-    echo "ERROR: official ImageBuilder apk binary not found."
-    exit 1
-fi
-if [ ! -x "$OPENSSL_BIN" ]; then
-    OPENSSL_BIN="$(command -v openssl || true)"
-fi
-if [ -z "$OPENSSL_BIN" ] || [ ! -x "$OPENSSL_BIN" ]; then
-    echo "ERROR: openssl not found."
-    exit 1
-fi
-if [ ! -f "$IMAGEBUILDER_DIR/Makefile" ]; then
-    echo "ERROR: official OpenWrt ImageBuilder Makefile not found."
-    exit 1
-fi
+[ -x "$APK_BIN" ] || APK_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/apk' -perm -111 -print -quit 2>/dev/null || true)"
+[ -x "$OPENSSL_BIN" ] || OPENSSL_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/openssl' -perm -111 -print -quit 2>/dev/null || true)"
+[ -x "$APK_BIN" ] || { echo "ERROR: official ImageBuilder apk binary not found."; exit 1; }
+[ -x "$OPENSSL_BIN" ] || OPENSSL_BIN="$(command -v openssl || true)"
+[ -x "$OPENSSL_BIN" ] || { echo "ERROR: openssl not found."; exit 1; }
+[ -f "$IMAGEBUILDER_DIR/Makefile" ] || { echo "ERROR: official OpenWrt ImageBuilder Makefile not found."; exit 1; }
 
 LOCAL_PRIVATE_KEY="$KEY_DIR/local-private-key.pem"
 LOCAL_PUBLIC_KEY="$KEY_DIR/local-public-key.pem"
@@ -58,7 +40,6 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     rm -rf "$EXTRA_DIR" "$PACKAGES_DIR"
     mkdir -p "$EXTRA_DIR" "$PACKAGES_DIR"
     cp -a /tmp/wukongdaily-apk/run/x86/. "$EXTRA_DIR/"
-
     for run_file in "$EXTRA_DIR"/*.run; do
         [ -f "$run_file" ] || continue
         chmod +x "$run_file"
@@ -72,128 +53,80 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
         rm -rf "$tmp_run_dir"
     done
     find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
-
-    # clashoo and nikki are mutually conflicting proxy stacks and are not requested.
-    rm -f "$PACKAGES_DIR"/clashoo-*.apk \
-          "$PACKAGES_DIR"/luci-app-clashoo-*.apk \
-          "$PACKAGES_DIR"/luci-i18n-clashoo-*.apk \
-          "$PACKAGES_DIR"/nikki-*.apk \
-          "$PACKAGES_DIR"/luci-app-nikki-*.apk \
-          "$PACKAGES_DIR"/luci-i18n-nikki-*.apk
-    if find "$PACKAGES_DIR" -maxdepth 1 -type f \( \
-        -name 'clashoo-*.apk' -o -name 'luci-app-clashoo-*.apk' -o -name 'luci-i18n-clashoo-*.apk' -o \
-        -name 'nikki-*.apk' -o -name 'luci-app-nikki-*.apk' -o -name 'luci-i18n-nikki-*.apk' \
-    \) -print -quit | grep -q .; then
+    rm -f "$PACKAGES_DIR"/clashoo-*.apk "$PACKAGES_DIR"/luci-app-clashoo-*.apk "$PACKAGES_DIR"/luci-i18n-clashoo-*.apk \
+          "$PACKAGES_DIR"/nikki-*.apk "$PACKAGES_DIR"/luci-app-nikki-*.apk "$PACKAGES_DIR"/luci-i18n-nikki-*.apk
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f \( -name 'clashoo-*.apk' -o -name 'luci-app-clashoo-*.apk' -o -name 'luci-i18n-clashoo-*.apk' -o -name 'nikki-*.apk' -o -name 'luci-app-nikki-*.apk' -o -name 'luci-i18n-nikki-*.apk' \) -print -quit | grep -q .; then
         echo "ERROR: conflicting clashoo/nikki APKs were not removed."
         exit 1
     fi
 fi
 
-# OpenClash is not part of the official OpenWrt feeds. Fetch its current APK.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
-    OPENCLASH_URL="$(curl -fsSL "$OPENCLASH_API" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").endswith(".apk") and a.get("name","").startswith("luci-app-openclash-")), "") )')"
-    if [ -z "$OPENCLASH_URL" ]; then
-        echo "ERROR: could not find the latest OpenClash APK release asset."
-        exit 1
-    fi
-    OPENCLASH_FILE="$PACKAGES_DIR/$(basename "$OPENCLASH_URL")"
-    curl -fL "$OPENCLASH_URL" -o "$OPENCLASH_FILE"
-    test -s "$OPENCLASH_FILE"
-    echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
+    OPENCLASH_URL="$(curl -fsSL "$OPENCLASH_API" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").endswith(".apk") and a.get("name","").startswith("luci-app-openclash-")), ""))')"
+    [ -n "$OPENCLASH_URL" ] || { echo "ERROR: could not find latest OpenClash APK."; exit 1; }
+    curl -fL "$OPENCLASH_URL" -o "$PACKAGES_DIR/$(basename "$OPENCLASH_URL")"
 fi
 
-# HomeProxy: use the szwjp fork and pair it with sing-box 1.14.0.
-# The fork explicitly adapts its generated configuration for sing-box 1.14.
+# HomeProxy fork + sing-box 1.14.0.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
-    HOMEProxy_API="https://api.github.com/repos/szwjp/homeproxy/releases/tags/luci-app-homeproxy"
-    HOMEProxy_JSON="$(curl -fsSL "$HOMEProxy_API")"
+    HOMEProxy_JSON="$(curl -fsSL 'https://api.github.com/repos/szwjp/homeproxy/releases/tags/luci-app-homeproxy')"
     HOMEProxy_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-app-homeproxy-") and a.get("name","").endswith(".apk")), ""))')"
     HOMEProxy_I18N_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-i18n-homeproxy-zh-cn-") and a.get("name","").endswith(".apk")), ""))')"
-    if [ -z "$HOMEProxy_URL" ] || [ -z "$HOMEProxy_I18N_URL" ]; then
-        echo "ERROR: could not find szwjp/homeproxy APK assets."
-        exit 1
-    fi
+    [ -n "$HOMEProxy_URL" ] && [ -n "$HOMEProxy_I18N_URL" ] || { echo "ERROR: could not find szwjp/homeproxy APK assets."; exit 1; }
     curl -fL "$HOMEProxy_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_URL")"
     curl -fL "$HOMEProxy_I18N_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_I18N_URL")"
-
     SINGBOX_VERSION="1.14.0"
     SINGBOX_TARBALL="/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
-    SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
-    curl -fL "$SINGBOX_URL" -o "$SINGBOX_TARBALL"
+    curl -fL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz" -o "$SINGBOX_TARBALL"
     SINGBOX_TMP="$(mktemp -d)"
     tar -xzf "$SINGBOX_TARBALL" -C "$SINGBOX_TMP"
     SINGBOX_BIN="$(find "$SINGBOX_TMP" -type f -name sing-box -print -quit)"
-    if [ -z "$SINGBOX_BIN" ]; then
-        echo "ERROR: sing-box 1.14.0 binary not found in release archive."
-        exit 1
-    fi
+    [ -n "$SINGBOX_BIN" ] || { echo "ERROR: sing-box 1.14.0 binary not found."; exit 1; }
     chmod 0755 "$SINGBOX_BIN"
     "$SINGBOX_BIN" version
-
     SINGBOX_PKG_DIR="$(mktemp -d)"
-    mkdir -p "$SINGBOX_PKG_DIR/usr/bin" "$SINGBOX_PKG_DIR/etc/sing-box"
+    mkdir -p "$SINGBOX_PKG_DIR/usr/bin"
     install -m 0755 "$SINGBOX_BIN" "$SINGBOX_PKG_DIR/usr/bin/sing-box"
-    cat > "$SINGBOX_PKG_DIR/etc/sing-box/config.json" <<'EOF'
-{}
-EOF
+    # The package itself is named sing-box; do not add a self-provides relation.
     "$APK_BIN" mkpkg \
         --info "name:sing-box" \
         --info "version:${SINGBOX_VERSION}-r1" \
         --info "description:sing-box ${SINGBOX_VERSION} runtime for HomeProxy" \
         --info "arch:x86_64" \
-        --info "provides:sing-box" \
         --files "$SINGBOX_PKG_DIR" \
         --output "$PACKAGES_DIR/sing-box-${SINGBOX_VERSION}-r1.apk"
     rm -rf "$SINGBOX_TMP" "$SINGBOX_PKG_DIR"
-    echo "HomeProxy fork APKs: $(basename "$HOMEProxy_URL"), $(basename "$HOMEProxy_I18N_URL")"
-    echo "HomeProxy sing-box: ${SINGBOX_VERSION}"
 fi
 
-# These LuCI applications are not all available in the official OpenWrt 25.12.5
-# feed. ImmortalWrt provides matching 25.12 x86_64 APKv3 builds.
+# Compatibility APKs from ImmortalWrt 25.12 x86_64.
 IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
 for wanted in \
-    luci-app-autoreboot \
-    luci-i18n-autoreboot-zh-cn \
-    luci-app-filebrowser-go \
-    luci-i18n-filebrowser-go-zh-cn \
-    luci-app-timewol \
-    luci-i18n-timewol-zh-cn \
-    luci-app-vlmcsd \
-    luci-i18n-vlmcsd-zh-cn
+    luci-app-autoreboot luci-i18n-autoreboot-zh-cn \
+    luci-app-filebrowser-go luci-i18n-filebrowser-go-zh-cn \
+    luci-app-timewol luci-i18n-timewol-zh-cn \
+    luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn \
+    luci-app-ddns-go
  do
     if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then
         index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
         filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
-        if [ -z "$filename" ]; then
-            echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 luci feed: $wanted"
-            exit 1
-        fi
+        [ -n "$filename" ] || { echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 luci feed: $wanted"; exit 1; }
         curl -fL "$IMMORTAL_LUCI_BASE/$filename" -o "$PACKAGES_DIR/$filename"
         test -s "$PACKAGES_DIR/$filename"
         echo "Compatibility LuCI APK: $filename"
     fi
 done
 
-# Runtime dependencies required by the ImmortalWrt compatibility LuCI packages.
 IMMORTAL_PACKAGES_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/packages"
 for wanted in filebrowser vlmcsd; do
-    if [ "$wanted" = "filebrowser" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-filebrowser-go'; then
-        continue
-    fi
-    if [ "$wanted" = "vlmcsd" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-vlmcsd'; then
-        continue
-    fi
+    if [ "$wanted" = "filebrowser" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-filebrowser-go'; then continue; fi
+    if [ "$wanted" = "vlmcsd" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-vlmcsd'; then continue; fi
     index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
     filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
-    if [ -z "$filename" ]; then
-        echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"
-        exit 1
-    fi
+    [ -n "$filename" ] || { echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"; exit 1; }
     curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
     test -s "$PACKAGES_DIR/$filename"
-    echo "Compatibility runtime APK: $filename"
 done
 
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
@@ -207,55 +140,32 @@ if [ "$APK_COUNT" -gt 0 ]; then
     while IFS= read -r -d '' apk_file; do
         "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
     done < <(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print0)
-
     rm -f "$PACKAGES_DIR/packages.adb"
-    (
-        cd "$PACKAGES_DIR"
-        "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk
-    )
+    ( cd "$PACKAGES_DIR" && "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk )
     test -s "$PACKAGES_DIR/packages.adb"
     "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
-
     LOCAL_APK_NAMES=""
     for pkg in $CUSTOM_PACKAGES; do
-        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then
-            LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"
-        fi
+        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"; fi
     done
-    # HomeProxy's sing-box runtime is a generated local APK even though it is
-    # a dependency rather than a user-facing CUSTOM_PACKAGES entry.
-    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-1.14.0-r1.apk' -print -quit | grep -q .; then
-        LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"
-    fi
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-1.14.0-r1.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
-    if [ -z "$LOCAL_APK_NAMES" ]; then
-        echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."
-        echo "Available local APKs:"
-        find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
-        exit 1
-    fi
+    [ -n "$LOCAL_APK_NAMES" ] || { echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."; exit 1; }
     echo "Local APK packages: $LOCAL_APK_NAMES"
-
-    export OPENWRT_BUILD_LOCAL_APK_WORKAROUND=1
     python3 - "$IMAGEBUILDER_DIR/Makefile" "$LOCAL_APK_NAMES" <<'PY'
 from pathlib import Path
 import sys
-
 path = Path(sys.argv[1])
 local_names = sys.argv[2].split()
 text = path.read_text()
 needle = "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts $(BUILD_PACKAGES)"
 if needle not in text:
     raise SystemExit("ERROR: ImageBuilder package_install command not found")
-if "OPENWRT_BUILD_LOCAL_APK_WORKAROUND" in text:
-    raise SystemExit(0)
-filtered = "$(filter-out " + " ".join(local_names) + ",$(BUILD_PACKAGES))"
-local_apks = "$(foreach p," + " ".join(local_names) + ",$(wildcard $(PACKAGE_DIR)/$(p)-*.apk))"
-replacement = (
-    "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n"
-    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " " + local_apks
-)
-path.write_text(text.replace(needle, replacement, 1))
+if "OPENWRT_BUILD_LOCAL_APK_WORKAROUND" not in text:
+    filtered = "$(filter-out " + " ".join(local_names) + ",$(BUILD_PACKAGES))"
+    local_apks = "$(foreach p," + " ".join(local_names) + ",$(wildcard $(PACKAGE_DIR)/$(p)-*.apk))"
+    replacement = "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " " + local_apks
+    path.write_text(text.replace(needle, replacement, 1))
 PY
 fi
 
@@ -272,9 +182,7 @@ PACKAGES="$PACKAGES luci-proto-ipv6 odhcp6c odhcpd-ipv6only"
 PACKAGES="$PACKAGES luci-compat kmod-tun kmod-inet-diag kmod-nft-socket kmod-nft-tproxy"
 PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
-if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
-    PACKAGES="$PACKAGES firewall4 ucode-mod-digest kmod-nft-tproxy"
-fi
+if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then PACKAGES="$PACKAGES firewall4 ucode-mod-digest kmod-nft-tproxy"; fi
 PACKAGES="$(printf '%s\n' $PACKAGES | awk '!seen[$0]++' | tr '\n' ' ' | xargs)"
 
 if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
@@ -284,9 +192,7 @@ if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
         tar -xzf /tmp/clash-meta.tar.gz -C /tmp
         META_BIN="$(find /tmp -maxdepth 2 -type f -name clash_meta -print -quit 2>/dev/null || true)"
         [ -z "$META_BIN" ] || install -m 0755 "$META_BIN" "$FILES_DIR/etc/openclash/core/clash_meta"
-    else
-        echo "WARNING: OpenClash core download failed."
-    fi
+    else echo "WARNING: OpenClash core download failed."; fi
     curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -o "$FILES_DIR/etc/openclash/GeoIP.dat" || true
     curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -o "$FILES_DIR/etc/openclash/GeoSite.dat" || true
 fi
@@ -303,13 +209,6 @@ exit 0
 EOF
 chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
 
-make image \
-    PROFILE="generic" \
-    PACKAGES="$PACKAGES" \
-    FILES="$FILES_DIR" \
-    ROOTFS_PARTSIZE="${PROFILE:-4096}" \
-    ADD_LOCAL_KEY=1 \
-    CONFIG_SIGNATURE_CHECK=1 \
-    V=s
+make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="$FILES_DIR" ROOTFS_PARTSIZE="${PROFILE:-4096}" ADD_LOCAL_KEY=1 CONFIG_SIGNATURE_CHECK=1 V=s
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') - ImageBuilder build completed successfully."
