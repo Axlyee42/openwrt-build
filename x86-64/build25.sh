@@ -72,6 +72,14 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
         rm -rf "$tmp_run_dir"
     done
     find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
+
+    # The wukongdaily repository contains several independent proxy stacks.
+    # clashoo and nikki conflict with each other and neither is requested by
+    # this build, so remove both stacks before generating the local index.
+    find "$PACKAGES_DIR" -maxdepth 1 -type f \( \
+        -name 'clashoo-*.apk' -o -name 'luci-app-clashoo-*.apk' -o -name 'luci-i18n-clashoo-*.apk' -o \
+        -name 'nikki-*.apk' -o -name 'luci-app-nikki-*.apk' -o -name 'luci-i18n-nikki-*.apk' \
+    \) -print -delete
 fi
 
 # OpenClash is not part of the official OpenWrt feeds. Its current APK is
@@ -89,6 +97,34 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     test -s "$OPENCLASH_FILE"
     echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
 fi
+
+# Four requested LuCI packages are not present in the official OpenWrt
+# 25.12.5 x86_64 feed. ImmortalWrt's 25.12 x86_64 package feed is built from
+# the same OpenWrt/APKv3 ecosystem and publishes these small LuCI packages.
+# Fetch only these requested packages, then re-sign them with our local key.
+IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
+for wanted in \
+    luci-app-autoreboot \
+    luci-i18n-autoreboot-zh-cn \
+    luci-app-filebrowser-go \
+    luci-i18n-filebrowser-go-zh-cn \
+    luci-app-timewol \
+    luci-i18n-timewol-zh-cn \
+    luci-app-vlmcsd \
+    luci-i18n-vlmcsd-zh-cn
+ do
+    if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then
+        index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
+        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+'"'"'"'.apk' | sed 's/^href="//' | grep -E "/${wanted}-[^/]+\\.apk$" | tail -n1 || true)"
+        if [ -z "$filename" ]; then
+            echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 feed: $wanted"
+            exit 1
+        fi
+        curl -fL "$IMMORTAL_LUCI_BASE/$filename" -o "$PACKAGES_DIR/$filename"
+        test -s "$PACKAGES_DIR/$filename"
+        echo "Compatibility LuCI APK: $filename"
+    fi
+done
 
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
 echo "Third-party APK files: $APK_COUNT"
@@ -115,11 +151,6 @@ if [ "$APK_COUNT" -gt 0 ]; then
     # package by name with "package mentioned in index not found". Install
     # actual local APK files directly while keeping the signed index for
     # repository metadata and dependency resolution.
-    #
-    # CUSTOM_PACKAGES contains both locally supplied third-party packages
-    # and packages expected from the normal OpenWrt feeds. Only packages
-    # that actually exist in PACKAGES_DIR are filtered from BUILD_PACKAGES.
-    # Feed packages remain in BUILD_PACKAGES and are resolved normally.
     LOCAL_APK_NAMES=""
     for pkg in $CUSTOM_PACKAGES; do
         if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then
