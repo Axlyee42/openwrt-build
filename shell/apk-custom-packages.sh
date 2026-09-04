@@ -29,9 +29,6 @@ CUSTOM_PACKAGES="
    luci-app-autoreboot
    luci-i18n-autoreboot-zh-cn
 
-   # Network port status
-   luci-app-port-status
-
   # luci-app-passwall
   # luci-i18n-passwall-zh-cn
 
