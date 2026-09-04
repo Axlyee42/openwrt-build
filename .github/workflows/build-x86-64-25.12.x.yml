@@ -80,11 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          latest="$({
-            git ls-remote --tags --refs https://github.com/openwrt/openwrt.git
-          } | grep -oE 'refs/tags/v25\.12\.[0-9]+$' | sed 's#refs/tags/v##' | sort -V | tail -n 1)"
-
+          latest="$({ git ls-remote --tags --refs https://github.com/openwrt/openwrt.git; } | grep -oE 'refs/tags/v25\\.12\\.[0-9]+$' | sed 's#refs/tags/v##' | sort -V | tail -n 1)"
           if [ -z "$latest" ]; then
             echo "ERROR: cannot determine latest OpenWrt 25.12.x"
             exit 1
@@ -110,7 +106,7 @@ jobs:
             should_build=false
           fi
 
-          if ! printf '%s\n' "$version" | grep -Eq '^25\.12\.[0-9]+$'; then
+          if ! printf '%s\\n' "$version" | grep -Eq '^25\\.12\\.[0-9]+$'; then
             echo "ERROR: invalid OpenWrt version: $version"
             exit 1
           fi
@@ -147,19 +143,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-
           curl -fL "$base/$archive" -o "$archive"
           curl -fL "$base/sha256sums" -o sha256sums
-
           grep "  $archive$" sha256sums | sha256sum -c -
-
           rm -rf imagebuilder
           mkdir -p imagebuilder
           tar --use-compress-program=unzstd -xf "$archive" -C imagebuilder --strip-components=1
-
           test -f imagebuilder/Makefile
           test -x imagebuilder/staging_dir/host/bin/apk
           echo "Official OpenWrt ImageBuilder $OPENWRT_VERSION is ready."
@@ -179,7 +170,7 @@ jobs:
           bash -n shell/apk-custom-packages.sh
           source shell/apk-custom-packages.sh
           test -n "${CUSTOM_PACKAGES:-}"
-          printf '%s\n' "$CUSTOM_PACKAGES"
+          printf '%s\\n' "$CUSTOM_PACKAGES"
 
       - name: Build with ImageBuilder
         working-directory: imagebuilder
@@ -189,7 +180,6 @@ jobs:
           PROFILE_INPUT: ${{ env.ROOTFS_SIZE }}
         run: |
           set -euo pipefail
-
           case "$PROFILE_INPUT" in
             1G) PROFILE=1024 ;;
             2G) PROFILE=2048 ;;
@@ -197,7 +187,6 @@ jobs:
             4G) PROFILE=4096 ;;
             *) echo "ERROR: invalid ROOTFS_SIZE: $PROFILE_INPUT"; exit 1 ;;
           esac
-
           export PROFILE LAN_IP
           chmod +x "$GITHUB_WORKSPACE/x86-64/build25.sh"
           bash "$GITHUB_WORKSPACE/x86-64/build25.sh"
@@ -209,17 +198,14 @@ jobs:
           set -euo pipefail
           out="bin/targets/x86/64"
           test -d "$out"
-          find "$out" -maxdepth 1 -type f -printf '%f\n' | sort
+          find "$out" -maxdepth 1 -type f -printf '%f\\n' | sort
           test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
           test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
 
       - name: Prepare release files
         shell: bash
-        env:
-          BUILD_DATE: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
-
           case "$ROOTFS_SIZE" in
             1G) PARTSIZE=1024 ;;
             2G) PARTSIZE=2048 ;;
@@ -232,14 +218,12 @@ jobs:
           release="release"
           out="imagebuilder/bin/targets/x86/64"
           mkdir -p "$release"
-
           bios="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
           uefi="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
 
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
             cp "$bios" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-BIOS-ext4.img.gz"
           fi
-
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
             cp "$uefi" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI-ext4.img.gz"
           fi
@@ -247,32 +231,29 @@ jobs:
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ] || [ "${{ inputs.vmdk }}" = "true" ] || [ "${{ inputs.raw }}" = "true" ]; then
             gzip -dc "$uefi" > /tmp/openwrt.raw
           fi
-
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ]; then
             qemu-img convert -f raw -O qcow2 /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.qcow2"
           fi
-
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.vmdk }}" = "true" ]; then
             qemu-img convert -f raw -O vmdk /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.vmdk"
           fi
-
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.raw }}" = "true" ]; then
             cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"
           fi
 
-          cat > "$release/build-info.txt" <<EOF
-OpenWrt Custom x86-64
-=====================
-Version: ${OPENWRT_VERSION}
-Build method: Official OpenWrt ImageBuilder
-Target: x86/64 generic
-Filesystem: EXT4
-ROOTFS partition: ${PARTSIZE} MB
-LAN IP: ${LAN_IP}
-APK: OpenWrt 25.12 APKv3
-Third-party APKs: signed with a local EC key
-Local packages.adb: signed with the same local EC key
-EOF
+          {
+            printf '%s\\n' 'OpenWrt Custom x86-64'
+            printf '%s\\n' '====================='
+            printf 'Version: %s\\n' "$OPENWRT_VERSION"
+            printf '%s\\n' 'Build method: Official OpenWrt ImageBuilder'
+            printf '%s\\n' 'Target: x86/64 generic'
+            printf '%s\\n' 'Filesystem: EXT4'
+            printf 'ROOTFS partition: %s MB\\n' "$PARTSIZE"
+            printf 'LAN IP: %s\\n' "$LAN_IP"
+            printf '%s\\n' 'APK: OpenWrt 25.12 APKv3'
+            printf '%s\\n' 'Third-party APKs: signed with a local EC key'
+            printf '%s\\n' 'Local packages.adb: signed with the same local EC key'
+          } > "$release/build-info.txt"
 
           (cd "$release" && sha256sum * > sha256sums)
           ls -lh "$release"
@@ -299,7 +280,7 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s\n' "$OPENWRT_VERSION" > openwrt-version
+          printf '%s\\n' "$OPENWRT_VERSION" > openwrt-version
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add openwrt-version
