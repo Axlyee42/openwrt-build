@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenWrt 25.12.x third-party APK package list.
 #
-# All third-party APKs are OPT-IN. Uncomment a package line below to include it.
+# All third-party APKs are OPT-IN unless explicitly listed as default below.
 # Packages from wukongdaily/apk are only staged when at least one option is enabled.
 #
 # PassWall2 is intentionally not offered here because it is not needed.
@@ -31,10 +31,11 @@ CUSTOM_PACKAGES="
 
   # luci-app-passwall
   # luci-i18n-passwall-zh-cn
-  # geoview
-  # xray-core
-  # sing-box
-  # hysteria
+
+  # Xray / Hysteria / GeoView are included by default.
+  geoview
+  xray-core
+  hysteria
 
   # luci-app-openclash
 
