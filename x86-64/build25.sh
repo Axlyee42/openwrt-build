@@ -103,6 +103,53 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
 fi
 
+# HomeProxy: use the szwjp fork and pair it with sing-box 1.14.0.
+# The fork explicitly adapts its generated configuration for sing-box 1.14.
+if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
+    HOMEProxy_API="https://api.github.com/repos/szwjp/homeproxy/releases/tags/luci-app-homeproxy"
+    HOMEProxy_JSON="$(curl -fsSL "$HOMEProxy_API")"
+    HOMEProxy_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-app-homeproxy-") and a.get("name","").endswith(".apk")), ""))')"
+    HOMEProxy_I18N_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-i18n-homeproxy-zh-cn-") and a.get("name","").endswith(".apk")), ""))')"
+    if [ -z "$HOMEProxy_URL" ] || [ -z "$HOMEProxy_I18N_URL" ]; then
+        echo "ERROR: could not find szwjp/homeproxy APK assets."
+        exit 1
+    fi
+    curl -fL "$HOMEProxy_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_URL")"
+    curl -fL "$HOMEProxy_I18N_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_I18N_URL")"
+
+    SINGBOX_VERSION="1.14.0"
+    SINGBOX_TARBALL="/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+    SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+    curl -fL "$SINGBOX_URL" -o "$SINGBOX_TARBALL"
+    SINGBOX_TMP="$(mktemp -d)"
+    tar -xzf "$SINGBOX_TARBALL" -C "$SINGBOX_TMP"
+    SINGBOX_BIN="$(find "$SINGBOX_TMP" -type f -name sing-box -print -quit)"
+    if [ -z "$SINGBOX_BIN" ]; then
+        echo "ERROR: sing-box 1.14.0 binary not found in release archive."
+        exit 1
+    fi
+    chmod 0755 "$SINGBOX_BIN"
+    "$SINGBOX_BIN" version
+
+    SINGBOX_PKG_DIR="$(mktemp -d)"
+    mkdir -p "$SINGBOX_PKG_DIR/usr/bin" "$SINGBOX_PKG_DIR/etc/sing-box"
+    install -m 0755 "$SINGBOX_BIN" "$SINGBOX_PKG_DIR/usr/bin/sing-box"
+    cat > "$SINGBOX_PKG_DIR/etc/sing-box/config.json" <<'EOF'
+{}
+EOF
+    "$APK_BIN" mkpkg \
+        --info "name:sing-box" \
+        --info "version:${SINGBOX_VERSION}-r1" \
+        --info "description:sing-box ${SINGBOX_VERSION} runtime for HomeProxy" \
+        --info "arch:x86_64" \
+        --info "provides:sing-box" \
+        --files "$SINGBOX_PKG_DIR" \
+        --output "$PACKAGES_DIR/sing-box-${SINGBOX_VERSION}-r1.apk"
+    rm -rf "$SINGBOX_TMP" "$SINGBOX_PKG_DIR"
+    echo "HomeProxy fork APKs: $(basename "$HOMEProxy_URL"), $(basename "$HOMEProxy_I18N_URL")"
+    echo "HomeProxy sing-box: ${SINGBOX_VERSION}"
+fi
+
 # These LuCI applications are not all available in the official OpenWrt 25.12.5
 # feed. ImmortalWrt provides matching 25.12 x86_64 APKv3 builds.
 IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
@@ -175,6 +222,11 @@ if [ "$APK_COUNT" -gt 0 ]; then
             LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"
         fi
     done
+    # HomeProxy's sing-box runtime is a generated local APK even though it is
+    # a dependency rather than a user-facing CUSTOM_PACKAGES entry.
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-1.14.0-r1.apk' -print -quit | grep -q .; then
+        LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"
+    fi
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
     if [ -z "$LOCAL_APK_NAMES" ]; then
         echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."
@@ -198,9 +250,11 @@ if needle not in text:
 if "OPENWRT_BUILD_LOCAL_APK_WORKAROUND" in text:
     raise SystemExit(0)
 filtered = "$(filter-out " + " ".join(local_names) + ",$(BUILD_PACKAGES))"
+local_apks = "$(foreach p," + " ".join(local_names) + ",$(wildcard $(PACKAGE_DIR)/$(p)-*.apk))"
 replacement = (
     "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n"
-    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " $(wildcard $(PACKAGE_DIR)/*.apk)"
+    "\tLOCAL_APK_FILES := " + local_apks + "\n"
+    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " $(LOCAL_APK_FILES)"
 )
 path.write_text(text.replace(needle, replacement, 1))
 PY
@@ -219,6 +273,9 @@ PACKAGES="$PACKAGES luci-proto-ipv6 odhcp6c odhcpd-ipv6only"
 PACKAGES="$PACKAGES luci-compat kmod-tun kmod-inet-diag kmod-nft-socket kmod-nft-tproxy"
 PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
+if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
+    PACKAGES="$PACKAGES firewall4 ucode-mod-digest kmod-nft-tproxy"
+fi
 PACKAGES="$(printf '%s\n' $PACKAGES | awk '!seen[$0]++' | tr '\n' ' ' | xargs)"
 
 if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
