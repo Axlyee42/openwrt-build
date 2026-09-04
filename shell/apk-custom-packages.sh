@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # OpenWrt 25.12.x third-party APK package list.
 #
-# All third-party APKs are OPT-IN. Uncomment a package below to include it.
-# Keep this list intentionally small: packages pulled from wukongdaily/apk are
-# otherwise only staged/signed and are not installed into the firmware.
+# All third-party APKs are OPT-IN. Uncomment a package line below to include it.
+# Packages from wukongdaily/apk are only staged when at least one option is enabled.
 #
 # PassWall2 is intentionally not offered here because it is not needed.
 
@@ -38,8 +37,12 @@ CUSTOM_PACKAGES="
   # hysteria
 
   # luci-app-openclash
+
+  # HomeProxy (szwjp fork, sing-box 1.14 compatible)
+  # luci-app-homeproxy
+  # luci-i18n-homeproxy-zh-cn
 "
 
-# Remove comments/blank lines so only uncommented entries become active.
+# Strip commented/blank lines so only uncommented entries become active.
 CUSTOM_PACKAGES="$(printf '%s\n' "$CUSTOM_PACKAGES" | sed 's/#.*//' | xargs)"
 export CUSTOM_PACKAGES
