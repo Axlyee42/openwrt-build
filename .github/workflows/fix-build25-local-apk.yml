@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - shell/apk-custom-packages.sh
+      - .github/workflows/fix-build25-local-apk.yml
 
 permissions:
   contents: write
