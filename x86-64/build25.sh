@@ -13,7 +13,6 @@ source "$REPO_ROOT/shell/apk-custom-packages.sh"
 
 mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
 
-# Use the apk/openssl shipped by the official OpenWrt ImageBuilder.
 APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
 OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
 
@@ -40,8 +39,6 @@ if [ ! -f "$IMAGEBUILDER_DIR/Makefile" ]; then
     exit 1
 fi
 
-# OpenWrt 25.12 uses APKv3/ADB signatures. We use one local EC key for both
-# the third-party APK files and the generated local packages.adb index.
 LOCAL_PRIVATE_KEY="$KEY_DIR/local-private-key.pem"
 LOCAL_PUBLIC_KEY="$KEY_DIR/local-public-key.pem"
 if [ ! -s "$LOCAL_PRIVATE_KEY" ]; then
@@ -54,7 +51,6 @@ if [ ! -s "$LOCAL_PUBLIC_KEY" ]; then
 fi
 install -m 0644 "$LOCAL_PUBLIC_KEY" "$FILES_DIR/etc/apk/keys/local-public-key.pem"
 
-# Download the third-party APK repository and extract its x86 packages.
 rm -rf /tmp/wukongdaily-apk
 if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/wukongdaily-apk
@@ -85,7 +81,6 @@ if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
     exit 1
 fi
 
-# Sign every local APK and then create a signed packages.adb.
 if [ "$APK_COUNT" -gt 0 ]; then
     while IFS= read -r -d '' apk_file; do
         "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
@@ -97,12 +92,36 @@ if [ "$APK_COUNT" -gt 0 ]; then
         "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk
     )
     test -s "$PACKAGES_DIR/packages.adb"
-
-    # Verify the exact index that ImageBuilder will consume.
     "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
+
+    # OpenWrt 25.12.5 has a known ImageBuilder/APKv3 regression for local APKs:
+    # the index contains the package, but apk later cannot resolve the package
+    # payload from packages.adb and reports "package mentioned in index not found".
+    # Keep the signed index, but install the actual local APK files directly.
+    if ! grep -q 'OPENWRT_BUILD_LOCAL_APK_WORKAROUND' "$IMAGEBUILDER_DIR/Makefile"; then
+        python3 - "$IMAGEBUILDER_DIR/Makefile" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+marker = "# OPENWRT_BUILD_LOCAL_APK_WORKAROUND"
+needle = "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts $(BUILD_PACKAGES)"
+insert = (
+    marker + "\n" +
+    needle + "\n" +
+    "\t@if [ -n \"$(wildcard $(PACKAGE_DIR)/*.apk)\" ]; then \\\n" +
+    "\t\techo 'Installing local third-party APK files directly...'; \\\n" +
+    "\t\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts $(wildcard $(PACKAGE_DIR)/*.apk); \\\n" +
+    "\tfi"
+)
+if needle not in text:
+    raise SystemExit("ERROR: ImageBuilder package_install command not found")
+path.write_text(text.replace(needle, insert, 1))
+PY
+    fi
 fi
 
-# Official OpenWrt 25.12 packages. Keep these OUT of apk-custom-packages.sh.
 PACKAGES=""
 PACKAGES="$PACKAGES luci luci-ssl luci-base uhttpd uhttpd-mod-ubus"
 PACKAGES="$PACKAGES luci-theme-bootstrap luci-i18n-base-zh-cn"
@@ -118,14 +137,11 @@ PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
 PACKAGES="$(printf '%s\n' $PACKAGES | awk '!seen[$0]++' | tr '\n' ' ' | xargs)"
 
-# Optional OpenClash runtime data.
 if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     mkdir -p "$FILES_DIR/etc/openclash/core"
     META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
     if curl -fL "$META_URL" -o /tmp/clash-meta.tar.gz; then
         tar -xzf /tmp/clash-meta.tar.gz -C /tmp
-        # /tmp may contain systemd-private directories on GitHub runners.
-        # A permission-denied from find must never abort the build under set -e.
         META_BIN="$(find /tmp -maxdepth 2 -type f -name clash_meta -print -quit 2>/dev/null || true)"
         [ -z "$META_BIN" ] || install -m 0755 "$META_BIN" "$FILES_DIR/etc/openclash/core/clash_meta"
     else
@@ -135,7 +151,6 @@ if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -o "$FILES_DIR/etc/openclash/GeoSite.dat" || true
 fi
 
-# Default Chinese UI and LAN address.
 LAN_IP="${LAN_IP:-192.168.1.2}"
 mkdir -p "$FILES_DIR/etc/uci-defaults"
 cat > "$FILES_DIR/etc/uci-defaults/99-custom-build" <<EOF
@@ -148,9 +163,6 @@ exit 0
 EOF
 chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
 
-# Official OpenWrt ImageBuilder only: no source compilation, no toolchain build.
-# ADD_LOCAL_KEY=1 keeps the local public key in /etc/apk/keys.
-# CONFIG_SIGNATURE_CHECK=1 forces signed local APK index handling.
 make image \
     PROFILE="generic" \
     PACKAGES="$PACKAGES" \
