@@ -11,13 +11,13 @@ on:
         required: false
         default: ""
         type: string
-      lan_ip:
-        description: "LAN 管理地址"
+      custom_router_ip:
+        description: "请设置路由器的管理地址（多网口路由器有效）"
         required: true
-        default: "192.168.1.2"
+        default: "192.168.100.1"
         type: string
       rootfs_size:
-        description: "ROOTFS 分区大小"
+        description: "选择软件包空间大小"
         required: true
         default: "4G"
         type: choice
@@ -26,10 +26,28 @@ on:
           - "2G"
           - "3G"
           - "4G"
+      enable_pppoe:
+        description: "是否配置PPPoE拨号信息?"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "yes"
+          - "no"
+      pppoe_account:
+        description: "宽带账号（若启用PPPoE）"
+        required: false
+        default: ""
+        type: string
+      pppoe_password:
+        description: "宽带密码（若启用PPPoE）"
+        required: false
+        default: ""
+        type: string
       bios:
         description: "生成 BIOS EXT4"
         required: true
-        default: true
+        default: false
         type: boolean
       uefi:
         description: "生成 UEFI EXT4"
@@ -64,7 +82,7 @@ concurrency:
 
 env:
   OPENWRT_BRANCH: "25.12"
-  DEFAULT_LAN_IP: "192.168.1.2"
+  DEFAULT_LAN_IP: "192.168.100.1"
   DEFAULT_ROOTFS_SIZE: "4G"
 
 jobs:
@@ -88,13 +106,9 @@ jobs:
             echo "ERROR: cannot determine latest OpenWrt 25.12.x"
             exit 1
           fi
-
           requested="${{ inputs.openwrt_version }}"
           last=""
-          if [ -f openwrt-version ]; then
-            last="$(tr -d '[:space:]' < openwrt-version)"
-          fi
-
+          if [ -f openwrt-version ]; then last="$(tr -d '[:space:]' < openwrt-version)"; fi
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             version="${requested:-$latest}"
             should_build=true
@@ -108,12 +122,10 @@ jobs:
             version="$latest"
             should_build=false
           fi
-
           if ! printf '%s\n' "$version" | grep -Eq '^25[.]12[.][0-9]+$'; then
             echo "ERROR: invalid OpenWrt version: $version"
             exit 1
           fi
-
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
           echo "Latest: $latest"
@@ -128,8 +140,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       OPENWRT_VERSION: ${{ needs.check-version.outputs.version }}
-      LAN_IP: ${{ inputs.lan_ip || '192.168.1.2' }}
+      LAN_IP: ${{ inputs.custom_router_ip || '192.168.100.1' }}
       ROOTFS_SIZE: ${{ inputs.rootfs_size || '4G' }}
+      ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
+      PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
+      PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
 
     steps:
       - name: Checkout
@@ -142,6 +157,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl git qemu-utils zstd xz-utils gzip tar unzip openssl
 
+      - name: Validate PPPoE Inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$ENABLE_PPPOE" = "yes" ]; then
+            if [ -z "$PPPOE_ACCOUNT" ] || [ -z "$PPPOE_PASSWORD" ]; then
+              echo "ERROR: PPPoE account and password must be provided when PPPoE is enabled."
+              exit 1
+            fi
+          fi
+
       - name: Prepare ImageBuilder
         shell: bash
         run: |
@@ -150,7 +176,6 @@ jobs:
           archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           curl -fL "$base/$archive" -o "$archive"
           curl -fL "$base/sha256sums" -o sha256sums
-
           checksum="$(awk -v f="$archive" '$NF == f || $NF == ("*" f) {print $1; exit}' sha256sums)"
           if [ -z "$checksum" ]; then
             echo "ERROR: checksum entry not found for $archive"
@@ -165,7 +190,6 @@ jobs:
             exit 1
           fi
           echo "SHA256 OK: $actual"
-
           rm -rf imagebuilder
           mkdir -p imagebuilder
           tar --use-compress-program=unzstd -xf "$archive" -C imagebuilder --strip-components=1
@@ -176,9 +200,7 @@ jobs:
       - name: Show ImageBuilder information
         working-directory: imagebuilder
         shell: bash
-        run: |
-          set -euo pipefail
-          make info
+        run: make info
 
       - name: Validate custom APK manifest
         shell: bash
@@ -190,12 +212,30 @@ jobs:
           test -n "${CUSTOM_PACKAGES:-}"
           printf '%s\n' "$CUSTOM_PACKAGES"
 
+      - name: Prepare network settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p imagebuilder/files/etc/config
+          printf '%s\n' "$LAN_IP" > imagebuilder/files/etc/config/custom_router_ip.txt
+          cat > imagebuilder/files/etc/config/pppoe-settings <<EOF
+          enable_pppoe='$ENABLE_PPPOE'
+          pppoe_account='$PPPOE_ACCOUNT'
+          pppoe_password='$PPPOE_PASSWORD'
+          EOF
+          chmod 0600 imagebuilder/files/etc/config/pppoe-settings
+          echo "LAN management IP: $LAN_IP"
+          echo "PPPoE enabled: $ENABLE_PPPOE"
+
       - name: Build with ImageBuilder
         working-directory: imagebuilder
         shell: bash
         env:
           LAN_IP: ${{ env.LAN_IP }}
           PROFILE_INPUT: ${{ env.ROOTFS_SIZE }}
+          ENABLE_PPPOE: ${{ env.ENABLE_PPPOE }}
+          PPPOE_ACCOUNT: ${{ env.PPPOE_ACCOUNT }}
+          PPPOE_PASSWORD: ${{ env.PPPOE_PASSWORD }}
         run: |
           set -euo pipefail
           case "$PROFILE_INPUT" in
@@ -205,7 +245,7 @@ jobs:
             4G) PROFILE=4096 ;;
             *) echo "ERROR: invalid ROOTFS_SIZE: $PROFILE_INPUT"; exit 1 ;;
           esac
-          export PROFILE LAN_IP
+          export PROFILE LAN_IP ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD
           chmod +x "$GITHUB_WORKSPACE/x86-64/build25.sh"
           bash "$GITHUB_WORKSPACE/x86-64/build25.sh"
 
@@ -217,8 +257,12 @@ jobs:
           out="bin/targets/x86/64"
           test -d "$out"
           find "$out" -maxdepth 1 -type f -printf '%f\n' | sort
-          test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
-          test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
+            test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
+          fi
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
+            test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
+          fi
 
       - name: Prepare release files
         shell: bash
@@ -231,21 +275,18 @@ jobs:
             4G) PARTSIZE=4096 ;;
             *) exit 1 ;;
           esac
-
           stamp="$(date -u '+%Y%m%d-%H%M%S')"
           release="release"
           out="imagebuilder/bin/targets/x86/64"
           mkdir -p "$release"
-          bios="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
-          uefi="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
-
+          bios="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit || true)"
+          uefi="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit || true)"
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
             cp "$bios" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-BIOS-ext4.img.gz"
           fi
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
             cp "$uefi" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI-ext4.img.gz"
           fi
-
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ] || [ "${{ inputs.vmdk }}" = "true" ] || [ "${{ inputs.raw }}" = "true" ]; then
             gzip -dc "$uefi" > /tmp/openwrt.raw
           fi
@@ -258,7 +299,6 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.raw }}" = "true" ]; then
             cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"
           fi
-
           {
             printf '%s\n' 'OpenWrt Custom x86-64'
             printf '%s\n' '====================='
@@ -268,11 +308,11 @@ jobs:
             printf '%s\n' 'Filesystem: EXT4'
             printf 'ROOTFS partition: %s MB\n' "$PARTSIZE"
             printf 'LAN IP: %s\n' "$LAN_IP"
+            printf 'PPPoE enabled: %s\n' "$ENABLE_PPPOE"
             printf '%s\n' 'APK: OpenWrt 25.12 APKv3'
             printf '%s\n' 'Third-party APKs: signed with a local EC key'
             printf '%s\n' 'Local packages.adb: signed with the same local EC key'
           } > "$release/build-info.txt"
-
           (cd "$release" && sha256sum * > sha256sums)
           ls -lh "$release"
 
@@ -286,8 +326,10 @@ jobs:
 
             - OpenWrt: `${{ env.OPENWRT_VERSION }}`
             - Target: `x86/64 generic`
-            - EXT4 BIOS / UEFI
-            - QCOW2 / VMDK / RAW 按选项生成
+            - UEFI EXT4 默认生成
+            - BIOS / VMDK / RAW 默认不生成，可在手动触发时选择
+            - QCOW2 默认生成，可在手动触发时关闭
+            - PPPoE 可在手动触发时填写账号和密码
             - 25.12 APKv3 本地第三方 APK 使用 EC key 重新签名
             - 本地 `packages.adb` 使用同一 EC key 签名
             - ImageBuilder 使用 `ADD_LOCAL_KEY=1` 将公钥写入 `/etc/apk/keys`
