@@ -1,6 +1,9 @@
 name: Build 25.12.x x86-64
 
 on:
+  push:
+    paths-ignore:
+      - "openwrt-version"
   workflow_dispatch:
     inputs:
       openwrt_version:
