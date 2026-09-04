@@ -75,10 +75,19 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
 
     # The wukongdaily repository contains independent proxy stacks that
     # conflict with each other. Neither clashoo nor nikki is requested here.
-    find "$PACKAGES_DIR" -maxdepth 1 -type f \( \
+    rm -f "$PACKAGES_DIR"/clashoo-*.apk \
+          "$PACKAGES_DIR"/luci-app-clashoo-*.apk \
+          "$PACKAGES_DIR"/luci-i18n-clashoo-*.apk \
+          "$PACKAGES_DIR"/nikki-*.apk \
+          "$PACKAGES_DIR"/luci-app-nikki-*.apk \
+          "$PACKAGES_DIR"/luci-i18n-nikki-*.apk
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f \( \
         -name 'clashoo-*.apk' -o -name 'luci-app-clashoo-*.apk' -o -name 'luci-i18n-clashoo-*.apk' -o \
         -name 'nikki-*.apk' -o -name 'luci-app-nikki-*.apk' -o -name 'luci-i18n-nikki-*.apk' \
-    \) -print -delete
+    \) -print -quit | grep -q .; then
+        echo "ERROR: conflicting clashoo/nikki APKs were not removed."
+        exit 1
+    fi
 fi
 
 # OpenClash is not part of the official OpenWrt feeds. Its current APK is
@@ -97,10 +106,11 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
 fi
 
-# These four requested LuCI applications are not shipped by the official
-# OpenWrt 25.12.5 x86_64 feed. ImmortalWrt publishes matching 25.12 x86_64
-# APKv3 builds, so fetch only these requested packages and re-sign them with
-# our local EC key. Their dependencies are still resolved against OpenWrt.
+# These LuCI applications are not all available in the official OpenWrt
+# 25.12.5 x86_64 feed. ImmortalWrt publishes matching 25.12 x86_64 APKv3
+# builds. Fetch the requested LuCI packages plus their two runtime packages
+# that are not in the official ImageBuilder package set: filebrowser and
+# vlmcsd. All are re-signed below with our local EC key.
 IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
 for wanted in \
     luci-app-autoreboot \
@@ -116,12 +126,27 @@ for wanted in \
         index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
         filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\\.apk$" | tail -n1 || true)"
         if [ -z "$filename" ]; then
-            echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 feed: $wanted"
+            echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 luci feed: $wanted"
             exit 1
         fi
         curl -fL "$IMMORTAL_LUCI_BASE/$filename" -o "$PACKAGES_DIR/$filename"
         test -s "$PACKAGES_DIR/$filename"
         echo "Compatibility LuCI APK: $filename"
+    fi
+done
+
+IMMORTAL_PACKAGES_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/packages"
+for wanted in filebrowser vlmcsd; do
+    if printf '%s\n' "$CUSTOM_PACKAGES" | grep -Eq '(^|[[:space:]])(luci-app-filebrowser-go|luci-app-vlmcsd)([[:space:]]|$)' && { [ "$wanted" = filebrowser ] && printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw luci-app-filebrowser-go || [ "$wanted" = vlmcsd ] && printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw luci-app-vlmcsd; }; then
+        index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
+        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\\.apk$" | tail -n1 || true)"
+        if [ -z "$filename" ]; then
+            echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"
+            exit 1
+        fi
+        curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
+        test -s "$PACKAGES_DIR/$filename"
+        echo "Compatibility runtime APK: $filename"
     fi
 done
 
@@ -145,11 +170,6 @@ if [ "$APK_COUNT" -gt 0 ]; then
     test -s "$PACKAGES_DIR/packages.adb"
     "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
 
-    # OpenWrt 25.12.x ImageBuilder has a regression with local APK entries:
-    # the signed packages.adb is valid, but apk may fail to resolve a local
-    # package by name with "package mentioned in index not found". Install
-    # actual local APK files directly while keeping the signed index for
-    # repository metadata and dependency resolution.
     LOCAL_APK_NAMES=""
     for pkg in $CUSTOM_PACKAGES; do
         if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then
@@ -218,23 +238,3 @@ fi
 
 LAN_IP="${LAN_IP:-192.168.1.2}"
 mkdir -p "$FILES_DIR/etc/uci-defaults"
-cat > "$FILES_DIR/etc/uci-defaults/99-custom-build" <<EOF
-#!/bin/sh
-uci -q set luci.main.lang='zh_cn'
-uci -q commit luci
-uci -q set network.lan.ipaddr='${LAN_IP}'
-uci -q commit network
-exit 0
-EOF
-chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
-
-make image \
-    PROFILE="generic" \
-    PACKAGES="$PACKAGES" \
-    FILES="$FILES_DIR" \
-    ROOTFS_PARTSIZE="${PROFILE:-4096}" \
-    ADD_LOCAL_KEY=1 \
-    CONFIG_SIGNATURE_CHECK=1 \
-    V=s
-
-echo "$(date '+%Y-%m-%d %H:%M:%S') - ImageBuilder build completed successfully."
