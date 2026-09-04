@@ -1,5 +1,5 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -7,64 +7,157 @@ IMAGEBUILDER_DIR="${IMAGEBUILDER_DIR:-$(pwd)}"
 FILES_DIR="$IMAGEBUILDER_DIR/files"
 PACKAGES_DIR="$IMAGEBUILDER_DIR/packages"
 EXTRA_DIR="$IMAGEBUILDER_DIR/extra-packages"
+KEY_DIR="$IMAGEBUILDER_DIR/keys"
 
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
 
-echo "第三方 apk 软件包: ${CUSTOM_PACKAGES:-无}"
-echo "编译固件大小: ${PROFILE:-1024} MB"
+mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
 
-mkdir -p "$FILES_DIR/etc/config"
-cat > "$FILES_DIR/etc/config/pppoe-settings" <<EOF
-enable_pppoe=${ENABLE_PPPOE:-no}
-pppoe_account=${PPPOE_ACCOUNT:-}
-pppoe_password=${PPPOE_PASSWORD:-}
-EOF
+# Use the apk/openssl shipped by the official OpenWrt ImageBuilder.
+APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
+OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
 
-bash "$REPO_ROOT/shell/apk-prepare-thirdparty-sources.sh"
+if [ ! -x "$APK_BIN" ]; then
+    APK_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/apk' -perm -111 -print -quit 2>/dev/null || true)"
+fi
+if [ ! -x "$OPENSSL_BIN" ]; then
+    OPENSSL_BIN="$(find "$IMAGEBUILDER_DIR" -type f -path '*/staging_dir/host/bin/openssl' -perm -111 -print -quit 2>/dev/null || true)"
+fi
 
+if [ ! -x "$APK_BIN" ]; then
+    echo "ERROR: official ImageBuilder apk binary not found."
+    exit 1
+fi
+if [ ! -x "$OPENSSL_BIN" ]; then
+    OPENSSL_BIN="$(command -v openssl || true)"
+fi
+if [ -z "$OPENSSL_BIN" ] || [ ! -x "$OPENSSL_BIN" ]; then
+    echo "ERROR: openssl not found."
+    exit 1
+fi
+if [ ! -f "$IMAGEBUILDER_DIR/Makefile" ]; then
+    echo "ERROR: official OpenWrt ImageBuilder Makefile not found."
+    exit 1
+fi
+
+# OpenWrt 25.12 uses APKv3/ADB signatures.  We use one local EC key for both
+# the third-party APK files and the generated local packages.adb index.
+LOCAL_PRIVATE_KEY="$KEY_DIR/local-private-key.pem"
+LOCAL_PUBLIC_KEY="$KEY_DIR/local-public-key.pem"
+if [ ! -s "$LOCAL_PRIVATE_KEY" ]; then
+    umask 077
+    "$OPENSSL_BIN" ecparam -name prime256v1 -genkey -noout -out "$LOCAL_PRIVATE_KEY"
+    umask 022
+fi
+if [ ! -s "$LOCAL_PUBLIC_KEY" ]; then
+    "$OPENSSL_BIN" ec -in "$LOCAL_PRIVATE_KEY" -pubout -out "$LOCAL_PUBLIC_KEY"
+fi
+install -m 0644 "$LOCAL_PUBLIC_KEY" "$FILES_DIR/etc/apk/keys/local-public-key.pem"
+
+# Download the third-party APK repository and extract its x86 packages.
+rm -rf /tmp/wukongdaily-apk
 if [ -n "${CUSTOM_PACKAGES:-}" ]; then
-  echo "同步第三方 apk 仓库"
-  rm -rf /tmp/store-apk-repo
-  git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/store-apk-repo
-  rm -rf "$EXTRA_DIR"
-  mkdir -p "$EXTRA_DIR"
-  cp -r /tmp/store-apk-repo/run/x86/* "$EXTRA_DIR/"
-  bash "$REPO_ROOT/shell/apk-prepare-packages.sh"
+    git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/wukongdaily-apk
+    test -d /tmp/wukongdaily-apk/run/x86
+    rm -rf "$EXTRA_DIR" "$PACKAGES_DIR"
+    mkdir -p "$EXTRA_DIR" "$PACKAGES_DIR"
+    cp -a /tmp/wukongdaily-apk/run/x86/. "$EXTRA_DIR/"
+
+    for run_file in "$EXTRA_DIR"/*.run; do
+        [ -f "$run_file" ] || continue
+        chmod +x "$run_file"
+        tmp_run_dir="$(mktemp -d)"
+        if ! sh "$run_file" --target "$tmp_run_dir" --noexec; then
+            rm -rf "$tmp_run_dir"
+            echo "ERROR: failed to extract $(basename "$run_file")"
+            exit 1
+        fi
+        find "$tmp_run_dir" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
+        rm -rf "$tmp_run_dir"
+    done
+    find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
 fi
 
-# OpenWrt 25.12.5 基础组件，默认安装，不放入 apk-custom-packages.sh
+APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
+echo "Third-party APK files: $APK_COUNT"
+if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
+    echo "ERROR: third-party package list is not empty, but no APK was found."
+    exit 1
+fi
+
+# CRITICAL FIX: sign every local APK and then create a signed packages.adb.
+# The old pipeline let ImageBuilder generate an untrusted local index, which
+# caused: 'packages.adb: UNTRUSTED signature'.
+if [ "$APK_COUNT" -gt 0 ]; then
+    while IFS= read -r -d '' apk_file; do
+        "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
+    done < <(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print0)
+
+    rm -f "$PACKAGES_DIR/packages.adb"
+    (
+        cd "$PACKAGES_DIR"
+        "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk
+    )
+    test -s "$PACKAGES_DIR/packages.adb"
+
+    # Verify the exact index that ImageBuilder will consume.
+    "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
+fi
+
+# Official OpenWrt 25.12 packages. Keep these OUT of apk-custom-packages.sh.
 PACKAGES=""
-PACKAGES="$PACKAGES curl"
-PACKAGES="$PACKAGES unzip"
-PACKAGES="$PACKAGES luci"
-PACKAGES="$PACKAGES luci-base"
-PACKAGES="$PACKAGES uhttpd"
-PACKAGES="$PACKAGES uhttpd-mod-ubus"
-PACKAGES="$PACKAGES luci-theme-bootstrap"
-PACKAGES="$PACKAGES luci-compat"
-PACKAGES="$PACKAGES luci-i18n-base-zh-cn"
-PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
-PACKAGES="$PACKAGES luci-app-package-manager"
-PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
-PACKAGES="$PACKAGES kmod-nft-socket"
-PACKAGES="$PACKAGES kmod-nft-tproxy"
-PACKAGES="$PACKAGES openssh-sftp-server"
-
-# daed/dae eBPF 支持：vmlinux-btf 默认加入，不依赖 apk-custom-packages.sh
-PACKAGES="$PACKAGES vmlinux-btf"
-
-# 第三方 APK 由 apk-custom-packages.sh 管理
+PACKAGES="$PACKAGES luci luci-ssl luci-base uhttpd uhttpd-mod-ubus"
+PACKAGES="$PACKAGES luci-theme-bootstrap luci-i18n-base-zh-cn"
+PACKAGES="$PACKAGES luci-app-package-manager luci-i18n-package-manager-zh-cn"
+PACKAGES="$PACKAGES luci-app-mwan3 luci-i18n-mwan3-zh-cn"
+PACKAGES="$PACKAGES luci-app-upnp luci-i18n-upnp-zh-cn"
+PACKAGES="$PACKAGES luci-app-ttyd luci-i18n-ttyd-zh-cn"
+PACKAGES="$PACKAGES luci-app-filemanager luci-i18n-filemanager-zh-cn"
+PACKAGES="$PACKAGES ppp ppp-mod-pppoe kmod-pppoe luci-proto-ppp"
+PACKAGES="$PACKAGES luci-proto-ipv6 odhcp6c odhcpd-ipv6only"
+PACKAGES="$PACKAGES luci-compat kmod-tun kmod-inet-diag kmod-nft-socket kmod-nft-tproxy"
+PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
+PACKAGES="$(printf '%s\n' $PACKAGES | awk '!seen[$0]++' | tr '\n' ' ' | xargs)"
 
-if [ "${INCLUDE_DOCKER:-no}" = "yes" ]; then
-    PACKAGES="$PACKAGES luci-i18n-dockerman-zh-cn"
-fi
-
-if echo "$PACKAGES" | grep -q "luci-app-openclash"; then
+# Optional OpenClash runtime data.
+if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     mkdir -p "$FILES_DIR/etc/openclash/core"
+    META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
+    if curl -fL "$META_URL" -o /tmp/clash-meta.tar.gz; then
+        tar -xzf /tmp/clash-meta.tar.gz -C /tmp
+        META_BIN="$(find /tmp -maxdepth 2 -type f -name clash_meta -print -quit)"
+        [ -z "$META_BIN" ] || install -m 0755 "$META_BIN" "$FILES_DIR/etc/openclash/core/clash_meta"
+    else
+        echo "WARNING: OpenClash core download failed."
+    fi
+    curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -o "$FILES_DIR/etc/openclash/GeoIP.dat" || true
+    curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -o "$FILES_DIR/etc/openclash/GeoSite.dat" || true
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') - 开始构建 OpenWrt 固件..."
-make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="$FILES_DIR" ROOTFS_PARTSIZE="${PROFILE:-1024}"
+# Default Chinese UI and LAN address.
+LAN_IP="${LAN_IP:-192.168.1.2}"
+mkdir -p "$FILES_DIR/etc/uci-defaults"
+cat > "$FILES_DIR/etc/uci-defaults/99-custom-build" <<EOF
+#!/bin/sh
+uci -q set luci.main.lang='zh_cn'
+uci -q commit luci
+uci -q set network.lan.ipaddr='${LAN_IP}'
+uci -q commit network
+exit 0
+EOF
+chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Build completed successfully."
+# Official OpenWrt ImageBuilder only: no source compilation, no toolchain build.
+# ADD_LOCAL_KEY=1 keeps the local public key in /etc/apk/keys.
+# CONFIG_SIGNATURE_CHECK=1 forces signed local APK index handling.
+make image \
+    PROFILE="generic" \
+    PACKAGES="$PACKAGES" \
+    FILES="$FILES_DIR" \
+    ROOTFS_PARTSIZE="${PROFILE:-4096}" \
+    ADD_LOCAL_KEY=1 \
+    CONFIG_SIGNATURE_CHECK=1 \
+    V=s
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - ImageBuilder build completed successfully."
