@@ -148,13 +148,20 @@ jobs:
           curl -fL "$base/$archive" -o "$archive"
           curl -fL "$base/sha256sums" -o sha256sums
 
-          checksum_line="$(grep -F " $archive" sha256sums | head -n 1 | sed -E 's/^[[:space:]]*([0-9A-Fa-f]{64})[[:space:]]+[* ]?(.+)$/\1  \2/')"
-          if [ -z "$checksum_line" ]; then
+          checksum="$(awk -v f="$archive" '$NF == f || $NF == ("*" f) {print $1; exit}' sha256sums)"
+          if [ -z "$checksum" ]; then
             echo "ERROR: checksum entry not found for $archive"
             grep -F "$archive" sha256sums || true
             exit 1
           fi
-          printf '%s\n' "$checksum_line" | sha256sum -c -
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          if [ "$actual" != "$checksum" ]; then
+            echo "ERROR: checksum mismatch for $archive"
+            echo "Expected: $checksum"
+            echo "Actual:   $actual"
+            exit 1
+          fi
+          echo "SHA256 OK: $actual"
 
           rm -rf imagebuilder
           mkdir -p imagebuilder
