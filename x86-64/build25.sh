@@ -73,9 +73,8 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     done
     find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
 
-    # The wukongdaily repository contains several independent proxy stacks.
-    # clashoo and nikki conflict with each other and neither is requested by
-    # this build, so remove both stacks before generating the local index.
+    # The wukongdaily repository contains independent proxy stacks that
+    # conflict with each other. Neither clashoo nor nikki is requested here.
     find "$PACKAGES_DIR" -maxdepth 1 -type f \( \
         -name 'clashoo-*.apk' -o -name 'luci-app-clashoo-*.apk' -o -name 'luci-i18n-clashoo-*.apk' -o \
         -name 'nikki-*.apk' -o -name 'luci-app-nikki-*.apk' -o -name 'luci-i18n-nikki-*.apk' \
@@ -98,10 +97,10 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
 fi
 
-# Four requested LuCI packages are not present in the official OpenWrt
-# 25.12.5 x86_64 feed. ImmortalWrt's 25.12 x86_64 package feed is built from
-# the same OpenWrt/APKv3 ecosystem and publishes these small LuCI packages.
-# Fetch only these requested packages, then re-sign them with our local key.
+# These four requested LuCI applications are not shipped by the official
+# OpenWrt 25.12.5 x86_64 feed. ImmortalWrt publishes matching 25.12 x86_64
+# APKv3 builds, so fetch only these requested packages and re-sign them with
+# our local EC key. Their dependencies are still resolved against OpenWrt.
 IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
 for wanted in \
     luci-app-autoreboot \
@@ -115,7 +114,7 @@ for wanted in \
  do
     if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then
         index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
-        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+'"'"'"'.apk' | sed 's/^href="//' | grep -E "/${wanted}-[^/]+\\.apk$" | tail -n1 || true)"
+        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\\.apk$" | tail -n1 || true)"
         if [ -z "$filename" ]; then
             echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 feed: $wanted"
             exit 1
