@@ -147,13 +147,15 @@ jobs:
           archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           curl -fL "$base/$archive" -o "$archive"
           curl -fL "$base/sha256sums" -o sha256sums
-          checksum_line="$(awk -v f="$archive" '$NF == f || $NF == "./" f {print $1 "  " f; exit}' sha256sums)"
+
+          checksum_line="$(grep -F " $archive" sha256sums | head -n 1 | sed -E 's/^[[:space:]]*([0-9A-Fa-f]{64})[[:space:]]+[* ]?(.+)$/\1  \2/')"
           if [ -z "$checksum_line" ]; then
             echo "ERROR: checksum entry not found for $archive"
             grep -F "$archive" sha256sums || true
             exit 1
           fi
           printf '%s\n' "$checksum_line" | sha256sum -c -
+
           rm -rf imagebuilder
           mkdir -p imagebuilder
           tar --use-compress-program=unzstd -xf "$archive" -C imagebuilder --strip-components=1
