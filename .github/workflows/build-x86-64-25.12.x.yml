@@ -147,7 +147,13 @@ jobs:
           archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
           curl -fL "$base/$archive" -o "$archive"
           curl -fL "$base/sha256sums" -o sha256sums
-          grep "  $archive$" sha256sums | sha256sum -c -
+          checksum_line="$(awk -v f="$archive" '$NF == f || $NF == "./" f {print $1 "  " f; exit}' sha256sums)"
+          if [ -z "$checksum_line" ]; then
+            echo "ERROR: checksum entry not found for $archive"
+            grep -F "$archive" sha256sums || true
+            exit 1
+          fi
+          printf '%s\n' "$checksum_line" | sha256sum -c -
           rm -rf imagebuilder
           mkdir -p imagebuilder
           tar --use-compress-program=unzstd -xf "$archive" -C imagebuilder --strip-components=1
@@ -262,7 +268,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: OpenWrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ github.run_number }}
-          name: OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 #${{ github.run_number }}
+          name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 #${{ github.run_number }}"
           body: |
             基于 OpenWrt 官方 ImageBuilder 构建，不编译 OpenWrt 源码、不编译 toolchain。
 
