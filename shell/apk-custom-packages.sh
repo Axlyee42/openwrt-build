@@ -39,8 +39,8 @@ CUSTOM_PACKAGES="
   # luci-app-openclash
 
   # HomeProxy (szwjp fork, sing-box 1.14 compatible)
-  # luci-app-homeproxy
-  # luci-i18n-homeproxy-zh-cn
+  luci-app-homeproxy
+  luci-i18n-homeproxy-zh-cn
 "
 
 # Strip commented/blank lines so only uncommented entries become active.
