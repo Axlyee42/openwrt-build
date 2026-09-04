@@ -1,9 +1,6 @@
 name: Build 25.12.x x86-64
 
 on:
-  push:
-    paths-ignore:
-      - "openwrt-version"
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -14,7 +11,7 @@ on:
       custom_router_ip:
         description: "请设置路由器的管理地址（多网口路由器有效）"
         required: true
-        default: "192.168.100.1"
+        default: "192.168.1.2"
         type: string
       rootfs_size:
         description: "选择软件包空间大小"
@@ -70,9 +67,6 @@ on:
         default: false
         type: boolean
 
-  schedule:
-    - cron: "0 3 * * *"
-
 permissions:
   contents: write
 
@@ -82,7 +76,7 @@ concurrency:
 
 env:
   OPENWRT_BRANCH: "25.12"
-  DEFAULT_LAN_IP: "192.168.100.1"
+  DEFAULT_LAN_IP: "192.168.1.2"
   DEFAULT_ROOTFS_SIZE: "4G"
 
 jobs:
@@ -112,9 +106,6 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             version="${requested:-$latest}"
             should_build=true
-          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            version="$latest"
-            should_build=true
           elif [ -z "$last" ] || [ "$last" != "$latest" ]; then
             version="$latest"
             should_build=true
@@ -140,7 +131,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       OPENWRT_VERSION: ${{ needs.check-version.outputs.version }}
-      LAN_IP: ${{ inputs.custom_router_ip || '192.168.100.1' }}
+      LAN_IP: ${{ inputs.custom_router_ip || '192.168.1.2' }}
       ROOTFS_SIZE: ${{ inputs.rootfs_size || '4G' }}
       ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
       PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
@@ -257,10 +248,10 @@ jobs:
           out="bin/targets/x86/64"
           test -d "$out"
           find "$out" -maxdepth 1 -type f -printf '%f\n' | sort
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
+          if [ "${{ inputs.bios }}" = "true" ]; then
             test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
           fi
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
+          if [ "${{ inputs.uefi }}" = "true" ]; then
             test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
           fi
 
@@ -281,22 +272,22 @@ jobs:
           mkdir -p "$release"
           bios="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit || true)"
           uefi="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit || true)"
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
+          if [ "${{ inputs.bios }}" = "true" ]; then
             cp "$bios" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-BIOS-ext4.img.gz"
           fi
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
+          if [ "${{ inputs.uefi }}" = "true" ]; then
             cp "$uefi" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI-ext4.img.gz"
           fi
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ] || [ "${{ inputs.vmdk }}" = "true" ] || [ "${{ inputs.raw }}" = "true" ]; then
+          if [ "${{ inputs.qcow2 }}" = "true" ] || [ "${{ inputs.vmdk }}" = "true" ] || [ "${{ inputs.raw }}" = "true" ]; then
             gzip -dc "$uefi" > /tmp/openwrt.raw
           fi
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ]; then
+          if [ "${{ inputs.qcow2 }}" = "true" ]; then
             qemu-img convert -f raw -O qcow2 /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.qcow2"
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.vmdk }}" = "true" ]; then
+          if [ "${{ inputs.vmdk }}" = "true" ]; then
             qemu-img convert -f raw -O vmdk /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.vmdk"
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.raw }}" = "true" ]; then
+          if [ "${{ inputs.raw }}" = "true" ]; then
             cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"
           fi
           {
