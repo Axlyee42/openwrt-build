@@ -7,27 +7,27 @@
 # PassWall2 is intentionally not offered here because it is not needed.
 
 CUSTOM_PACKAGES="
-  # luci-theme-aurora
-  # luci-app-aurora-config
-  # luci-i18n-aurora-config-zh-cn
+   luci-theme-aurora
+   luci-app-aurora-config
+   luci-i18n-aurora-config-zh-cn
 
   # bandix
-  # luci-app-bandix
-  # luci-i18n-bandix-zh-cn
+   luci-app-bandix
+   luci-i18n-bandix-zh-cn
 
-  # luci-app-run
+   luci-app-run
 
-  # luci-app-filebrowser-go
-  # luci-i18n-filebrowser-go-zh-cn
+   luci-app-filebrowser-go
+   luci-i18n-filebrowser-go-zh-cn
 
-  # luci-app-timewol
-  # luci-i18n-timewol-zh-cn
+   luci-app-timewol
+   luci-i18n-timewol-zh-cn
 
-  # luci-app-vlmcsd
-  # luci-i18n-vlmcsd-zh-cn
+   luci-app-vlmcsd
+   luci-i18n-vlmcsd-zh-cn
 
-  # luci-app-autoreboot
-  # luci-i18n-autoreboot-zh-cn
+   luci-app-autoreboot
+   luci-i18n-autoreboot-zh-cn
 
   # luci-app-passwall
   # luci-i18n-passwall-zh-cn
