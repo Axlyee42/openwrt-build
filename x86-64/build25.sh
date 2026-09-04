@@ -94,32 +94,36 @@ if [ "$APK_COUNT" -gt 0 ]; then
     test -s "$PACKAGES_DIR/packages.adb"
     "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
 
-    # OpenWrt 25.12.5 has a known ImageBuilder/APKv3 regression for local APKs:
-    # the index contains the package, but apk later cannot resolve the package
-    # payload from packages.adb and reports "package mentioned in index not found".
-    # Keep the signed index, but install the actual local APK files directly.
-    if ! grep -q 'OPENWRT_BUILD_LOCAL_APK_WORKAROUND' "$IMAGEBUILDER_DIR/Makefile"; then
-        python3 - "$IMAGEBUILDER_DIR/Makefile" <<'PY'
+    # OpenWrt 25.12.x ImageBuilder has a regression with local APK entries:
+    # the signed packages.adb is valid, but apk may fail to resolve a local
+    # package by name with "package mentioned in index not found". Install
+    # the actual local APK files directly while keeping the signed index for
+    # repository metadata and dependency resolution.
+    LOCAL_APK_NAMES="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sed -E 's/\.apk$//' | sed -E 's/-[0-9][0-9A-Za-z.+:~_-]*$//' | sort -u | tr '\n' ' ' | xargs)"
+    if [ -z "$LOCAL_APK_NAMES" ]; then
+        echo "ERROR: failed to derive local APK package names."
+        exit 1
+    fi
+    export OPENWRT_BUILD_LOCAL_APK_WORKAROUND=1
+    python3 - "$IMAGEBUILDER_DIR/Makefile" "$LOCAL_APK_NAMES" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
+local_names = sys.argv[2].split()
 text = path.read_text()
-marker = "# OPENWRT_BUILD_LOCAL_APK_WORKAROUND"
 needle = "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts $(BUILD_PACKAGES)"
-insert = (
-    marker + "\n" +
-    needle + "\n" +
-    "\t@if [ -n \"$(wildcard $(PACKAGE_DIR)/*.apk)\" ]; then \\\n" +
-    "\t\techo 'Installing local third-party APK files directly...'; \\\n" +
-    "\t\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts $(wildcard $(PACKAGE_DIR)/*.apk); \\\n" +
-    "\tfi"
-)
 if needle not in text:
     raise SystemExit("ERROR: ImageBuilder package_install command not found")
-path.write_text(text.replace(needle, insert, 1))
+if "OPENWRT_BUILD_LOCAL_APK_WORKAROUND" in text:
+    raise SystemExit(0)
+filtered = "$(filter-out " + " ".join(local_names) + ",$(BUILD_PACKAGES))"
+replacement = (
+    "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n"
+    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " $(wildcard $(PACKAGE_DIR)/*.apk)"
+)
+path.write_text(text.replace(needle, replacement, 1))
 PY
-    fi
 fi
 
 PACKAGES=""
