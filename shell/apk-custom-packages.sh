@@ -38,6 +38,12 @@ CUSTOM_PACKAGES="
 
   # luci-app-openclash
 
+  # Lucky
+  luci-app-lucky
+
+  # DDNS-Go
+  luci-app-ddns-go
+
   # HomeProxy (szwjp fork, sing-box 1.14 compatible)
   luci-app-homeproxy
   luci-i18n-homeproxy-zh-cn
