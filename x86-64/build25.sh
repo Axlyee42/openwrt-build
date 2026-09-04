@@ -40,7 +40,7 @@ if [ ! -f "$IMAGEBUILDER_DIR/Makefile" ]; then
     exit 1
 fi
 
-# OpenWrt 25.12 uses APKv3/ADB signatures.  We use one local EC key for both
+# OpenWrt 25.12 uses APKv3/ADB signatures. We use one local EC key for both
 # the third-party APK files and the generated local packages.adb index.
 LOCAL_PRIVATE_KEY="$KEY_DIR/local-private-key.pem"
 LOCAL_PUBLIC_KEY="$KEY_DIR/local-public-key.pem"
@@ -85,9 +85,7 @@ if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
     exit 1
 fi
 
-# CRITICAL FIX: sign every local APK and then create a signed packages.adb.
-# The old pipeline let ImageBuilder generate an untrusted local index, which
-# caused: 'packages.adb: UNTRUSTED signature'.
+# Sign every local APK and then create a signed packages.adb.
 if [ "$APK_COUNT" -gt 0 ]; then
     while IFS= read -r -d '' apk_file; do
         "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
@@ -126,7 +124,9 @@ if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
     if curl -fL "$META_URL" -o /tmp/clash-meta.tar.gz; then
         tar -xzf /tmp/clash-meta.tar.gz -C /tmp
-        META_BIN="$(find /tmp -maxdepth 2 -type f -name clash_meta -print -quit)"
+        # /tmp may contain systemd-private directories on GitHub runners.
+        # A permission-denied from find must never abort the build under set -e.
+        META_BIN="$(find /tmp -maxdepth 2 -type f -name clash_meta -print -quit 2>/dev/null || true)"
         [ -z "$META_BIN" ] || install -m 0755 "$META_BIN" "$FILES_DIR/etc/openclash/core/clash_meta"
     else
         echo "WARNING: OpenClash core download failed."
