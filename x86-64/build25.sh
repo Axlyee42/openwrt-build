@@ -73,8 +73,7 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     done
     find "$EXTRA_DIR" -type f -name '*.apk' -exec cp -f {} "$PACKAGES_DIR/" \;
 
-    # The wukongdaily repository contains independent proxy stacks that
-    # conflict with each other. Neither clashoo nor nikki is requested here.
+    # clashoo and nikki are mutually conflicting proxy stacks and are not requested.
     rm -f "$PACKAGES_DIR"/clashoo-*.apk \
           "$PACKAGES_DIR"/luci-app-clashoo-*.apk \
           "$PACKAGES_DIR"/luci-i18n-clashoo-*.apk \
@@ -90,9 +89,7 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     fi
 fi
 
-# OpenClash is not part of the official OpenWrt feeds. Its current APK is
-# published directly by the upstream project, so fetch it into the local
-# package directory and sign it together with the other third-party APKs.
+# OpenClash is not part of the official OpenWrt feeds. Fetch its current APK.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
     OPENCLASH_URL="$(curl -fsSL "$OPENCLASH_API" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").endswith(".apk") and a.get("name","").startswith("luci-app-openclash-")), "") )')"
@@ -106,11 +103,8 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     echo "OpenClash APK: $(basename "$OPENCLASH_FILE")"
 fi
 
-# These LuCI applications are not all available in the official OpenWrt
-# 25.12.5 x86_64 feed. ImmortalWrt publishes matching 25.12 x86_64 APKv3
-# builds. Fetch the requested LuCI packages plus their two runtime packages
-# that are not in the official ImageBuilder package set: filebrowser and
-# vlmcsd. All are re-signed below with our local EC key.
+# These LuCI applications are not all available in the official OpenWrt 25.12.5
+# feed. ImmortalWrt provides matching 25.12 x86_64 APKv3 builds.
 IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
 for wanted in \
     luci-app-autoreboot \
@@ -124,7 +118,7 @@ for wanted in \
  do
     if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then
         index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
-        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\\.apk$" | tail -n1 || true)"
+        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
         if [ -z "$filename" ]; then
             echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 luci feed: $wanted"
             exit 1
@@ -135,19 +129,24 @@ for wanted in \
     fi
 done
 
+# Runtime dependencies required by the ImmortalWrt compatibility LuCI packages.
 IMMORTAL_PACKAGES_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/packages"
 for wanted in filebrowser vlmcsd; do
-    if printf '%s\n' "$CUSTOM_PACKAGES" | grep -Eq '(^|[[:space:]])(luci-app-filebrowser-go|luci-app-vlmcsd)([[:space:]]|$)' && { [ "$wanted" = filebrowser ] && printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw luci-app-filebrowser-go || [ "$wanted" = vlmcsd ] && printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw luci-app-vlmcsd; }; then
-        index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
-        filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\\.apk$" | tail -n1 || true)"
-        if [ -z "$filename" ]; then
-            echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"
-            exit 1
-        fi
-        curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
-        test -s "$PACKAGES_DIR/$filename"
-        echo "Compatibility runtime APK: $filename"
+    if [ "$wanted" = "filebrowser" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-filebrowser-go'; then
+        continue
     fi
+    if [ "$wanted" = "vlmcsd" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-vlmcsd'; then
+        continue
+    fi
+    index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
+    filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
+    if [ -z "$filename" ]; then
+        echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"
+        exit 1
+    fi
+    curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
+    test -s "$PACKAGES_DIR/$filename"
+    echo "Compatibility runtime APK: $filename"
 done
 
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
@@ -238,3 +237,23 @@ fi
 
 LAN_IP="${LAN_IP:-192.168.1.2}"
 mkdir -p "$FILES_DIR/etc/uci-defaults"
+cat > "$FILES_DIR/etc/uci-defaults/99-custom-build" <<EOF
+#!/bin/sh
+uci -q set luci.main.lang='zh_cn'
+uci -q commit luci
+uci -q set network.lan.ipaddr='${LAN_IP}'
+uci -q commit network
+exit 0
+EOF
+chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
+
+make image \
+    PROFILE="generic" \
+    PACKAGES="$PACKAGES" \
+    FILES="$FILES_DIR" \
+    ROOTFS_PARTSIZE="${PROFILE:-4096}" \
+    ADD_LOCAL_KEY=1 \
+    CONFIG_SIGNATURE_CHECK=1 \
+    V=s
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - ImageBuilder build completed successfully."
