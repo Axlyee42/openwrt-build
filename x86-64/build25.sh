@@ -99,9 +99,15 @@ if [ "$APK_COUNT" -gt 0 ]; then
     # package by name with "package mentioned in index not found". Install
     # the actual local APK files directly while keeping the signed index for
     # repository metadata and dependency resolution.
-    LOCAL_APK_NAMES="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sed -E 's/\.apk$//' | sed -E 's/-[0-9][0-9A-Za-z.+:~_-]*$//' | sort -u | tr '\n' ' ' | xargs)"
+    LOCAL_APK_NAMES=""
+    for pkg in $CUSTOM_PACKAGES; do
+        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}_*.apk" -print -quit | grep -q .; then
+            LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"
+        fi
+    done
+    LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
     if [ -z "$LOCAL_APK_NAMES" ]; then
-        echo "ERROR: failed to derive local APK package names."
+        echo "ERROR: failed to map custom package names to local APK files."
         exit 1
     fi
     export OPENWRT_BUILD_LOCAL_APK_WORKAROUND=1
