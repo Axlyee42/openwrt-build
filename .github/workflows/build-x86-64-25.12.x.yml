@@ -95,10 +95,10 @@ jobs:
             last="$(tr -d '[:space:]' < openwrt-version)"
           fi
 
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "$requested" ]; then
-            version="$requested"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${requested:-$latest}"
             should_build=true
-          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             version="$latest"
             should_build=true
           elif [ -z "$last" ] || [ "$last" != "$latest" ]; then
