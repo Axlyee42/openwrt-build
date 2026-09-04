@@ -88,7 +88,6 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
     SINGBOX_PKG_DIR="$(mktemp -d)"
     mkdir -p "$SINGBOX_PKG_DIR/usr/bin"
     install -m 0755 "$SINGBOX_BIN" "$SINGBOX_PKG_DIR/usr/bin/sing-box"
-    # The package itself is named sing-box; do not add a self-provides relation.
     "$APK_BIN" mkpkg \
         --info "name:sing-box" \
         --info "version:${SINGBOX_VERSION}-r1" \
@@ -119,14 +118,16 @@ for wanted in \
 done
 
 IMMORTAL_PACKAGES_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/packages"
-for wanted in filebrowser vlmcsd; do
+for wanted in filebrowser vlmcsd ddns-go; do
     if [ "$wanted" = "filebrowser" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-filebrowser-go'; then continue; fi
     if [ "$wanted" = "vlmcsd" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-vlmcsd'; then continue; fi
+    if [ "$wanted" = "ddns-go" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-ddns-go'; then continue; fi
     index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
     filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
     [ -n "$filename" ] || { echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"; exit 1; }
     curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
     test -s "$PACKAGES_DIR/$filename"
+    echo "Compatibility runtime APK: $filename"
 done
 
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
@@ -149,6 +150,7 @@ if [ "$APK_COUNT" -gt 0 ]; then
         if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"; fi
     done
     if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-1.14.0-r1.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'ddns-go-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES ddns-go"; fi
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
     [ -n "$LOCAL_APK_NAMES" ] || { echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."; exit 1; }
     echo "Local APK packages: $LOCAL_APK_NAMES"
