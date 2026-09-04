@@ -10,7 +10,23 @@ EXTRA_DIR="$IMAGEBUILDER_DIR/extra-packages"
 KEY_DIR="$IMAGEBUILDER_DIR/keys"
 
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
-mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
+mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$FILES_DIR/etc/config" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
+
+# ImmortalWrt-style network settings: keep the existing 99-custom.sh structure
+# and provide its input files from the GitHub Actions workflow.
+LAN_IP="${LAN_IP:-192.168.100.1}"
+ENABLE_PPPOE="${ENABLE_PPPOE:-no}"
+PPPOE_ACCOUNT="${PPPOE_ACCOUNT:-}"
+PPPOE_PASSWORD="${PPPOE_PASSWORD:-}"
+printf '%s\n' "$LAN_IP" > "$FILES_DIR/etc/config/custom_router_ip.txt"
+{
+    printf 'enable_pppoe=%q\n' "$ENABLE_PPPOE"
+    printf 'pppoe_account=%q\n' "$PPPOE_ACCOUNT"
+    printf 'pppoe_password=%q\n' "$PPPOE_PASSWORD"
+} > "$FILES_DIR/etc/config/pppoe-settings"
+chmod 0600 "$FILES_DIR/etc/config/pppoe-settings"
+
+echo "Network settings prepared: LAN=$LAN_IP PPPoE=$ENABLE_PPPOE"
 
 APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
 OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
@@ -200,14 +216,11 @@ if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     curl -fL https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -o "$FILES_DIR/etc/openclash/GeoSite.dat" || true
 fi
 
-LAN_IP="${LAN_IP:-192.168.1.2}"
 mkdir -p "$FILES_DIR/etc/uci-defaults"
 cat > "$FILES_DIR/etc/uci-defaults/99-custom-build" <<EOF
 #!/bin/sh
 uci -q set luci.main.lang='zh_cn'
 uci -q commit luci
-uci -q set network.lan.ipaddr='${LAN_IP}'
-uci -q commit network
 exit 0
 EOF
 chmod 0755 "$FILES_DIR/etc/uci-defaults/99-custom-build"
