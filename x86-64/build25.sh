@@ -100,12 +100,22 @@ if [ "$APK_COUNT" -gt 0 ]; then
     # the actual local APK files directly while keeping the signed index for
     # repository metadata and dependency resolution.
     LOCAL_APK_NAMES=""
+    MISSING_APK_NAMES=""
     for pkg in $CUSTOM_PACKAGES; do
-        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}_*.apk" -print -quit | grep -q .; then
+        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then
             LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"
+        else
+            MISSING_APK_NAMES="$MISSING_APK_NAMES $pkg"
         fi
     done
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
+    MISSING_APK_NAMES="$(printf '%s\n' "$MISSING_APK_NAMES" | xargs)"
+    if [ -n "$MISSING_APK_NAMES" ]; then
+        echo "ERROR: custom packages missing from local APK set: $MISSING_APK_NAMES"
+        echo "Available local APKs:"
+        find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+        exit 1
+    fi
     if [ -z "$LOCAL_APK_NAMES" ]; then
         echo "ERROR: failed to map custom package names to local APK files."
         exit 1
