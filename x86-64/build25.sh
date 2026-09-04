@@ -182,6 +182,7 @@ PACKAGES="$PACKAGES luci-app-filemanager luci-i18n-filemanager-zh-cn"
 PACKAGES="$PACKAGES ppp ppp-mod-pppoe kmod-pppoe luci-proto-ppp"
 PACKAGES="$PACKAGES luci-proto-ipv6 odhcp6c odhcpd-ipv6only"
 PACKAGES="$PACKAGES luci-compat kmod-tun kmod-inet-diag kmod-nft-socket kmod-nft-tproxy"
+PACKAGES="$PACKAGES ethtool"
 PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then PACKAGES="$PACKAGES firewall4 ucode-mod-digest kmod-nft-tproxy"; fi
