@@ -3,292 +3,309 @@ name: Build 25.12.x x86-64
 on:
   workflow_dispatch:
     inputs:
-      luci_version:
-        description: "选择 OpenWrt 版本"
+      openwrt_version:
+        description: "OpenWrt 25.12.x 版本，留空使用最新版本"
         required: false
-        default: "25.12.5"
-        type: choice
-        options:
-          - 25.12.5
-
-      custom_router_ip:
-        description: "路由器管理地址"
+        default: ""
+        type: string
+      lan_ip:
+        description: "LAN 管理地址"
         required: true
         default: "192.168.1.2"
         type: string
-
-      profile:
-        description: "选择软件包空间大小"
+      rootfs_size:
+        description: "ROOTFS 分区大小"
         required: true
         default: "4G"
         type: choice
         options:
-          - 1G
-          - 2G
-          - 3G
-          - 4G
-
-      enable_store:
-        description: "集成 store"
-        required: false
+          - "1G"
+          - "2G"
+          - "3G"
+          - "4G"
+      bios:
+        description: "生成 BIOS EXT4"
+        required: true
+        default: true
+        type: boolean
+      uefi:
+        description: "生成 UEFI EXT4"
+        required: true
+        default: true
+        type: boolean
+      qcow2:
+        description: "生成 QCOW2"
+        required: true
+        default: true
+        type: boolean
+      vmdk:
+        description: "生成 VMDK"
+        required: true
+        default: false
+        type: boolean
+      raw:
+        description: "生成 RAW"
+        required: true
         default: false
         type: boolean
 
-      include_docker:
-        description: "是否编译 Docker"
-        required: true
-        default: false
-        type: choice
-        options:
-          - yes
-          - no
-
-      enable_pppoe:
-        description: "是否配置 PPPoE"
-        required: true
-        default: "no"
-        type: choice
-        options:
-          - yes
-          - no
-
-      pppoe_account:
-        description: "宽带账号"
-        required: false
-
-      pppoe_password:
-        description: "宽带密码"
-        required: false
-
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
 
+concurrency:
+  group: openwrt-25.12-x86-64
+  cancel-in-progress: false
+
+env:
+  OPENWRT_BRANCH: "25.12"
+  DEFAULT_LAN_IP: "192.168.1.2"
+  DEFAULT_ROOTFS_SIZE: "4G"
 
 jobs:
-
-  build:
-
-    runs-on: ubuntu-22.04
-
-
+  check-version:
+    name: Check latest OpenWrt 25.12.x
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_build: ${{ steps.version.outputs.should_build }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-
-      - name: Set executable permissions
+      - name: Check OpenWrt version
+        id: version
+        shell: bash
         run: |
-          chmod +x x86-64/build25.sh
+          set -euo pipefail
 
+          latest="$({
+            git ls-remote --tags --refs https://github.com/openwrt/openwrt.git
+          } | grep -oE 'refs/tags/v25\.12\.[0-9]+$' | sed 's#refs/tags/v##' | sort -V | tail -n 1)"
 
-      - name: Save router IP
-        run: |
-          mkdir -p custom
-          echo "${{ inputs.custom_router_ip }}" > custom/custom_router_ip.txt
-
-
-      - name: Validate PPPoE Inputs
-        run: |
-          if [[ "${{ inputs.enable_pppoe }}" == "yes" ]]; then
-            if [[ -z "${{ inputs.pppoe_account }}" || -z "${{ inputs.pppoe_password }}" ]]; then
-              echo "PPPoE账号密码不能为空"
-              exit 1
-            fi
+          if [ -z "$latest" ]; then
+            echo "ERROR: cannot determine latest OpenWrt 25.12.x"
+            exit 1
           fi
 
+          requested="${{ inputs.openwrt_version }}"
+          last=""
+          if [ -f openwrt-version ]; then
+            last="$(tr -d '[:space:]' < openwrt-version)"
+          fi
 
-      - name: Download ImageBuilder
-        env:
-          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "$requested" ]; then
+            version="$requested"
+            should_build=true
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="$latest"
+            should_build=true
+          elif [ -z "$last" ] || [ "$last" != "$latest" ]; then
+            version="$latest"
+            should_build=true
+          else
+            version="$latest"
+            should_build=false
+          fi
+
+          if ! printf '%s\n' "$version" | grep -Eq '^25\.12\.[0-9]+$'; then
+            echo "ERROR: invalid OpenWrt version: $version"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "Latest: $latest"
+          echo "Last built: ${last:-none}"
+          echo "Selected: $version"
+          echo "Should build: $should_build"
+
+  build:
+    name: Build OpenWrt with official ImageBuilder
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      OPENWRT_VERSION: ${{ needs.check-version.outputs.version }}
+      LAN_IP: ${{ inputs.lan_ip || '192.168.1.2' }}
+      ROOTFS_SIZE: ${{ inputs.rootfs_size || '4G' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install host tools
+        shell: bash
         run: |
-          sudo apt update
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl git qemu-utils zstd xz-utils gzip tar unzip openssl
 
-          sudo apt install -y \
-            zstd \
-            curl \
-            wget \
-            git \
-            qemu-utils
+      - name: Prepare ImageBuilder
+        shell: bash
+        run: |
+          set -euo pipefail
 
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
+          archive="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
 
-          curl -fL \
-          https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst \
-          -o /tmp/imagebuilder.tar.zst
+          curl -fL "$base/$archive" -o "$archive"
+          curl -fL "$base/sha256sums" -o sha256sums
 
+          grep "  $archive$" sha256sums | sha256sum -c -
 
           rm -rf imagebuilder
-
-          mkdir imagebuilder
-
-
-          tar \
-          --use-compress-program=unzstd \
-          -xf /tmp/imagebuilder.tar.zst \
-          -C imagebuilder \
-          --strip-components=1
-
+          mkdir -p imagebuilder
+          tar --use-compress-program=unzstd -xf "$archive" -C imagebuilder --strip-components=1
 
           test -f imagebuilder/Makefile
+          test -x imagebuilder/staging_dir/host/bin/apk
+          echo "Official OpenWrt ImageBuilder $OPENWRT_VERSION is ready."
 
-
-      - name: Install custom defaults
+      - name: Show ImageBuilder information
+        working-directory: imagebuilder
+        shell: bash
         run: |
-          mkdir -p imagebuilder/files/etc/uci-defaults
+          set -euo pipefail
+          make info
 
-          install \
-          -m0755 \
-          files/etc/uci-defaults/99-custom.sh \
-          imagebuilder/files/etc/uci-defaults/99-custom.sh
+      - name: Validate custom APK manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f shell/apk-custom-packages.sh
+          bash -n shell/apk-custom-packages.sh
+          source shell/apk-custom-packages.sh
+          test -n "${CUSTOM_PACKAGES:-}"
+          printf '%s\n' "$CUSTOM_PACKAGES"
 
-
-          mkdir -p imagebuilder/files/etc/config
-
-          cp custom/custom_router_ip.txt \
-          imagebuilder/files/etc/config/custom_router_ip.txt
-
-
-      - name: Build OpenWrt ext4 EFI
+      - name: Build with ImageBuilder
+        working-directory: imagebuilder
+        shell: bash
         env:
-          PROFILE_INPUT: ${{ inputs.profile || '4G' }}
-          INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
-          ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
-          PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
-          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
-          IMAGEBUILDER_DIR: ${{ github.workspace }}/imagebuilder
+          LAN_IP: ${{ env.LAN_IP }}
+          PROFILE_INPUT: ${{ env.ROOTFS_SIZE }}
         run: |
-          case "$PROFILE_INPUT" in
+          set -euo pipefail
 
+          case "$PROFILE_INPUT" in
             1G) PROFILE=1024 ;;
             2G) PROFILE=2048 ;;
             3G) PROFILE=3072 ;;
             4G) PROFILE=4096 ;;
-
+            *) echo "ERROR: invalid ROOTFS_SIZE: $PROFILE_INPUT"; exit 1 ;;
           esac
 
+          export PROFILE LAN_IP
+          chmod +x "$GITHUB_WORKSPACE/x86-64/build25.sh"
+          bash "$GITHUB_WORKSPACE/x86-64/build25.sh"
 
-          export PROFILE
+      - name: Verify build output
+        working-directory: imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="bin/targets/x86/64"
+          test -d "$out"
+          find "$out" -maxdepth 1 -type f -printf '%f\n' | sort
+          test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
+          test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
 
-          export INCLUDE_DOCKER
-
-          export ENABLE_PPPOE
-
-          export PPPOE_ACCOUNT
-
-          export PPPOE_PASSWORD
-
-
-          cd "$IMAGEBUILDER_DIR"
-
-
-          bash ${GITHUB_WORKSPACE}/x86-64/build25.sh
-
-
-      - name: Prepare QCOW2 image
+      - name: Prepare release files
+        shell: bash
         env:
-          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
+          BUILD_DATE: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
 
+          case "$ROOTFS_SIZE" in
+            1G) PARTSIZE=1024 ;;
+            2G) PARTSIZE=2048 ;;
+            3G) PARTSIZE=3072 ;;
+            4G) PARTSIZE=4096 ;;
+            *) exit 1 ;;
+          esac
 
-          IMAGE_GZ=$(find \
-          "${{ github.workspace }}/imagebuilder/bin/targets/x86/64" \
-          -maxdepth 1 \
-          -type f \
-          -name '*ext4-combined-efi.img.gz' \
-          | head -n 1)
+          stamp="$(date -u '+%Y%m%d-%H%M%S')"
+          release="release"
+          out="imagebuilder/bin/targets/x86/64"
+          mkdir -p "$release"
 
+          bios="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
+          uefi="$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
 
-          test -n "$IMAGE_GZ"
-
-
-          IMAGE_DIR=$(dirname "$IMAGE_GZ")
-
-
-          IMAGE_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-ext4-combined-efi.img"
-
-
-          QCOW2_NAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-ext4-combined-efi.qcow2"
-
-
-
-          gunzip -c "$IMAGE_GZ" \
-          > "$IMAGE_DIR/$IMAGE_NAME"
-
-
-
-          qemu-img convert \
-          -f raw \
-          -O qcow2 \
-          -p \
-          "$IMAGE_DIR/$IMAGE_NAME" \
-          "$IMAGE_DIR/$QCOW2_NAME"
-
-
-
-          test -s "$IMAGE_DIR/$QCOW2_NAME"
-
-
-
-          rm -f "$IMAGE_DIR/$IMAGE_NAME"
-
-
-
-          echo "QCOW2 generated:"
-          echo "$IMAGE_DIR/$QCOW2_NAME"
-
-
-      - name: Create release information
-        env:
-          OPENWRT_VERSION: ${{ inputs.luci_version || '25.12.5' }}
-          CUSTOM_ROUTER_IP: ${{ inputs.custom_router_ip || '192.168.1.2' }}
-          PROFILE_INPUT: ${{ inputs.profile || '4G' }}
-          INCLUDE_DOCKER: ${{ inputs.include_docker || 'no' }}
-        run: |
-          cat > router-info.md <<EOF
-
-          ## 📡 OpenWrt x86-64 路由器固件
-
-          - 🏠 管理地址: ${CUSTOM_ROUTER_IP}
-
-          - 👤 用户名: root
-
-          - 🔑 密码: 无
-
-          - 🧩 系统版本: OpenWrt ${OPENWRT_VERSION}
-
-          - 💾 软件空间: ${PROFILE_INPUT}
-
-          - 💿 镜像格式: ext4 EFI
-
-          EOF
-
-
-
-          if [ "${INCLUDE_DOCKER}" = "yes" ]; then
-
-            echo "" >> router-info.md
-
-            echo "#### 🐳 已包含 Docker" >> router-info.md
-
-          else
-
-            echo "" >> router-info.md
-
-            echo "#### 未包含 Docker" >> router-info.md
-
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.bios }}" = "true" ]; then
+            cp "$bios" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-BIOS-ext4.img.gz"
           fi
 
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.uefi }}" = "true" ]; then
+            cp "$uefi" "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI-ext4.img.gz"
+          fi
 
-      - name: Upload OpenWrt ext4 EFI images
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ] || [ "${{ inputs.vmdk }}" = "true" ] || [ "${{ inputs.raw }}" = "true" ]; then
+            gzip -dc "$uefi" > /tmp/openwrt.raw
+          fi
+
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.qcow2 }}" = "true" ]; then
+            qemu-img convert -f raw -O qcow2 /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.qcow2"
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.vmdk }}" = "true" ]; then
+            qemu-img convert -f raw -O vmdk /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.vmdk"
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.raw }}" = "true" ]; then
+            cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"
+          fi
+
+          cat > "$release/build-info.txt" <<EOF
+OpenWrt Custom x86-64
+=====================
+Version: ${OPENWRT_VERSION}
+Build method: Official OpenWrt ImageBuilder
+Target: x86/64 generic
+Filesystem: EXT4
+ROOTFS partition: ${PARTSIZE} MB
+LAN IP: ${LAN_IP}
+APK: OpenWrt 25.12 APKv3
+Third-party APKs: signed with a local EC key
+Local packages.adb: signed with the same local EC key
+EOF
+
+          (cd "$release" && sha256sum * > sha256sums)
+          ls -lh "$release"
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: Autobuild-x86-64
-          body_path: router-info.md
-          files: |
-            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.img.gz
-            ${{ github.workspace }}/imagebuilder/bin/targets/x86/64/*ext4-combined-efi.qcow2
+          tag_name: OpenWrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ github.run_number }}
+          name: OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 #${{ github.run_number }}
+          body: |
+            基于 OpenWrt 官方 ImageBuilder 构建，不编译 OpenWrt 源码、不编译 toolchain。
+
+            - OpenWrt: `${{ env.OPENWRT_VERSION }}`
+            - Target: `x86/64 generic`
+            - EXT4 BIOS / UEFI
+            - QCOW2 / VMDK / RAW 按选项生成
+            - 25.12 APKv3 本地第三方 APK 使用 EC key 重新签名
+            - 本地 `packages.adb` 使用同一 EC key 签名
+            - ImageBuilder 使用 `ADD_LOCAL_KEY=1` 将公钥写入 `/etc/apk/keys`
+          files: release/*
           token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update openwrt-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$OPENWRT_VERSION" > openwrt-version
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add openwrt-version
+          if git diff --cached --quiet; then
+            echo "openwrt-version already current."
+          else
+            git commit -m "Update OpenWrt version to $OPENWRT_VERSION"
+            git push
+          fi
