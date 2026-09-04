@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          latest="$({ git ls-remote --tags --refs https://github.com/openwrt/openwrt.git; } | grep -oE 'refs/tags/v25\\.12\\.[0-9]+$' | sed 's#refs/tags/v##' | sort -V | tail -n 1)"
+          latest="$(git ls-remote --tags --refs https://github.com/openwrt/openwrt.git | grep -oE 'refs/tags/v25[.]12[.][0-9]+$' | sed 's#refs/tags/v##' | sort -V | tail -n 1)"
           if [ -z "$latest" ]; then
             echo "ERROR: cannot determine latest OpenWrt 25.12.x"
             exit 1
@@ -106,7 +106,7 @@ jobs:
             should_build=false
           fi
 
-          if ! printf '%s\\n' "$version" | grep -Eq '^25\\.12\\.[0-9]+$'; then
+          if ! printf '%s\n' "$version" | grep -Eq '^25[.]12[.][0-9]+$'; then
             echo "ERROR: invalid OpenWrt version: $version"
             exit 1
           fi
@@ -170,7 +170,7 @@ jobs:
           bash -n shell/apk-custom-packages.sh
           source shell/apk-custom-packages.sh
           test -n "${CUSTOM_PACKAGES:-}"
-          printf '%s\\n' "$CUSTOM_PACKAGES"
+          printf '%s\n' "$CUSTOM_PACKAGES"
 
       - name: Build with ImageBuilder
         working-directory: imagebuilder
@@ -198,7 +198,7 @@ jobs:
           set -euo pipefail
           out="bin/targets/x86/64"
           test -d "$out"
-          find "$out" -maxdepth 1 -type f -printf '%f\\n' | sort
+          find "$out" -maxdepth 1 -type f -printf '%f\n' | sort
           test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined.img.gz' -print -quit)"
           test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"
 
@@ -242,17 +242,17 @@ jobs:
           fi
 
           {
-            printf '%s\\n' 'OpenWrt Custom x86-64'
-            printf '%s\\n' '====================='
-            printf 'Version: %s\\n' "$OPENWRT_VERSION"
-            printf '%s\\n' 'Build method: Official OpenWrt ImageBuilder'
-            printf '%s\\n' 'Target: x86/64 generic'
-            printf '%s\\n' 'Filesystem: EXT4'
-            printf 'ROOTFS partition: %s MB\\n' "$PARTSIZE"
-            printf 'LAN IP: %s\\n' "$LAN_IP"
-            printf '%s\\n' 'APK: OpenWrt 25.12 APKv3'
-            printf '%s\\n' 'Third-party APKs: signed with a local EC key'
-            printf '%s\\n' 'Local packages.adb: signed with the same local EC key'
+            printf '%s\n' 'OpenWrt Custom x86-64'
+            printf '%s\n' '====================='
+            printf 'Version: %s\n' "$OPENWRT_VERSION"
+            printf '%s\n' 'Build method: Official OpenWrt ImageBuilder'
+            printf '%s\n' 'Target: x86/64 generic'
+            printf '%s\n' 'Filesystem: EXT4'
+            printf 'ROOTFS partition: %s MB\n' "$PARTSIZE"
+            printf 'LAN IP: %s\n' "$LAN_IP"
+            printf '%s\n' 'APK: OpenWrt 25.12 APKv3'
+            printf '%s\n' 'Third-party APKs: signed with a local EC key'
+            printf '%s\n' 'Local packages.adb: signed with the same local EC key'
           } > "$release/build-info.txt"
 
           (cd "$release" && sha256sum * > sha256sums)
@@ -280,7 +280,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s\\n' "$OPENWRT_VERSION" > openwrt-version
+          printf '%s\n' "$OPENWRT_VERSION" > openwrt-version
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add openwrt-version
