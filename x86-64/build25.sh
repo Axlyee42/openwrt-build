@@ -253,8 +253,7 @@ filtered = "$(filter-out " + " ".join(local_names) + ",$(BUILD_PACKAGES))"
 local_apks = "$(foreach p," + " ".join(local_names) + ",$(wildcard $(PACKAGE_DIR)/$(p)-*.apk))"
 replacement = (
     "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n"
-    "\tLOCAL_APK_FILES := " + local_apks + "\n"
-    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " $(LOCAL_APK_FILES)"
+    "\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " " + local_apks
 )
 path.write_text(text.replace(needle, replacement, 1))
 PY
