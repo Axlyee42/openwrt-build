@@ -10,6 +10,12 @@ EXTRA_DIR="$IMAGEBUILDER_DIR/extra-packages"
 KEY_DIR="$IMAGEBUILDER_DIR/keys"
 
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
+ENABLE_HOMEPROXY="${ENABLE_HOMEPROXY:-false}"
+if [ "$ENABLE_HOMEPROXY" = "true" ] || [ "$ENABLE_HOMEPROXY" = "yes" ]; then
+    CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-homeproxy luci-i18n-homeproxy-zh-cn"
+fi
+export CUSTOM_PACKAGES
+
 mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$FILES_DIR/etc/config" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
 
 # ImmortalWrt-style network settings: keep the existing 99-custom.sh structure
@@ -27,6 +33,7 @@ printf '%s\n' "$LAN_IP" > "$FILES_DIR/etc/config/custom_router_ip.txt"
 chmod 0600 "$FILES_DIR/etc/config/pppoe-settings"
 
 echo "Network settings prepared: LAN=$LAN_IP PPPoE=$ENABLE_PPPOE"
+echo "HomeProxy enabled: $ENABLE_HOMEPROXY"
 
 APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
 OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
@@ -84,7 +91,7 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     curl -fL "$OPENCLASH_URL" -o "$PACKAGES_DIR/$(basename "$OPENCLASH_URL")"
 fi
 
-# HomeProxy fork + sing-box 1.14.0.
+# HomeProxy fork + latest stable sing-box release.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
     HOMEProxy_JSON="$(curl -fsSL 'https://api.github.com/repos/szwjp/homeproxy/releases/tags/luci-app-homeproxy')"
     HOMEProxy_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-app-homeproxy-") and a.get("name","").endswith(".apk")), ""))')"
@@ -92,13 +99,18 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
     [ -n "$HOMEProxy_URL" ] && [ -n "$HOMEProxy_I18N_URL" ] || { echo "ERROR: could not find szwjp/homeproxy APK assets."; exit 1; }
     curl -fL "$HOMEProxy_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_URL")"
     curl -fL "$HOMEProxy_I18N_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_I18N_URL")"
-    SINGBOX_VERSION="1.14.0"
+
+    SINGBOX_JSON="$(curl -fsSL 'https://api.github.com/repos/SagerNet/sing-box/releases/latest')"
+    SINGBOX_VERSION="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name", "").lstrip("v"))')"
+    [ -n "$SINGBOX_VERSION" ] || { echo "ERROR: could not determine latest stable sing-box version."; exit 1; }
+    SINGBOX_URL="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("tag_name", "").lstrip("v"); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name") == f"sing-box-{v}-linux-amd64.tar.gz"), ""))')"
+    [ -n "$SINGBOX_URL" ] || { echo "ERROR: latest sing-box release has no linux-amd64 archive."; exit 1; }
     SINGBOX_TARBALL="/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
-    curl -fL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz" -o "$SINGBOX_TARBALL"
+    curl -fL "$SINGBOX_URL" -o "$SINGBOX_TARBALL"
     SINGBOX_TMP="$(mktemp -d)"
     tar -xzf "$SINGBOX_TARBALL" -C "$SINGBOX_TMP"
     SINGBOX_BIN="$(find "$SINGBOX_TMP" -type f -name sing-box -print -quit)"
-    [ -n "$SINGBOX_BIN" ] || { echo "ERROR: sing-box 1.14.0 binary not found."; exit 1; }
+    [ -n "$SINGBOX_BIN" ] || { echo "ERROR: latest sing-box binary not found."; exit 1; }
     chmod 0755 "$SINGBOX_BIN"
     "$SINGBOX_BIN" version
     SINGBOX_PKG_DIR="$(mktemp -d)"
@@ -146,6 +158,13 @@ for wanted in filebrowser vlmcsd ddns-go; do
     echo "Compatibility runtime APK: $filename"
 done
 
+# Hysteria 2 runtime must be present when Hysteria2 support is enabled.
+if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'hysteria'; then
+    HYSTERIA_APK="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'hysteria-*.apk' -print -quit || true)"
+    [ -n "$HYSTERIA_APK" ] || { echo "ERROR: hysteria APK was requested but was not downloaded."; exit 1; }
+    echo "Hysteria runtime APK: $(basename "$HYSTERIA_APK")"
+fi
+
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
 echo "Third-party APK files: $APK_COUNT"
 if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
@@ -165,7 +184,7 @@ if [ "$APK_COUNT" -gt 0 ]; then
     for pkg in $CUSTOM_PACKAGES; do
         if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"; fi
     done
-    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-1.14.0-r1.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
     if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'ddns-go-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES ddns-go"; fi
     LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
     [ -n "$LOCAL_APK_NAMES" ] || { echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."; exit 1; }
