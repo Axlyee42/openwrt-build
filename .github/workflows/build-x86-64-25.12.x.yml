@@ -168,6 +168,7 @@ jobs:
           set -euo pipefail
           test -f shell/apk-custom-packages.sh
           bash -n shell/apk-custom-packages.sh
+          CUSTOM_PACKAGES=""
           source shell/apk-custom-packages.sh
           printf '%s\n' "$CUSTOM_PACKAGES"
           for required in geoview xray-core sing-box hysteria; do
@@ -230,6 +231,7 @@ jobs:
           if [ "${{ inputs.vmdk }}" = "true" ]; then qemu-img convert -f raw -O vmdk /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.vmdk"; fi
           if [ "${{ inputs.raw }}" = "true" ]; then cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"; fi
 
+          CUSTOM_PACKAGES=""
           source "$GITHUB_WORKSPACE/shell/apk-custom-packages.sh"
           package_list="$(printf '%s\n' "$CUSTOM_PACKAGES" | tr ' ' '\n' | sed '/^$/d' | sort -u)"
           formats=""
