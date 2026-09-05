@@ -41,7 +41,7 @@ for port in $LAN_PORTS; do
     uci add_list network.br_lan.ports="$port"
 done
 
-uci set network.lan=device 2>/dev/null || true
+uci set network.lan=interface
 uci set network.lan.device='br-lan'
 uci set network.lan.proto='static'
 uci set network.lan.ipaddr="$CUSTOM_IP"
