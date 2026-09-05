@@ -29,11 +29,11 @@ CUSTOM_PACKAGES="
    luci-app-autoreboot
    luci-i18n-autoreboot-zh-cn
 
-  # luci-app-passwall
-  # luci-i18n-passwall-zh-cn
+   luci-app-passwall
+   luci-i18n-passwall-zh-cn
 
-  # OpenClash remains optional.
-  # luci-app-openclash
+   OpenClash remains optional.
+   luci-app-openclash
 
   # Default proxy/network packages.
   geoview
@@ -47,8 +47,8 @@ CUSTOM_PACKAGES="
   luci-app-ddns-go
 
   # HomeProxy (szwjp fork, sing-box 1.14 compatible)
-  luci-app-homeproxy
-  luci-i18n-homeproxy-zh-cn
+ # luci-app-homeproxy
+ # luci-i18n-homeproxy-zh-cn
 "
 
 # Strip commented/blank lines so only uncommented entries become active.
