@@ -41,6 +41,11 @@ on:
         required: false
         default: ""
         type: string
+      homeproxy:
+        description: "编译 HomeProxy（szwjp/homeproxy）+ 最新稳定版 sing-box"
+        required: true
+        default: false
+        type: boolean
       bios:
         description: "生成 BIOS EXT4"
         required: true
@@ -136,6 +141,7 @@ jobs:
       ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
       PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
       PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
+      ENABLE_HOMEPROXY: ${{ inputs.homeproxy }}
 
     steps:
       - name: Checkout
@@ -200,6 +206,9 @@ jobs:
           test -f shell/apk-custom-packages.sh
           bash -n shell/apk-custom-packages.sh
           source shell/apk-custom-packages.sh
+          if [ "$ENABLE_HOMEPROXY" = "true" ]; then
+            CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-homeproxy luci-i18n-homeproxy-zh-cn"
+          fi
           test -n "${CUSTOM_PACKAGES:-}"
           printf '%s\n' "$CUSTOM_PACKAGES"
 
@@ -227,6 +236,7 @@ jobs:
           ENABLE_PPPOE: ${{ env.ENABLE_PPPOE }}
           PPPOE_ACCOUNT: ${{ env.PPPOE_ACCOUNT }}
           PPPOE_PASSWORD: ${{ env.PPPOE_PASSWORD }}
+          ENABLE_HOMEPROXY: ${{ env.ENABLE_HOMEPROXY }}
         run: |
           set -euo pipefail
           case "$PROFILE_INPUT" in
@@ -236,7 +246,7 @@ jobs:
             4G) PROFILE=4096 ;;
             *) echo "ERROR: invalid ROOTFS_SIZE: $PROFILE_INPUT"; exit 1 ;;
           esac
-          export PROFILE LAN_IP ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD
+          export PROFILE LAN_IP ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD ENABLE_HOMEPROXY
           chmod +x "$GITHUB_WORKSPACE/x86-64/build25.sh"
           bash "$GITHUB_WORKSPACE/x86-64/build25.sh"
 
@@ -300,6 +310,7 @@ jobs:
             printf 'ROOTFS partition: %s MB\n' "$PARTSIZE"
             printf 'LAN IP: %s\n' "$LAN_IP"
             printf 'PPPoE enabled: %s\n' "$ENABLE_PPPOE"
+            printf 'HomeProxy enabled: %s\n' "$ENABLE_HOMEPROXY"
             printf '%s\n' 'APK: OpenWrt 25.12 APKv3'
             printf '%s\n' 'Third-party APKs: signed with a local EC key'
             printf '%s\n' 'Local packages.adb: signed with the same local EC key'
@@ -321,6 +332,8 @@ jobs:
             - BIOS / VMDK / RAW 默认不生成，可在手动触发时选择
             - QCOW2 默认生成，可在手动触发时关闭
             - PPPoE 默认关闭，可在手动触发时开启并填写账号和密码
+            - HomeProxy 默认不编译，可在手动触发时选择；选择后自动拉取最新稳定版 sing-box
+            - Hysteria 2 runtime APK 默认编译
             - 多网口设备默认第一个物理网口为 WAN，其余为 LAN；单网口设备为 DHCP 模式
             - 25.12 APKv3 本地第三方 APK 使用 EC key 重新签名
             - 本地 `packages.adb` 使用同一 EC key 签名
