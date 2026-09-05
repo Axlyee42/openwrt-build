@@ -1,24 +1,25 @@
 #!/bin/sh
-# 99-custom.sh 就是 OpenWrt 固件首次启动时运行的脚本，位于固件内的 /etc/uci-defaults/99-custom.sh
+# OpenWrt first-boot network initialization, aligned with wukongdaily/ImmortalWrt-ImageBuilder.
 LOGFILE="/etc/config/uci-defaults-log.txt"
-echo "Starting 99-custom.sh at $(date)" >>$LOGFILE
+echo "Starting 99-custom.sh at $(date)" >> "$LOGFILE"
 
-# 设置默认防火墙规则，方便单网口虚拟机首次访问 WebUI
+# Allow first access to the WebUI on the WAN side for initial setup.
 uci set firewall.@zone[1].input='ACCEPT'
 
-# 设置主机名映射，解决安卓原生 TV 无法联网的问题
+# Android TV connectivity workaround.
 uci add dhcp domain
 uci set "dhcp.@domain[-1].name=time.android.com"
 uci set "dhcp.@domain[-1].ip=203.107.6.88"
 
 SETTINGS_FILE="/etc/config/pppoe-settings"
-if [ ! -f "$SETTINGS_FILE" ]; then
-    echo "PPPoE settings file not found. Skipping." >>$LOGFILE
-else
+if [ -f "$SETTINGS_FILE" ]; then
     . "$SETTINGS_FILE"
+else
+    echo "PPPoE settings file not found. Skipping." >> "$LOGFILE"
+    enable_pppoe='no'
 fi
 
-# 获取所有物理接口列表
+# Detect physical Ethernet interfaces. VirtIO interfaces in PVE appear here as ethX.
 ifnames=""
 for iface in /sys/class/net/*; do
     iface_name=$(basename "$iface")
@@ -27,13 +28,12 @@ for iface in /sys/class/net/*; do
     fi
 done
 ifnames=$(echo "$ifnames" | awk '{$1=$1};1')
-
 count=$(echo "$ifnames" | wc -w)
-echo "Detected physical interfaces: $ifnames" >>$LOGFILE
-echo "Interface count: $count" >>$LOGFILE
+echo "Detected physical interfaces: $ifnames" >> "$LOGFILE"
+echo "Interface count: $count" >> "$LOGFILE"
 
 board_name=$(cat /tmp/sysinfo/board_name 2>/dev/null || echo "unknown")
-echo "Board detected: $board_name" >>$LOGFILE
+echo "Board detected: $board_name" >> "$LOGFILE"
 
 wan_ifname=""
 lan_ifnames=""
@@ -41,17 +41,17 @@ case "$board_name" in
     "radxa,e20c"|"friendlyarm,nanopi-r5c")
         wan_ifname="eth1"
         lan_ifnames="eth0"
-        echo "Using $board_name mapping: WAN=$wan_ifname LAN=$lan_ifnames" >>"$LOGFILE"
         ;;
     *)
         wan_ifname=$(echo "$ifnames" | awk '{print $1}')
         lan_ifnames=$(echo "$ifnames" | cut -d ' ' -f2-)
-        echo "Using default mapping: WAN=$wan_ifname LAN=$lan_ifnames" >>"$LOGFILE"
         ;;
 esac
 
+echo "Using WAN=$wan_ifname LAN=$lan_ifnames" >> "$LOGFILE"
+
 if [ "$count" -eq 1 ]; then
-    # 单网口设备：DHCP 自动获取地址
+    # Exactly one physical NIC: keep wukongdaily's DHCP management mode.
     uci set network.lan.proto='dhcp'
     uci delete network.lan.ipaddr 2>/dev/null || true
     uci delete network.lan.netmask 2>/dev/null || true
@@ -59,24 +59,24 @@ if [ "$count" -eq 1 ]; then
     uci delete network.lan.dns 2>/dev/null || true
     uci commit network
 elif [ "$count" -gt 1 ]; then
-    # 多网口设备：第一个物理网口 WAN，其余网口 LAN
+    # Multi-NIC: first NIC is WAN, all remaining NICs are LAN.
     uci set network.wan=interface
     uci set network.wan.device="$wan_ifname"
     uci set network.wan.proto='dhcp'
 
+    # Preserve IPv6 on WAN by using DHCPv6 when PPPoE is disabled.
     uci set network.wan6=interface
     uci set network.wan6.device="$wan_ifname"
     uci set network.wan6.proto='dhcpv6'
 
-    section=$(uci show network | awk -F '[.=]' '/\.@?device\[\d+\]\.name=.br-lan.$/ {print $2; exit}')
+    section=$(uci show network | awk -F '[.=]' '/\.@?device\[[0-9]+\]\.name=.br-lan.$/ {print $2; exit}')
     if [ -z "$section" ]; then
-        echo "error：cannot find device 'br-lan'." >>$LOGFILE
+        echo "error: cannot find device br-lan" >> "$LOGFILE"
     else
         uci -q delete "network.$section.ports"
         for port in $lan_ifnames; do
             uci add_list "network.$section.ports"="$port"
         done
-        echo "Updated br-lan ports: $lan_ifnames" >>$LOGFILE
     fi
 
     uci set network.lan.proto='static'
@@ -84,14 +84,12 @@ elif [ "$count" -gt 1 ]; then
     IP_VALUE_FILE="/etc/config/custom_router_ip.txt"
     if [ -f "$IP_VALUE_FILE" ]; then
         CUSTOM_IP=$(cat "$IP_VALUE_FILE")
-        uci set network.lan.ipaddr="$CUSTOM_IP"
-        echo "custom router ip is $CUSTOM_IP" >> $LOGFILE
     else
-        uci set network.lan.ipaddr='192.168.100.1'
-        echo "default router ip is 192.168.100.1" >> $LOGFILE
+        CUSTOM_IP='192.168.1.2'
     fi
+    uci set network.lan.ipaddr="$CUSTOM_IP"
+    echo "LAN IP=$CUSTOM_IP" >> "$LOGFILE"
 
-    echo "enable_pppoe value: $enable_pppoe" >>$LOGFILE
     if [ "$enable_pppoe" = "yes" ]; then
         uci set network.wan.proto='pppoe'
         uci set network.wan.username="$pppoe_account"
@@ -99,19 +97,26 @@ elif [ "$count" -gt 1 ]; then
         uci set network.wan.peerdns='1'
         uci set network.wan.auto='1'
         uci set network.wan6.proto='none'
+    else
+        # DHCP WAN: keep IPv6 enabled.
+        uci set network.wan6.proto='dhcpv6'
+        uci set network.wan6.device="$wan_ifname"
     fi
 
     uci commit network
 fi
 
+# Expose ttyd and SSH on all interfaces.
 uci delete ttyd.@ttyd[0].interface 2>/dev/null || true
 uci set dropbear.@dropbear[0].Interface=''
 uci commit
 
 FILE_PATH="/etc/openwrt_release"
-NEW_DESCRIPTION="Packaged by wukongdaily"
-sed -i "s/DISTRIB_DESCRIPTION='[^']*'/DISTRIB_DESCRIPTION='$NEW_DESCRIPTION'/" "$FILE_PATH"
+if [ -f "$FILE_PATH" ]; then
+    sed -i "s/DISTRIB_DESCRIPTION='[^']*'/DISTRIB_DESCRIPTION='Packaged by wukongdaily'/" "$FILE_PATH"
+fi
 
+# Optional compatibility fixes from the reference project.
 if [ -f /usr/lib/lua/luci/controller/advancedplus.lua ]; then
     sed -i '/\/usr\/bin\/zsh/d' /etc/profile
     sed -i '/\/bin\/zsh/d' /etc/init.d/advancedplus
@@ -143,7 +148,7 @@ if command -v dockerd >/dev/null 2>&1; then
         fi
     done
     uci commit firewall
-    cat <<EOF >>"$FW_FILE"
+    cat <<EOF >> "$FW_FILE"
 
 config zone 'docker'
   option input 'ACCEPT'
