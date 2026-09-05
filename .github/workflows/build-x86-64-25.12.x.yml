@@ -214,8 +214,6 @@ jobs:
           if [ "${{ inputs.uefi }}" = "true" ]; then test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"; fi
       - name: Prepare release files
         shell: bash
-        env:
-          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           set -euo pipefail
           case "$ROOTFS_SIZE" in 1G) PARTSIZE=1024;; 2G) PARTSIZE=2048;; 3G) PARTSIZE=3072;; 4G) PARTSIZE=4096;; *) exit 1;; esac
@@ -231,38 +229,54 @@ jobs:
           if [ "${{ inputs.qcow2 }}" = "true" ]; then qemu-img convert -f raw -O qcow2 /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.qcow2"; fi
           if [ "${{ inputs.vmdk }}" = "true" ]; then qemu-img convert -f raw -O vmdk /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.vmdk"; fi
           if [ "${{ inputs.raw }}" = "true" ]; then cp /tmp/openwrt.raw "$release/OpenWrt-${OPENWRT_VERSION}-x86-64-${ROOTFS_SIZE}-${stamp}-UEFI.raw"; fi
+
+          source "$GITHUB_WORKSPACE/shell/apk-custom-packages.sh"
+          package_list="$(printf '%s\n' "$CUSTOM_PACKAGES" | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+          formats=""
+          [ "${{ inputs.bios }}" = "true" ] && formats="${formats}BIOS EXT4, "
+          [ "${{ inputs.uefi }}" = "true" ] && formats="${formats}UEFI EXT4, "
+          [ "${{ inputs.qcow2 }}" = "true" ] && formats="${formats}QCOW2, "
+          [ "${{ inputs.vmdk }}" = "true" ] && formats="${formats}VMDK, "
+          [ "${{ inputs.raw }}" = "true" ] && formats="${formats}RAW, "
+          formats="${formats%, }"
+
           {
-            printf '%s\n' 'OpenWrt Custom x86-64'
-            printf '%s\n' '====================='
+            printf '%s\n' '# OpenWrt Custom x86-64'
+            printf '%s\n' ''
             printf 'Version: %s\n' "$OPENWRT_VERSION"
-            printf '%s\n' 'Build method: Official OpenWrt ImageBuilder'
-            printf '%s\n' 'Target: x86/64 generic'
-            printf '%s\n' 'Filesystem: EXT4'
-            printf 'ROOTFS partition: %s MB\n' "$PARTSIZE"
+            printf 'Build time (UTC): %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')"
+            printf 'Build method: Official OpenWrt ImageBuilder\n'
+            printf 'Target: x86/64 generic\n'
+            printf 'Filesystem: EXT4\n'
+            printf 'ROOTFS partition: %s MB (%s)\n' "$PARTSIZE" "$ROOTFS_SIZE"
             printf 'LAN IP: %s\n' "$LAN_IP"
             printf 'PPPoE enabled: %s\n' "$ENABLE_PPPOE"
-            printf '%s\n' 'Optional LuCI applications are controlled by shell/apk-custom-packages.sh'
-            printf '%s\n' 'Default APK packages: geoview xray-core sing-box hysteria'
-          } > "$release/build-info.txt"
-          (cd "$release" && sha256sum * > sha256sums)
+            printf 'Generated formats: %s\n' "$formats"
+            printf '%s\n' ''
+            printf '%s\n' '## Third-party / custom APK packages'
+            printf '%s\n' ''
+            printf '%s\n' '```text'
+            printf '%s\n' "$package_list"
+            printf '%s\n' '```'
+            printf '%s\n' ''
+            printf '%s\n' 'Package source: shell/apk-custom-packages.sh'
+            printf '%s\n' 'PassWall2: not included'
+            printf '%s\n' ''
+            printf '%s\n' '## Generated files'
+            printf '%s\n' ''
+            printf '%s\n' '```text'
+            find "$release" -maxdepth 1 -type f -printf '%f\n' | sort
+            printf '%s\n' '```'
+          } > "$release/build-info.md"
+          cp "$release/build-info.md" "$release/build-info.txt"
+          (cd "$release" && sha256sum *.img.gz *.qcow2 *.vmdk *.raw 2>/dev/null > sha256sums || true)
+          (cd "$release" && sha256sum build-info.md build-info.txt >> sha256sums)
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: OpenWrt-${{ env.OPENWRT_VERSION }}-x86-64-${{ github.run_number }}
           name: "OpenWrt ${{ env.OPENWRT_VERSION }} x86-64 #${{ github.run_number }}"
-          body: |
-            基于 OpenWrt 官方 ImageBuilder 构建。
-
-            - OpenWrt: `${{ env.OPENWRT_VERSION }}`
-            - Target: `x86/64 generic`
-            - UEFI EXT4 默认生成
-            - BIOS / VMDK / RAW 可在手动触发时选择
-            - QCOW2 默认生成
-            - PPPoE 默认关闭，可手动开启
-            - 第三方 LuCI 应用及其中文包/依赖统一由 `shell/apk-custom-packages.sh` 控制
-            - sing-box 默认编译，构建时自动拉取 SagerNet 最新稳定版
-            - Hysteria 2 runtime APK 默认编译
-            - PassWall2 永不加入
+          body_path: release/build-info.md
           files: release/*
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Update openwrt-version
