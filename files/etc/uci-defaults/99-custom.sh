@@ -1,5 +1,5 @@
 #!/bin/sh
-# OpenWrt first-boot network initialization, aligned with wukongdaily/ImmortalWrt-ImageBuilder.
+# OpenWrt first-boot network initialization.
 LOGFILE="/etc/config/uci-defaults-log.txt"
 echo "Starting 99-custom.sh at $(date)" >> "$LOGFILE"
 
@@ -19,92 +19,54 @@ else
     enable_pppoe='no'
 fi
 
-# Detect physical Ethernet interfaces. VirtIO interfaces in PVE appear here as ethX.
-ifnames=""
-for iface in /sys/class/net/*; do
-    iface_name=$(basename "$iface")
-    if [ -e "$iface/device" ] && echo "$iface_name" | grep -Eq '^eth|^en'; then
-        ifnames="$ifnames $iface_name"
-    fi
-done
-ifnames=$(echo "$ifnames" | awk '{$1=$1};1')
-count=$(echo "$ifnames" | wc -w)
-echo "Detected physical interfaces: $ifnames" >> "$LOGFILE"
-echo "Interface count: $count" >> "$LOGFILE"
+# Fixed six-port x86-64 layout:
+# eth1 = WAN
+# eth0/eth2/eth3/eth4/eth5 = LAN
+WAN_IF="eth1"
+LAN_PORTS="eth0 eth2 eth3 eth4 eth5"
 
-board_name=$(cat /tmp/sysinfo/board_name 2>/dev/null || echo "unknown")
-echo "Board detected: $board_name" >> "$LOGFILE"
-
-wan_ifname=""
-lan_ifnames=""
-case "$board_name" in
-    "radxa,e20c"|"friendlyarm,nanopi-r5c")
-        wan_ifname="eth1"
-        lan_ifnames="eth0"
-        ;;
-    *)
-        wan_ifname=$(echo "$ifnames" | awk '{print $1}')
-        lan_ifnames=$(echo "$ifnames" | cut -d ' ' -f2-)
-        ;;
-esac
-
-echo "Using WAN=$wan_ifname LAN=$lan_ifnames" >> "$LOGFILE"
-
-if [ "$count" -eq 1 ]; then
-    # Exactly one physical NIC: keep wukongdaily's DHCP management mode.
-    uci set network.lan.proto='dhcp'
-    uci delete network.lan.ipaddr 2>/dev/null || true
-    uci delete network.lan.netmask 2>/dev/null || true
-    uci delete network.lan.gateway 2>/dev/null || true
-    uci delete network.lan.dns 2>/dev/null || true
-    uci commit network
-elif [ "$count" -gt 1 ]; then
-    # Multi-NIC: first NIC is WAN, all remaining NICs are LAN.
-    uci set network.wan=interface
-    uci set network.wan.device="$wan_ifname"
-    uci set network.wan.proto='dhcp'
-
-    # Preserve IPv6 on WAN by using DHCPv6 when PPPoE is disabled.
-    uci set network.wan6=interface
-    uci set network.wan6.device="$wan_ifname"
-    uci set network.wan6.proto='dhcpv6'
-
-    section=$(uci show network | awk -F '[.=]' '/\.@?device\[[0-9]+\]\.name=.br-lan.$/ {print $2; exit}')
-    if [ -z "$section" ]; then
-        echo "error: cannot find device br-lan" >> "$LOGFILE"
-    else
-        uci -q delete "network.$section.ports"
-        for port in $lan_ifnames; do
-            uci add_list "network.$section.ports"="$port"
-        done
-    fi
-
-    uci set network.lan.proto='static'
-    uci set network.lan.netmask='255.255.255.0'
-    IP_VALUE_FILE="/etc/config/custom_router_ip.txt"
-    if [ -f "$IP_VALUE_FILE" ]; then
-        CUSTOM_IP=$(cat "$IP_VALUE_FILE")
-    else
-        CUSTOM_IP='192.168.1.2'
-    fi
-    uci set network.lan.ipaddr="$CUSTOM_IP"
-    echo "LAN IP=$CUSTOM_IP" >> "$LOGFILE"
-
-    if [ "$enable_pppoe" = "yes" ]; then
-        uci set network.wan.proto='pppoe'
-        uci set network.wan.username="$pppoe_account"
-        uci set network.wan.password="$pppoe_password"
-        uci set network.wan.peerdns='1'
-        uci set network.wan.auto='1'
-        uci set network.wan6.proto='none'
-    else
-        # DHCP WAN: keep IPv6 enabled.
-        uci set network.wan6.proto='dhcpv6'
-        uci set network.wan6.device="$wan_ifname"
-    fi
-
-    uci commit network
+IP_VALUE_FILE="/etc/config/custom_router_ip.txt"
+if [ -f "$IP_VALUE_FILE" ]; then
+    CUSTOM_IP=$(cat "$IP_VALUE_FILE")
+else
+    CUSTOM_IP='192.168.1.2'
 fi
+
+# Explicitly configure the six physical ports instead of relying on interface discovery.
+uci -q set network.br_lan=device
+uci -q set network.br_lan.name='br-lan'
+uci -q set network.br_lan.type='bridge'
+uci -q delete network.br_lan.ports
+for port in $LAN_PORTS; do
+    uci add_list network.br_lan.ports="$port"
+done
+
+uci set network.lan=device 2>/dev/null || true
+uci set network.lan.device='br-lan'
+uci set network.lan.proto='static'
+uci set network.lan.ipaddr="$CUSTOM_IP"
+uci set network.lan.netmask='255.255.255.0'
+
+uci set network.wan=interface
+uci set network.wan.device="$WAN_IF"
+
+uci set network.wan6=interface
+uci set network.wan6.device="$WAN_IF"
+
+if [ "$enable_pppoe" = "yes" ]; then
+    uci set network.wan.proto='pppoe'
+    uci set network.wan.username="$pppoe_account"
+    uci set network.wan.password="$pppoe_password"
+    uci set network.wan.peerdns='1'
+    uci set network.wan.auto='1'
+    uci set network.wan6.proto='none'
+else
+    uci set network.wan.proto='dhcp'
+    uci set network.wan6.proto='dhcpv6'
+fi
+
+uci commit network
+echo "Using fixed network layout: WAN=$WAN_IF LAN=$LAN_PORTS LAN_IP=$CUSTOM_IP PPPoE=$enable_pppoe" >> "$LOGFILE"
 
 # Expose ttyd and SSH on all interfaces.
 uci delete ttyd.@ttyd[0].interface 2>/dev/null || true
