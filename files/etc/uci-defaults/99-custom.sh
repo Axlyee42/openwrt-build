@@ -68,6 +68,11 @@ fi
 uci commit network
 echo "Using fixed network layout: WAN=$WAN_IF LAN=$LAN_PORTS LAN_IP=$CUSTOM_IP PPPoE=$enable_pppoe" >> "$LOGFILE"
 
+# Keep LuCI accessible over HTTP without forcing HTTPS.
+uci set uhttpd.main.redirect_https='0'
+uci commit uhttpd
+/etc/init.d/uhttpd reload 2>/dev/null || true
+
 # Expose ttyd and SSH on all interfaces.
 uci delete ttyd.@ttyd[0].interface 2>/dev/null || true
 uci set dropbear.@dropbear[0].Interface=''
