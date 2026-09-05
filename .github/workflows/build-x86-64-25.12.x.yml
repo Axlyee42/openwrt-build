@@ -26,7 +26,7 @@ on:
       enable_pppoe:
         description: "是否配置PPPoE拨号信息?"
         required: true
-        default: "yes"
+        default: "no"
         type: choice
         options:
           - "yes"
@@ -320,7 +320,8 @@ jobs:
             - UEFI EXT4 默认生成
             - BIOS / VMDK / RAW 默认不生成，可在手动触发时选择
             - QCOW2 默认生成，可在手动触发时关闭
-            - PPPoE 可在手动触发时填写账号和密码
+            - PPPoE 默认关闭，可在手动触发时开启并填写账号和密码
+            - 多网口设备默认第一个物理网口为 WAN，其余为 LAN；单网口设备为 DHCP 模式
             - 25.12 APKv3 本地第三方 APK 使用 EC key 重新签名
             - 本地 `packages.adb` 使用同一 EC key 签名
             - ImageBuilder 使用 `ADD_LOCAL_KEY=1` 将公钥写入 `/etc/apk/keys`
