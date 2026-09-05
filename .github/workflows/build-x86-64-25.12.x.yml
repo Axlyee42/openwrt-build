@@ -35,16 +35,6 @@ on:
         required: false
         default: ""
         type: string
-      homeproxy:
-        description: "编译 HomeProxy（szwjp/homeproxy）"
-        required: true
-        default: false
-        type: boolean
-      mwan3:
-        description: "编译 MWAN3 多线负载均衡"
-        required: true
-        default: false
-        type: boolean
       bios:
         description: "生成 BIOS EXT4"
         required: true
@@ -126,9 +116,6 @@ jobs:
       ROOTFS_SIZE: ${{ inputs.rootfs_size || '4G' }}
       ENABLE_PPPOE: ${{ inputs.enable_pppoe || 'no' }}
       PPPOE_ACCOUNT: ${{ inputs.pppoe_account || '' }}
-      PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
-      ENABLE_HOMEPROXY: ${{ inputs.homeproxy }}
-      ENABLE_MWAN3: ${{ inputs.mwan3 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -140,10 +127,14 @@ jobs:
           sudo apt-get install -y curl git qemu-utils zstd xz-utils gzip tar unzip openssl python3
       - name: Mask PPPoE password
         shell: bash
+        env:
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           echo "::add-mask::${PPPOE_PASSWORD}"
       - name: Validate PPPoE Inputs
         shell: bash
+        env:
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           set -euo pipefail
           if [ "$ENABLE_PPPOE" = "yes" ] && { [ -z "$PPPOE_ACCOUNT" ] || [ -z "$PPPOE_PASSWORD" ]; }; then
@@ -178,11 +169,14 @@ jobs:
           test -f shell/apk-custom-packages.sh
           bash -n shell/apk-custom-packages.sh
           source shell/apk-custom-packages.sh
-          if [ "$ENABLE_HOMEPROXY" = "true" ]; then CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-homeproxy luci-i18n-homeproxy-zh-cn"; fi
           printf '%s\n' "$CUSTOM_PACKAGES"
-          for required in geoview xray-core sing-box hysteria; do printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$required" || { echo "ERROR: required default package missing: $required"; exit 1; }; done
+          for required in geoview xray-core sing-box hysteria; do
+            printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$required" || { echo "ERROR: required default package missing: $required"; exit 1; }
+          done
       - name: Prepare network settings
         shell: bash
+        env:
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           set -euo pipefail
           mkdir -p imagebuilder/files/etc/config
@@ -201,13 +195,11 @@ jobs:
           PROFILE_INPUT: ${{ env.ROOTFS_SIZE }}
           ENABLE_PPPOE: ${{ env.ENABLE_PPPOE }}
           PPPOE_ACCOUNT: ${{ env.PPPOE_ACCOUNT }}
-          PPPOE_PASSWORD: ${{ env.PPPOE_PASSWORD }}
-          ENABLE_HOMEPROXY: ${{ env.ENABLE_HOMEPROXY }}
-          ENABLE_MWAN3: ${{ env.ENABLE_MWAN3 }}
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           set -euo pipefail
           case "$PROFILE_INPUT" in 1G) PROFILE=1024;; 2G) PROFILE=2048;; 3G) PROFILE=3072;; 4G) PROFILE=4096;; *) echo "ERROR: invalid ROOTFS_SIZE: $PROFILE_INPUT"; exit 1;; esac
-          export PROFILE LAN_IP ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD ENABLE_HOMEPROXY ENABLE_MWAN3
+          export PROFILE LAN_IP ENABLE_PPPOE PPPOE_ACCOUNT PPPOE_PASSWORD
           chmod +x "$GITHUB_WORKSPACE/x86-64/build25.sh"
           bash "$GITHUB_WORKSPACE/x86-64/build25.sh"
       - name: Verify build output
@@ -222,6 +214,8 @@ jobs:
           if [ "${{ inputs.uefi }}" = "true" ]; then test -n "$(find "$out" -maxdepth 1 -type f -name '*ext4-combined-efi.img.gz' -print -quit)"; fi
       - name: Prepare release files
         shell: bash
+        env:
+          PPPOE_PASSWORD: ${{ inputs.pppoe_password || '' }}
         run: |
           set -euo pipefail
           case "$ROOTFS_SIZE" in 1G) PARTSIZE=1024;; 2G) PARTSIZE=2048;; 3G) PARTSIZE=3072;; 4G) PARTSIZE=4096;; *) exit 1;; esac
@@ -247,9 +241,8 @@ jobs:
             printf 'ROOTFS partition: %s MB\n' "$PARTSIZE"
             printf 'LAN IP: %s\n' "$LAN_IP"
             printf 'PPPoE enabled: %s\n' "$ENABLE_PPPOE"
-            printf 'HomeProxy enabled: %s\n' "$ENABLE_HOMEPROXY"
-            printf 'MWAN3 enabled: %s\n' "$ENABLE_MWAN3"
-            printf '%s\n' 'Default required APK/packages: geoview xray-core sing-box hysteria luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip luci-i18n-upnp-zh-cn'
+            printf '%s\n' 'Optional LuCI applications are controlled by shell/apk-custom-packages.sh'
+            printf '%s\n' 'Default APK packages: geoview xray-core sing-box hysteria'
           } > "$release/build-info.txt"
           (cd "$release" && sha256sum * > sha256sums)
       - name: Publish GitHub Release
@@ -266,8 +259,7 @@ jobs:
             - BIOS / VMDK / RAW 可在手动触发时选择
             - QCOW2 默认生成
             - PPPoE 默认关闭，可手动开启
-            - HomeProxy 默认不编译，可手动选择；选择后使用 szwjp/homeproxy
-            - MWAN3 默认不编译，可手动选择
+            - 第三方 LuCI 应用及其中文包/依赖统一由 `shell/apk-custom-packages.sh` 控制
             - sing-box 默认编译，构建时自动拉取 SagerNet 最新稳定版
             - Hysteria 2 runtime APK 默认编译
             - PassWall2 永不加入
