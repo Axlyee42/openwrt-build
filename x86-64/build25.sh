@@ -11,6 +11,7 @@ KEY_DIR="$IMAGEBUILDER_DIR/keys"
 
 source "$REPO_ROOT/shell/apk-custom-packages.sh"
 ENABLE_HOMEPROXY="${ENABLE_HOMEPROXY:-false}"
+ENABLE_MWAN3="${ENABLE_MWAN3:-false}"
 if [ "$ENABLE_HOMEPROXY" = "true" ] || [ "$ENABLE_HOMEPROXY" = "yes" ]; then
     CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-homeproxy luci-i18n-homeproxy-zh-cn"
 fi
@@ -18,8 +19,6 @@ export CUSTOM_PACKAGES
 
 mkdir -p "$FILES_DIR/etc/apk/keys" "$FILES_DIR/etc/apk/repositories.d" "$FILES_DIR/etc/config" "$PACKAGES_DIR" "$EXTRA_DIR" "$KEY_DIR"
 
-# ImmortalWrt-style network settings: keep the existing 99-custom.sh structure
-# and provide its input files from the GitHub Actions workflow.
 LAN_IP="${LAN_IP:-192.168.100.1}"
 ENABLE_PPPOE="${ENABLE_PPPOE:-no}"
 PPPOE_ACCOUNT="${PPPOE_ACCOUNT:-}"
@@ -34,6 +33,9 @@ chmod 0600 "$FILES_DIR/etc/config/pppoe-settings"
 
 echo "Network settings prepared: LAN=$LAN_IP PPPoE=$ENABLE_PPPOE"
 echo "HomeProxy enabled: $ENABLE_HOMEPROXY"
+echo "MWAN3 enabled: $ENABLE_MWAN3"
+
+echo "Required defaults: geoview xray-core sing-box hysteria luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip luci-i18n-upnp-zh-cn"
 
 APK_BIN="${APK_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/apk}"
 OPENSSL_BIN="${OPENSSL_BIN:-$IMAGEBUILDER_DIR/staging_dir/host/bin/openssl}"
@@ -84,6 +86,7 @@ if [ -n "${CUSTOM_PACKAGES:-}" ]; then
     fi
 fi
 
+# Optional OpenClash remains opt-in if it is ever added to CUSTOM_PACKAGES.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     OPENCLASH_API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
     OPENCLASH_URL="$(curl -fsSL "$OPENCLASH_API" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").endswith(".apk") and a.get("name","").startswith("luci-app-openclash-")), ""))')"
@@ -91,7 +94,7 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-openclash'; then
     curl -fL "$OPENCLASH_URL" -o "$PACKAGES_DIR/$(basename "$OPENCLASH_URL")"
 fi
 
-# HomeProxy fork + latest stable sing-box release.
+# HomeProxy is optional; sing-box is NOT optional and always follows the latest stable release.
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
     HOMEProxy_JSON="$(curl -fsSL 'https://api.github.com/repos/szwjp/homeproxy/releases/tags/luci-app-homeproxy')"
     HOMEProxy_URL="$(printf '%s' "$HOMEProxy_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name","").startswith("luci-app-homeproxy-") and a.get("name","").endswith(".apk")), ""))')"
@@ -99,50 +102,50 @@ if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then
     [ -n "$HOMEProxy_URL" ] && [ -n "$HOMEProxy_I18N_URL" ] || { echo "ERROR: could not find szwjp/homeproxy APK assets."; exit 1; }
     curl -fL "$HOMEProxy_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_URL")"
     curl -fL "$HOMEProxy_I18N_URL" -o "$PACKAGES_DIR/$(basename "$HOMEProxy_I18N_URL")"
-
-    SINGBOX_JSON="$(curl -fsSL 'https://api.github.com/repos/SagerNet/sing-box/releases/latest')"
-    SINGBOX_VERSION="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name", "").lstrip("v"))')"
-    [ -n "$SINGBOX_VERSION" ] || { echo "ERROR: could not determine latest stable sing-box version."; exit 1; }
-    SINGBOX_URL="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("tag_name", "").lstrip("v"); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name") == f"sing-box-{v}-linux-amd64.tar.gz"), ""))')"
-    [ -n "$SINGBOX_URL" ] || { echo "ERROR: latest sing-box release has no linux-amd64 archive."; exit 1; }
-    SINGBOX_TARBALL="/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
-    curl -fL "$SINGBOX_URL" -o "$SINGBOX_TARBALL"
-    SINGBOX_TMP="$(mktemp -d)"
-    tar -xzf "$SINGBOX_TARBALL" -C "$SINGBOX_TMP"
-    SINGBOX_BIN="$(find "$SINGBOX_TMP" -type f -name sing-box -print -quit)"
-    [ -n "$SINGBOX_BIN" ] || { echo "ERROR: latest sing-box binary not found."; exit 1; }
-    chmod 0755 "$SINGBOX_BIN"
-    "$SINGBOX_BIN" version
-    SINGBOX_PKG_DIR="$(mktemp -d)"
-    mkdir -p "$SINGBOX_PKG_DIR/usr/bin"
-    install -m 0755 "$SINGBOX_BIN" "$SINGBOX_PKG_DIR/usr/bin/sing-box"
-    "$APK_BIN" mkpkg \
-        --info "name:sing-box" \
-        --info "version:${SINGBOX_VERSION}-r1" \
-        --info "description:sing-box ${SINGBOX_VERSION} runtime for HomeProxy" \
-        --info "arch:x86_64" \
-        --files "$SINGBOX_PKG_DIR" \
-        --output "$PACKAGES_DIR/sing-box-${SINGBOX_VERSION}-r1.apk"
-    rm -rf "$SINGBOX_TMP" "$SINGBOX_PKG_DIR"
 fi
 
-# Compatibility APKs from ImmortalWrt 25.12 x86_64.
-IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
-for wanted in \
-    luci-app-autoreboot luci-i18n-autoreboot-zh-cn \
-    luci-app-filebrowser-go luci-i18n-filebrowser-go-zh-cn \
-    luci-app-timewol luci-i18n-timewol-zh-cn \
-    luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn \
-    luci-app-ddns-go
- do
-    if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then
-        index_html="$(curl -fsSL "$IMMORTAL_LUCI_BASE/")"
+# Always pull the newest stable SagerNet sing-box and package it locally.
+SINGBOX_JSON="$(curl -fsSL 'https://api.github.com/repos/SagerNet/sing-box/releases/latest')"
+SINGBOX_VERSION="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name", "").lstrip("v"))')"
+[ -n "$SINGBOX_VERSION" ] || { echo "ERROR: could not determine latest stable sing-box version."; exit 1; }
+SINGBOX_URL="$(printf '%s' "$SINGBOX_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("tag_name", "").lstrip("v"); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name") == f"sing-box-{v}-linux-amd64.tar.gz"), ""))')"
+[ -n "$SINGBOX_URL" ] || { echo "ERROR: latest sing-box release has no linux-amd64 archive."; exit 1; }
+SINGBOX_TARBALL="/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+curl -fL "$SINGBOX_URL" -o "$SINGBOX_TARBALL"
+SINGBOX_TMP="$(mktemp -d)"
+tar -xzf "$SINGBOX_TARBALL" -C "$SINGBOX_TMP"
+SINGBOX_BIN="$(find "$SINGBOX_TMP" -type f -name sing-box -print -quit)"
+[ -n "$SINGBOX_BIN" ] || { echo "ERROR: latest sing-box binary not found."; exit 1; }
+chmod 0755 "$SINGBOX_BIN"
+"$SINGBOX_BIN" version
+SINGBOX_PKG_DIR="$(mktemp -d)"
+mkdir -p "$SINGBOX_PKG_DIR/usr/bin"
+install -m 0755 "$SINGBOX_BIN" "$SINGBOX_PKG_DIR/usr/bin/sing-box"
+"$APK_BIN" mkpkg \
+    --info "name:sing-box" \
+    --info "version:${SINGBOX_VERSION}-r1" \
+    --info "description:sing-box ${SINGBOX_VERSION} runtime" \
+    --info "arch:x86_64" \
+    --files "$SINGBOX_PKG_DIR" \
+    --output "$PACKAGES_DIR/sing-box-${SINGBOX_VERSION}-r1.apk"
+rm -rf "$SINGBOX_TMP" "$SINGBOX_PKG_DIR"
+
+after_packages() {
+    local base="$1"; shift
+    local wanted index_html filename
+    for wanted in "$@"; do
+        index_html="$(curl -fsSL "$base/")"
         filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
-        [ -n "$filename" ] || { echo "ERROR: requested package not found in ImmortalWrt 25.12 x86_64 luci feed: $wanted"; exit 1; }
-        curl -fL "$IMMORTAL_LUCI_BASE/$filename" -o "$PACKAGES_DIR/$filename"
+        [ -n "$filename" ] || { echo "ERROR: requested package not found: $wanted"; exit 1; }
+        curl -fL "$base/$filename" -o "$PACKAGES_DIR/$filename"
         test -s "$PACKAGES_DIR/$filename"
-        echo "Compatibility LuCI APK: $filename"
-    fi
+        echo "Compatibility APK: $filename"
+    done
+}
+
+IMMORTAL_LUCI_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/luci"
+for wanted in luci-app-autoreboot luci-i18n-autoreboot-zh-cn luci-app-filebrowser-go luci-i18n-filebrowser-go-zh-cn luci-app-timewol luci-i18n-timewol-zh-cn luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn luci-app-ddns-go; do
+    if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw "$wanted"; then after_packages "$IMMORTAL_LUCI_BASE" "$wanted"; fi
 done
 
 IMMORTAL_PACKAGES_BASE="https://downloads.immortalwrt.org/releases/packages-25.12/x86_64/packages"
@@ -150,46 +153,39 @@ for wanted in filebrowser vlmcsd ddns-go; do
     if [ "$wanted" = "filebrowser" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-filebrowser-go'; then continue; fi
     if [ "$wanted" = "vlmcsd" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-vlmcsd'; then continue; fi
     if [ "$wanted" = "ddns-go" ] && ! printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-ddns-go'; then continue; fi
-    index_html="$(curl -fsSL "$IMMORTAL_PACKAGES_BASE/")"
-    filename="$(printf '%s\n' "$index_html" | grep -oE 'href="[^"]+\.apk"' | sed 's/^href="//; s/"$//' | grep -E "^${wanted}-.*\.apk$" | tail -n1 || true)"
-    [ -n "$filename" ] || { echo "ERROR: runtime dependency not found in ImmortalWrt 25.12 x86_64 packages feed: $wanted"; exit 1; }
-    curl -fL "$IMMORTAL_PACKAGES_BASE/$filename" -o "$PACKAGES_DIR/$filename"
-    test -s "$PACKAGES_DIR/$filename"
-    echo "Compatibility runtime APK: $filename"
+    after_packages "$IMMORTAL_PACKAGES_BASE" "$wanted"
 done
 
-# Hysteria 2 runtime must be present when Hysteria2 support is enabled.
-if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'hysteria'; then
-    HYSTERIA_APK="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'hysteria-*.apk' -print -quit || true)"
-    [ -n "$HYSTERIA_APK" ] || { echo "ERROR: hysteria APK was requested but was not downloaded."; exit 1; }
-    echo "Hysteria runtime APK: $(basename "$HYSTERIA_APK")"
-fi
+# Hard requirements: fail early if a requested runtime APK is missing.
+for required_pkg in geoview xray-core sing-box hysteria; do
+    find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${required_pkg}-*.apk" -print -quit | grep -q . || {
+        echo "ERROR: required default APK is missing: $required_pkg"; exit 1;
+    }
+done
 
 APK_COUNT="$(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
 echo "Third-party APK files: $APK_COUNT"
-if [ "$APK_COUNT" -eq 0 ] && [ -n "${CUSTOM_PACKAGES:-}" ]; then
-    echo "ERROR: third-party package list is not empty, but no APK was found."
-    exit 1
-fi
+[ "$APK_COUNT" -gt 0 ] || { echo "ERROR: no third-party APK was produced."; exit 1; }
 
-if [ "$APK_COUNT" -gt 0 ]; then
-    while IFS= read -r -d '' apk_file; do
-        "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
-    done < <(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print0)
-    rm -f "$PACKAGES_DIR/packages.adb"
-    ( cd "$PACKAGES_DIR" && "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk )
-    test -s "$PACKAGES_DIR/packages.adb"
-    "$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
-    LOCAL_APK_NAMES=""
-    for pkg in $CUSTOM_PACKAGES; do
-        if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"; fi
-    done
-    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
-    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'ddns-go-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES ddns-go"; fi
-    LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
-    [ -n "$LOCAL_APK_NAMES" ] || { echo "ERROR: no CUSTOM_PACKAGES entry maps to a local APK."; exit 1; }
-    echo "Local APK packages: $LOCAL_APK_NAMES"
-    python3 - "$IMAGEBUILDER_DIR/Makefile" "$LOCAL_APK_NAMES" <<'PY'
+while IFS= read -r -d '' apk_file; do
+    "$APK_BIN" adbsign --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" "$apk_file"
+done < <(find "$PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print0)
+rm -f "$PACKAGES_DIR/packages.adb"
+( cd "$PACKAGES_DIR" && "$APK_BIN" mkndx --allow-untrusted --sign-key "$LOCAL_PRIVATE_KEY" --output packages.adb ./*.apk )
+test -s "$PACKAGES_DIR/packages.adb"
+"$APK_BIN" verify --keys-dir "$KEY_DIR" "$PACKAGES_DIR/packages.adb"
+
+LOCAL_APK_NAMES=""
+for pkg in $CUSTOM_PACKAGES; do
+    if find "$PACKAGES_DIR" -maxdepth 1 -type f -name "${pkg}-*.apk" -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES $pkg"; fi
+done
+if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'sing-box-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES sing-box"; fi
+if find "$PACKAGES_DIR" -maxdepth 1 -type f -name 'ddns-go-*.apk' -print -quit | grep -q .; then LOCAL_APK_NAMES="$LOCAL_APK_NAMES ddns-go"; fi
+LOCAL_APK_NAMES="$(printf '%s\n' "$LOCAL_APK_NAMES" | xargs)"
+[ -n "$LOCAL_APK_NAMES" ] || { echo "ERROR: no local APK package maps to the requested package list."; exit 1; }
+echo "Local APK packages: $LOCAL_APK_NAMES"
+
+python3 - "$IMAGEBUILDER_DIR/Makefile" "$LOCAL_APK_NAMES" <<'PY'
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
@@ -204,13 +200,14 @@ if "OPENWRT_BUILD_LOCAL_APK_WORKAROUND" not in text:
     replacement = "\t# OPENWRT_BUILD_LOCAL_APK_WORKAROUND\n\t$(APK) add --arch $(ARCH_PACKAGES) --no-scripts " + filtered + " " + local_apks
     path.write_text(text.replace(needle, replacement, 1))
 PY
-fi
 
 PACKAGES=""
 PACKAGES="$PACKAGES luci luci-ssl luci-base uhttpd uhttpd-mod-ubus"
 PACKAGES="$PACKAGES luci-theme-bootstrap luci-i18n-base-zh-cn"
 PACKAGES="$PACKAGES luci-app-package-manager luci-i18n-package-manager-zh-cn"
-PACKAGES="$PACKAGES luci-app-mwan3 luci-i18n-mwan3-zh-cn"
+if [ "$ENABLE_MWAN3" = "true" ] || [ "$ENABLE_MWAN3" = "yes" ]; then
+    PACKAGES="$PACKAGES luci-app-mwan3 luci-i18n-mwan3-zh-cn"
+fi
 PACKAGES="$PACKAGES luci-app-upnp luci-i18n-upnp-zh-cn"
 PACKAGES="$PACKAGES luci-app-ttyd luci-i18n-ttyd-zh-cn"
 PACKAGES="$PACKAGES luci-app-filemanager luci-i18n-filemanager-zh-cn"
@@ -222,6 +219,11 @@ PACKAGES="$PACKAGES bash curl ca-bundle ip-full unzip openssh-sftp-server"
 PACKAGES="$PACKAGES ${CUSTOM_PACKAGES:-}"
 if printf '%s\n' "$CUSTOM_PACKAGES" | grep -qw 'luci-app-homeproxy'; then PACKAGES="$PACKAGES firewall4 ucode-mod-digest kmod-nft-tproxy"; fi
 PACKAGES="$(printf '%s\n' $PACKAGES | awk '!seen[$0]++' | tr '\n' ' ' | xargs)"
+
+# Explicit hard assertions for the packages that must never disappear from the default build.
+for required in geoview xray-core sing-box hysteria luci-compat kmod-tun kmod-inet-diag kmod-nft-tproxy bash curl ip-full unzip luci-i18n-upnp-zh-cn; do
+    printf '%s\n' "$PACKAGES" | grep -qw "$required" || { echo "ERROR: required default package missing from PACKAGES: $required"; exit 1; }
+done
 
 if printf '%s\n' "$PACKAGES" | grep -qw 'luci-app-openclash'; then
     mkdir -p "$FILES_DIR/etc/openclash/core"
